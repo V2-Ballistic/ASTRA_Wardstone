@@ -102,28 +102,130 @@ def get_traceability_matrix(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Generate the full RTM for a project — requirements vs artifacts/tests."""
-    reqs = db.query(Requirement).filter(Requirement.project_id == project_id).all()
+    """Generate the full RTM for a project — requirements vs artifacts/tests/children."""
+    reqs = db.query(Requirement).filter(
+        Requirement.project_id == project_id,
+        Requirement.status != "deleted",
+    ).order_by(Requirement.req_id).all()
     req_ids = [r.id for r in reqs]
-    links = db.query(TraceLink).filter(
-        ((TraceLink.source_type == "requirement") & (TraceLink.source_id.in_(req_ids))) |
-        ((TraceLink.target_type == "requirement") & (TraceLink.target_id.in_(req_ids)))
-    ).all()
+
+    links = []
+    if req_ids:
+        links = db.query(TraceLink).filter(
+            ((TraceLink.source_type == "requirement") & (TraceLink.source_id.in_(req_ids))) |
+            ((TraceLink.target_type == "requirement") & (TraceLink.target_id.in_(req_ids)))
+        ).all()
+
+    # Build children map from parent_id
+    children_map = {}
+    for r in reqs:
+        if r.parent_id and r.parent_id in req_ids:
+            if r.parent_id not in children_map:
+                children_map[r.parent_id] = []
+            children_map[r.parent_id].append(r.id)
+
+    from app.models import Verification
+    verifications = {}
+    if req_ids:
+        vrows = db.query(Verification).filter(Verification.requirement_id.in_(req_ids)).all()
+        for v in vrows:
+            if v.requirement_id not in verifications:
+                verifications[v.requirement_id] = []
+            verifications[v.requirement_id].append(v.id)
 
     matrix = []
     for req in reqs:
         req_links = [l for l in links if l.source_id == req.id or l.target_id == req.id]
+        level_str = req.level.value if hasattr(req.level, "value") else str(req.level) if req.level else "L1"
+        status_str = req.status.value if hasattr(req.status, "value") else str(req.status)
+        priority_str = req.priority.value if hasattr(req.priority, "value") else str(req.priority)
+
+        source_artifacts = [l.source_id for l in req_links if l.source_type == "source_artifact"]
+        child_ids = children_map.get(req.id, [])
+        verification_ids = verifications.get(req.id, [])
+        test_links = [l.target_id for l in req_links if l.target_type == "verification"]
+
         matrix.append({
+            "id": req.id,
             "req_id": req.req_id,
             "title": req.title,
-            "status": req.status,
-            "source_artifacts": [l.source_id for l in req_links if l.source_type == "source_artifact"],
-            "design_links": [l.target_id for l in req_links if l.target_type == "design"],
-            "test_links": [l.target_id for l in req_links if l.target_type == "verification"],
-            "children": [l.target_id for l in req_links if l.link_type == "decomposition"],
+            "level": level_str,
+            "status": status_str,
+            "priority": priority_str,
+            "parent_id": req.parent_id,
+            "source_artifacts": source_artifacts,
+            "source_artifact_count": len(source_artifacts),
+            "children": child_ids,
+            "children_count": len(child_ids),
+            "verifications": verification_ids,
+            "verification_count": len(verification_ids),
+            "test_links": test_links,
+            "test_count": len(test_links),
+            "total_links": len(req_links),
         })
 
     return {"project_id": project_id, "requirements_count": len(reqs), "matrix": matrix}
+
+
+@traceability_router.get("/graph")
+def get_traceability_graph(
+    project_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return nodes and edges in D3-ready format for force-directed graph."""
+    reqs = db.query(Requirement).filter(
+        Requirement.project_id == project_id,
+        Requirement.status != "deleted",
+    ).all()
+    req_ids = [r.id for r in reqs]
+
+    links = []
+    if req_ids:
+        links = db.query(TraceLink).filter(
+            ((TraceLink.source_type == "requirement") & (TraceLink.source_id.in_(req_ids))) |
+            ((TraceLink.target_type == "requirement") & (TraceLink.target_id.in_(req_ids)))
+        ).all()
+
+    # Build nodes
+    nodes = []
+    for r in reqs:
+        level_str = r.level.value if hasattr(r.level, "value") else str(r.level) if r.level else "L1"
+        status_str = r.status.value if hasattr(r.status, "value") else str(r.status)
+        nodes.append({
+            "id": r.id,
+            "req_id": r.req_id,
+            "title": r.title,
+            "level": level_str,
+            "status": status_str,
+            "parent_id": r.parent_id,
+            "quality_score": r.quality_score or 0,
+        })
+
+    # Build edges from trace_links
+    edges = []
+    for l in links:
+        link_type = l.link_type.value if hasattr(l.link_type, "value") else str(l.link_type)
+        edges.append({
+            "source": l.source_id,
+            "target": l.target_id,
+            "source_type": l.source_type,
+            "target_type": l.target_type,
+            "link_type": link_type,
+        })
+
+    # Also add parent-child edges from parent_id
+    for r in reqs:
+        if r.parent_id and r.parent_id in req_ids:
+            edges.append({
+                "source": r.parent_id,
+                "target": r.id,
+                "source_type": "requirement",
+                "target_type": "requirement",
+                "link_type": "parent_child",
+            })
+
+    return {"nodes": nodes, "edges": edges}
 
 
 @traceability_router.get("/coverage")
@@ -133,10 +235,15 @@ def get_coverage_stats(
     current_user: User = Depends(get_current_user),
 ):
     """Calculate traceability coverage metrics."""
-    reqs = db.query(Requirement).filter(Requirement.project_id == project_id).all()
+    reqs = db.query(Requirement).filter(
+        Requirement.project_id == project_id,
+        Requirement.status != "deleted",
+    ).all()
     total = len(reqs)
     if total == 0:
-        return {"total": 0, "with_source": 0, "with_tests": 0, "with_design": 0, "orphans": 0}
+        return {"total": 0, "with_source": 0, "with_source_pct": 0, "with_tests": 0, "with_tests_pct": 0,
+                "with_children": 0, "with_children_pct": 0, "with_verification": 0, "with_verification_pct": 0,
+                "orphans": 0, "orphan_pct": 0}
 
     req_ids = [r.id for r in reqs]
     links = db.query(TraceLink).filter(
@@ -158,7 +265,20 @@ def get_coverage_stats(
         if l.target_type == "requirement":
             linked_reqs.add(l.target_id)
 
-    orphans = total - len(linked_reqs)
+    # Children: requirements that have at least one child via parent_id
+    parent_ids = set()
+    for r in reqs:
+        if r.parent_id and r.parent_id in set(req_ids):
+            parent_ids.add(r.parent_id)
+
+    # Verification records
+    from app.models import Verification
+    verified_ids = set()
+    if req_ids:
+        vrows = db.query(Verification.requirement_id).filter(Verification.requirement_id.in_(req_ids)).distinct().all()
+        verified_ids = {v[0] for v in vrows}
+
+    orphans = total - len(linked_reqs | parent_ids)
 
     return {
         "total": total,
@@ -166,8 +286,12 @@ def get_coverage_stats(
         "with_source_pct": round(len(with_source) / total * 100, 1),
         "with_tests": len(with_tests),
         "with_tests_pct": round(len(with_tests) / total * 100, 1),
+        "with_children": len(parent_ids),
+        "with_children_pct": round(len(parent_ids) / total * 100, 1),
+        "with_verification": len(verified_ids),
+        "with_verification_pct": round(len(verified_ids) / total * 100, 1),
         "orphans": orphans,
-        "orphan_pct": round(orphans / total * 100, 1),
+        "orphan_pct": round(max(0, orphans) / total * 100, 1),
     }
 
 

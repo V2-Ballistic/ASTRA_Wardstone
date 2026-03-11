@@ -6,6 +6,9 @@ from app.database import engine, Base
 from app.routers.auth import router as auth_router
 from app.routers.requirements import router as requirements_router
 from app.routers.projects import projects_router, traceability_router, artifacts_router
+from app.routers.dashboard import router as dashboard_router
+from app.routers.baselines import router as baselines_router
+from app.routers.dev import router as dev_router
 
 
 @asynccontextmanager
@@ -40,6 +43,9 @@ app.include_router(projects_router, prefix=API_PREFIX)
 app.include_router(requirements_router, prefix=API_PREFIX)
 app.include_router(traceability_router, prefix=API_PREFIX)
 app.include_router(artifacts_router, prefix=API_PREFIX)
+app.include_router(dashboard_router, prefix=API_PREFIX)
+app.include_router(baselines_router, prefix=API_PREFIX)
+app.include_router(dev_router, prefix=API_PREFIX)
 
 
 @app.get("/")

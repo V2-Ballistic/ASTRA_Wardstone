@@ -33,6 +33,7 @@ export interface Requirement {
   req_type: RequirementType;
   priority: Priority;
   status: RequirementStatus;
+  level: RequirementLevel;
   version: number;
   quality_score: number;
   project_id: number;
@@ -102,6 +103,8 @@ export type RequirementType =
 
 export type Priority = 'critical' | 'high' | 'medium' | 'low';
 
+export type RequirementLevel = 'L1' | 'L2' | 'L3' | 'L4' | 'L5';
+
 export type RequirementStatus =
   | 'draft' | 'under_review' | 'approved' | 'baselined'
   | 'implemented' | 'verified' | 'validated' | 'deferred' | 'deleted';
@@ -148,4 +151,27 @@ export const TYPE_PREFIXES: Record<RequirementType, string> = {
   environmental: 'ER', constraint: 'CR', safety: 'SAF',
   security: 'SR', reliability: 'RL', maintainability: 'MR',
   derived: 'DR',
+};
+
+export const LEVEL_LABELS: Record<RequirementLevel, string> = {
+  L1: 'L1 — System',
+  L2: 'L2 — Subsystem',
+  L3: 'L3 — Component',
+  L4: 'L4 — Sub-component',
+  L5: 'L5 — Detail',
+};
+
+export const LEVEL_COLORS: Record<RequirementLevel, string> = {
+  L1: '#EF4444',
+  L2: '#F59E0B',
+  L3: '#3B82F6',
+  L4: '#8B5CF6',
+  L5: '#6B7280',
+};
+
+export const PRIORITY_COLORS: Record<Priority, string> = {
+  critical: '#EF4444',
+  high: '#F59E0B',
+  medium: '#3B82F6',
+  low: '#6B7280',
 };

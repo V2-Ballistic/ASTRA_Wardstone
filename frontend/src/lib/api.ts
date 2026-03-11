@@ -58,6 +58,13 @@ export const requirementsAPI = {
     api.post(`/requirements/?project_id=${projectId}`, data),
   update: (id: number, data: any) => api.patch(`/requirements/${id}`, data),
   delete: (id: number) => api.delete(`/requirements/${id}`),
+  restore: (id: number) => api.post(`/requirements/${id}/restore`),
+  clone: (id: number) => api.post(`/requirements/${id}/clone`),
+  getHistory: (id: number) => api.get(`/requirements/${id}/history`),
+  getComments: (id: number) => api.get(`/requirements/${id}/comments`),
+  postComment: (id: number, content: string, parentId?: number) =>
+    api.post(`/requirements/${id}/comments`, { content, parent_id: parentId || null }),
+  getTransitions: (status: string) => api.get(`/requirements/status-transitions/${status}`),
   qualityCheck: (statement: string, title?: string, rationale?: string) =>
     api.post('/requirements/quality-check', null, { params: { statement, title, rationale } }),
 };
@@ -79,4 +86,29 @@ export const traceabilityAPI = {
     api.get('/traceability/matrix', { params: { project_id: projectId } }),
   getCoverage: (projectId: number) =>
     api.get('/traceability/coverage', { params: { project_id: projectId } }),
+  getGraph: (projectId: number) =>
+    api.get('/traceability/graph', { params: { project_id: projectId } }),
+};
+
+// ── Dashboard ──
+export const dashboardAPI = {
+  getStats: (projectId: number) =>
+    api.get('/dashboard/stats', { params: { project_id: projectId } }),
+};
+
+// ── Baselines ──
+export const baselinesAPI = {
+  list: (projectId: number) =>
+    api.get('/baselines/', { params: { project_id: projectId } }),
+  get: (id: number) => api.get(`/baselines/${id}`),
+  create: (data: { name: string; description?: string; project_id: number }) =>
+    api.post('/baselines/', data),
+  compare: (a: number, b: number) =>
+    api.get(`/baselines/compare/${a}/${b}`),
+  delete: (id: number) => api.delete(`/baselines/${id}`),
+};
+
+// ── Dev (remove in production) ──
+export const devAPI = {
+  seed: () => api.post('/dev/seed'),
 };

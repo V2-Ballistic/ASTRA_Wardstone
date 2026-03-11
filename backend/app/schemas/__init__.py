@@ -67,6 +67,7 @@ class RequirementCreate(BaseModel):
     rationale: Optional[str] = None
     req_type: str = "functional"
     priority: str = "medium"
+    level: str = "L1"
     parent_id: Optional[int] = None
 
 class RequirementUpdate(BaseModel):
@@ -76,6 +77,7 @@ class RequirementUpdate(BaseModel):
     req_type: Optional[str] = None
     priority: Optional[str] = None
     status: Optional[str] = None
+    level: Optional[str] = None
     parent_id: Optional[int] = None
 
 class RequirementResponse(BaseModel):
@@ -87,6 +89,7 @@ class RequirementResponse(BaseModel):
     req_type: str
     priority: str
     status: str
+    level: str
     version: int
     quality_score: float
     project_id: int

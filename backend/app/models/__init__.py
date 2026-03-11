@@ -41,6 +41,14 @@ class RequirementPriority(str, enum.Enum):
     LOW = "low"
 
 
+class RequirementLevel(str, enum.Enum):
+    L1 = "L1"
+    L2 = "L2"
+    L3 = "L3"
+    L4 = "L4"
+    L5 = "L5"
+
+
 class RequirementStatus(str, enum.Enum):
     DRAFT = "draft"
     UNDER_REVIEW = "under_review"
@@ -148,6 +156,7 @@ class Requirement(Base):
     quality_score = Column(Float, default=0.0)
 
     # Hierarchy
+    level = Column(SQLEnum(RequirementLevel), nullable=False, default=RequirementLevel.L1)
     project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
     parent_id = Column(Integer, ForeignKey("requirements.id"), nullable=True)
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
@@ -251,16 +260,42 @@ class Baseline(Base):
     __tablename__ = "baselines"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(255), nullable=False)  # e.g., "v1.0 Release Baseline"
+    name = Column(String(255), nullable=False)  # e.g., "PDR Baseline v1.0"
     description = Column(Text)
     project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
-    snapshot = Column(JSON, nullable=False)  # Full snapshot of all req versions
+    requirements_count = Column(Integer, default=0)
     created_by_id = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime, default=datetime.utcnow)
 
     # Relationships
     project = relationship("Project", back_populates="baselines")
     created_by = relationship("User")
+    requirements = relationship("BaselineRequirement", back_populates="baseline", cascade="all, delete-orphan")
+
+
+class BaselineRequirement(Base):
+    __tablename__ = "baseline_requirements"
+
+    id = Column(Integer, primary_key=True, index=True)
+    baseline_id = Column(Integer, ForeignKey("baselines.id"), nullable=False)
+    requirement_id = Column(Integer, ForeignKey("requirements.id"), nullable=False)
+
+    # Frozen field snapshots at time of baseline
+    req_id_snapshot = Column(String(50), nullable=False)
+    title_snapshot = Column(String(500), nullable=False)
+    statement_snapshot = Column(Text)
+    rationale_snapshot = Column(Text)
+    status_snapshot = Column(String(30), nullable=False)
+    level_snapshot = Column(String(5), nullable=False)
+    type_snapshot = Column(String(50))
+    priority_snapshot = Column(String(20))
+    quality_score_snapshot = Column(Float, default=0.0)
+    version_snapshot = Column(Integer, default=1)
+    parent_id_snapshot = Column(Integer, nullable=True)
+
+    # Relationships
+    baseline = relationship("Baseline", back_populates="requirements")
+    requirement = relationship("Requirement")
 
 
 class Comment(Base):
