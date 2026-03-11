@@ -1,265 +1,428 @@
+/**
+ * ASTRA — Project Dashboard
+ * ============================
+ * File: frontend/src/app/page.tsx
+ *
+ * Landing page showing all projects with stats summaries.
+ * Users can click into a project or create a new one.
+ */
+
 'use client';
 
-import { useState, useEffect } from 'react';
-import { FileText, Network, CheckCircle, AlertTriangle, Loader2, RefreshCw } from 'lucide-react';
-import { dashboardAPI, traceabilityAPI, projectsAPI } from '@/lib/api';
+import { useState, useEffect, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
+import {
+  Loader2, RefreshCw, Plus, FolderOpen, FileText, CheckCircle,
+  AlertTriangle, Network, ChevronRight, Rocket, Clock, Shield,
+  BarChart3, Sparkles,
+} from 'lucide-react';
+import { projectsAPI, dashboardAPI, traceabilityAPI, requirementsAPI } from '@/lib/api';
 
-interface DashboardStats {
-  total_requirements: number;
-  by_status: Record<string, number>;
-  by_type: Record<string, number>;
-  verified_count: number;
-  avg_quality_score: number;
-  total_trace_links: number;
-  orphan_count: number;
-  recent_activity: Array<{
-    req_id: string;
-    field: string;
-    description: string;
-    user: string;
-    timestamp: string | null;
-  }>;
-}
-
-interface CoverageStats {
-  total: number;
-  with_source: number;
-  with_source_pct: number;
-  with_tests: number;
-  with_tests_pct: number;
-  orphans: number;
-  orphan_pct: number;
-}
+/* ── Types ── */
 
 interface Project {
   id: number;
   code: string;
   name: string;
+  description?: string;
+  status: string;
+  created_at: string;
+  updated_at?: string;
 }
 
-const STATUS_DISPLAY: Record<string, { label: string; color: string }> = {
-  draft: { label: 'Draft', color: '#F59E0B' },
-  under_review: { label: 'Under Review', color: '#A78BFA' },
-  approved: { label: 'Approved', color: '#3B82F6' },
-  baselined: { label: 'Baselined', color: '#10B981' },
-  implemented: { label: 'Implemented', color: '#06B6D4' },
-  verified: { label: 'Verified', color: '#34D399' },
-  validated: { label: 'Validated', color: '#22D3EE' },
-  deferred: { label: 'Deferred', color: '#6B7280' },
-  deleted: { label: 'Deleted', color: '#EF4444' },
+interface ProjectWithStats extends Project {
+  stats?: {
+    total_requirements: number;
+    verified_count: number;
+    avg_quality_score: number;
+    orphan_count: number;
+    by_status: Record<string, number>;
+  };
+  coverage?: {
+    forward_coverage: number;
+    backward_coverage: number;
+    verification_coverage: number;
+  };
+  loading?: boolean;
+}
+
+/* ── Status badge helper ── */
+
+const PROJECT_STATUS: Record<string, { label: string; color: string; bg: string }> = {
+  active:   { label: 'Active',   color: '#10B981', bg: '#10B98118' },
+  archived: { label: 'Archived', color: '#6B7280', bg: '#6B728018' },
+  draft:    { label: 'Draft',    color: '#F59E0B', bg: '#F59E0B18' },
+  on_hold:  { label: 'On Hold',  color: '#EF4444', bg: '#EF444418' },
 };
 
-function StatCard({ label, value, sub, color, icon: Icon }: any) {
+/* ── Micro-stat pill ── */
+
+function MicroStat({ icon: Icon, value, label, color = '#94A3B8' }: {
+  icon: any; value: string | number; label: string; color?: string;
+}) {
   return (
-    <div className="rounded-xl border border-astra-border bg-astra-surface p-5">
-      <div className="flex items-start justify-between">
-        <div>
-          <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">{label}</div>
-          <div className="mt-2 text-3xl font-bold" style={{ color: color || '#F1F5F9' }}>{value}</div>
-          {sub && <div className="mt-1.5 text-xs text-slate-500">{sub}</div>}
-        </div>
-        {Icon && <Icon className="h-5 w-5 opacity-40" style={{ color }} />}
-      </div>
+    <div className="flex items-center gap-1.5">
+      <Icon className="h-3 w-3" style={{ color }} />
+      <span className="text-xs font-bold" style={{ color }}>{value}</span>
+      <span className="text-[10px] text-slate-600">{label}</span>
     </div>
   );
 }
 
-function ActivityItem({ action, user, time, color }: any) {
+/* ── Coverage mini-bar ── */
+
+function CoverageBar({ label, pct, color }: { label: string; pct: number; color: string }) {
   return (
-    <div className="flex items-center gap-3 border-b border-astra-border py-3 last:border-0">
-      <div className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: color }} />
-      <div className="flex-1">
-        <div className="text-[13px] text-slate-200">{action}</div>
-        <div className="text-[11px] text-slate-500">{user}</div>
+    <div className="flex items-center gap-2">
+      <span className="w-16 text-[10px] text-slate-500">{label}</span>
+      <div className="h-1.5 flex-1 rounded-full bg-slate-800">
+        <div
+          className="h-full rounded-full transition-all duration-700"
+          style={{ width: `${Math.min(pct, 100)}%`, background: color }}
+        />
       </div>
-      <div className="whitespace-nowrap text-[11px] text-slate-500">{time}</div>
+      <span className="w-10 text-right text-[10px] font-semibold" style={{ color }}>
+        {pct.toFixed(0)}%
+      </span>
     </div>
   );
 }
 
-function formatTimeAgo(timestamp: string | null): string {
-  if (!timestamp) return '';
-  const diff = Date.now() - new Date(timestamp).getTime();
-  const minutes = Math.floor(diff / 60000);
-  if (minutes < 1) return 'just now';
-  if (minutes < 60) return `${minutes} min ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} hr ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
+/* ── Timestamp formatter ── */
+
+function formatDate(iso: string | undefined | null): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-function activityColor(field: string): string {
-  if (field === 'created') return '#3B82F6';
-  if (field === 'status') return '#10B981';
-  if (field === 'quality_score') return '#F59E0B';
-  return '#8B5CF6';
+function timeAgo(iso: string | undefined | null): string {
+  if (!iso) return '';
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 30) return `${days}d ago`;
+  return formatDate(iso);
 }
+
+/* ══════════════════════════════════════
+   Main Dashboard Page
+   ══════════════════════════════════════ */
 
 export default function DashboardPage() {
-  const [stats, setStats] = useState<DashboardStats | null>(null);
-  const [coverage, setCoverage] = useState<CoverageStats | null>(null);
-  const [project, setProject] = useState<Project | null>(null);
+  const router = useRouter();
+  const [projects, setProjects] = useState<ProjectWithStats[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  const fetchData = async () => {
+  /* ── Fetch all projects, then enrich with stats ── */
+  const fetchProjects = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
-      // Get first project
-      const projRes = await projectsAPI.list();
-      const projects = projRes.data;
-      if (!projects.length) {
-        setError('No projects found. Seed the database first via POST /api/v1/dev/seed');
-        setLoading(false);
-        return;
-      }
-      const proj = projects[0];
-      setProject(proj);
+      const res = await projectsAPI.list();
+      const raw: Project[] = res.data;
 
-      // Fetch stats and coverage in parallel
-      const [statsRes, coverageRes] = await Promise.all([
-        dashboardAPI.getStats(proj.id),
-        traceabilityAPI.getCoverage(proj.id).catch(() => ({ data: null })),
-      ]);
+      // Set projects immediately (show cards fast)
+      const initial: ProjectWithStats[] = raw.map((p) => ({ ...p, loading: true }));
+      setProjects(initial);
+      setLoading(false);
 
-      setStats(statsRes.data);
-      setCoverage(coverageRes.data);
+      // Enrich each project with stats in parallel
+      const enriched = await Promise.all(
+        raw.map(async (proj) => {
+          try {
+            const [statsRes, coverageRes] = await Promise.all([
+              dashboardAPI.getStats(proj.id).catch(() => null),
+              traceabilityAPI.getCoverage(proj.id).catch(() => null),
+            ]);
+            return {
+              ...proj,
+              stats: statsRes?.data || undefined,
+              coverage: coverageRes?.data || undefined,
+              loading: false,
+            };
+          } catch {
+            return { ...proj, loading: false };
+          }
+        })
+      );
+      setProjects(enriched);
     } catch (err: any) {
-      setError(err.response?.data?.detail || 'Failed to load dashboard data');
-    } finally {
+      setError(err.response?.data?.detail || 'Failed to load projects');
       setLoading(false);
     }
-  };
-
-  useEffect(() => {
-    fetchData();
   }, []);
 
+  useEffect(() => {
+    fetchProjects();
+  }, [fetchProjects]);
+
+  /* ── Loading state ── */
   if (loading) {
     return (
       <div className="flex min-h-[60vh] items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
+        <div className="flex flex-col items-center gap-3">
+          <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
+          <span className="text-sm text-slate-500">Loading projects…</span>
+        </div>
       </div>
     );
   }
 
-  if (error) {
+  /* ── Error state ── */
+  if (error && projects.length === 0) {
     return (
       <div className="flex min-h-[60vh] flex-col items-center justify-center gap-4">
         <div className="rounded-xl border border-red-500/20 bg-red-500/10 px-6 py-4 text-sm text-red-400">
           {error}
         </div>
-        <button onClick={fetchData}
-          className="flex items-center gap-2 rounded-lg bg-blue-500 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-600">
+        <button
+          onClick={fetchProjects}
+          className="flex items-center gap-2 rounded-lg bg-blue-500 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-600 transition"
+        >
           <RefreshCw className="h-4 w-4" /> Retry
         </button>
       </div>
     );
   }
 
-  if (!stats || !project) return null;
-
-  const verifiedPct = stats.total_requirements > 0
-    ? Math.round((stats.verified_count / stats.total_requirements) * 100)
+  /* ── Aggregate quick-stats (across all projects) ── */
+  const totalReqs = projects.reduce((sum, p) => sum + (p.stats?.total_requirements || 0), 0);
+  const totalOrphans = projects.reduce((sum, p) => sum + (p.stats?.orphan_count || 0), 0);
+  const totalVerified = projects.reduce((sum, p) => sum + (p.stats?.verified_count || 0), 0);
+  const avgQuality = projects.length > 0
+    ? projects.reduce((sum, p) => sum + (p.stats?.avg_quality_score || 0), 0) / projects.filter(p => p.stats).length
     : 0;
-
-  const statusEntries = Object.entries(stats.by_status).map(([key, count]) => ({
-    status: STATUS_DISPLAY[key]?.label || key,
-    count,
-    pct: stats.total_requirements > 0 ? Math.round((count / stats.total_requirements) * 100) : 0,
-    color: STATUS_DISPLAY[key]?.color || '#6B7280',
-  }));
 
   return (
     <div>
-      <div className="mb-6 flex items-center justify-between">
+      {/* ── Header ── */}
+      <div className="mb-8 flex items-start justify-between">
         <div>
-          <h1 className="text-xl font-bold tracking-tight">Project Dashboard</h1>
-          <p className="mt-1 text-sm text-slate-500">{project.code} · ASTRA Systems Engineering Platform</p>
+          <h1 className="text-2xl font-bold tracking-tight text-slate-100">
+            Projects
+          </h1>
+          <p className="mt-1 text-sm text-slate-500">
+            ASTRA Systems Engineering Platform
+          </p>
         </div>
-        <div className="flex gap-2">
-          <button onClick={fetchData} className="rounded-full border border-astra-border p-2 text-slate-400 transition hover:text-slate-200">
-            <RefreshCw className="h-3.5 w-3.5" />
+        <div className="flex items-center gap-3">
+          <button
+            onClick={fetchProjects}
+            className="rounded-full border border-astra-border p-2.5 text-slate-400 transition hover:border-blue-500/30 hover:text-slate-200"
+            aria-label="Refresh projects"
+          >
+            <RefreshCw className="h-4 w-4" />
           </button>
-          <span className="rounded-full bg-violet-500/15 px-3 py-1 text-[11px] font-semibold text-violet-400">
-            {stats.total_requirements} Requirements
-          </span>
+          <button
+            onClick={() => router.push('/projects/new')}
+            className="flex items-center gap-2 rounded-lg bg-gradient-to-r from-blue-500 to-violet-500 px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-blue-500/20 transition hover:shadow-blue-500/40 hover:brightness-110"
+          >
+            <Plus className="h-4 w-4" />
+            Create New Project
+          </button>
         </div>
       </div>
 
-      {/* Stats */}
-      <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="Total Requirements" value={stats.total_requirements} sub={`${project.code} Project`} icon={FileText} />
-        <StatCard label="Verification" value={`${verifiedPct}%`} color="#F59E0B" sub={`${stats.verified_count} of ${stats.total_requirements} verified`} icon={CheckCircle} />
-        <StatCard label="Quality Score" value={stats.avg_quality_score} color="#10B981" sub="Average across all reqs" />
-        <StatCard label="Open Issues" value={stats.orphan_count} color="#EF4444" sub="Orphans (no trace links)" icon={AlertTriangle} />
-      </div>
-
-      {/* Main content grid */}
-      <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
-        {/* Activity Feed */}
-        <div className="rounded-xl border border-astra-border bg-astra-surface p-5 xl:col-span-2">
-          <h2 className="mb-4 text-sm font-bold text-slate-200">Recent Activity</h2>
-          {stats.recent_activity.length === 0 ? (
-            <div className="py-8 text-center text-sm text-slate-500">No activity yet</div>
-          ) : (
-            stats.recent_activity.slice(0, 8).map((a, i) => (
-              <ActivityItem
-                key={i}
-                action={a.description}
-                user={a.user}
-                time={formatTimeAgo(a.timestamp)}
-                color={activityColor(a.field)}
-              />
-            ))
-          )}
-        </div>
-
-        {/* By Status */}
-        <div className="rounded-xl border border-astra-border bg-astra-surface p-5">
-          <h2 className="mb-4 text-sm font-bold text-slate-200">By Status</h2>
-          {statusEntries.map((s) => (
-            <div key={s.status} className="mb-3">
-              <div className="mb-1 flex justify-between">
-                <span className="text-xs text-slate-400">{s.status}</span>
-                <span className="text-xs font-semibold text-slate-400">{s.count}</span>
-              </div>
-              <div className="h-1.5 overflow-hidden rounded-full bg-astra-surface-alt">
-                <div className="h-full rounded-full transition-all duration-700" style={{ width: `${s.pct}%`, background: s.color }} />
-              </div>
+      {/* ── Aggregate Stats Row ── */}
+      {projects.some((p) => p.stats) && (
+        <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="rounded-xl border border-astra-border bg-astra-surface p-4">
+            <div className="flex items-center gap-2 text-slate-500">
+              <FolderOpen className="h-4 w-4" />
+              <span className="text-[10px] font-semibold uppercase tracking-widest">Projects</span>
             </div>
-          ))}
+            <div className="mt-2 text-2xl font-bold text-slate-100">{projects.length}</div>
+          </div>
+          <div className="rounded-xl border border-astra-border bg-astra-surface p-4">
+            <div className="flex items-center gap-2 text-slate-500">
+              <FileText className="h-4 w-4" />
+              <span className="text-[10px] font-semibold uppercase tracking-widest">Requirements</span>
+            </div>
+            <div className="mt-2 text-2xl font-bold text-blue-400">{totalReqs}</div>
+          </div>
+          <div className="rounded-xl border border-astra-border bg-astra-surface p-4">
+            <div className="flex items-center gap-2 text-slate-500">
+              <CheckCircle className="h-4 w-4" />
+              <span className="text-[10px] font-semibold uppercase tracking-widest">Verified</span>
+            </div>
+            <div className="mt-2 text-2xl font-bold text-emerald-400">{totalVerified}</div>
+          </div>
+          <div className="rounded-xl border border-astra-border bg-astra-surface p-4">
+            <div className="flex items-center gap-2 text-slate-500">
+              <BarChart3 className="h-4 w-4" />
+              <span className="text-[10px] font-semibold uppercase tracking-widest">Avg Quality</span>
+            </div>
+            <div className="mt-2 text-2xl font-bold text-amber-400">
+              {avgQuality ? avgQuality.toFixed(1) : '—'}
+            </div>
+          </div>
         </div>
-      </div>
+      )}
 
-      {/* Traceability Coverage */}
-      {coverage && coverage.total > 0 && (
-        <div className="mt-6 rounded-xl border border-astra-border bg-astra-surface p-5">
-          <h2 className="mb-4 text-sm font-bold text-slate-200">Traceability Coverage</h2>
-          <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-            {[
-              { label: 'With Source Artifacts', value: coverage.with_source_pct, color: '#10B981' },
-              { label: 'With Test Cases', value: coverage.with_tests_pct, color: '#F59E0B' },
-              { label: 'Orphans', value: coverage.orphan_pct, color: '#EF4444' },
-              { label: 'Trace Links Total', value: stats.total_trace_links, color: '#3B82F6', raw: true },
-            ].map((m) => (
-              <div key={m.label}>
-                <div className="mb-1 flex justify-between">
-                  <span className="text-xs text-slate-500">{m.label}</span>
-                  <span className="text-xs font-bold" style={{ color: m.color }}>
-                    {m.raw ? m.value : `${m.value}%`}
-                  </span>
+      {/* ── Empty State ── */}
+      {projects.length === 0 && (
+        <div className="flex min-h-[50vh] flex-col items-center justify-center gap-5">
+          <div className="flex h-20 w-20 items-center justify-center rounded-2xl border border-astra-border bg-astra-surface">
+            <Rocket className="h-10 w-10 text-blue-500/60" />
+          </div>
+          <div className="text-center">
+            <h2 className="text-lg font-bold text-slate-200">No Projects Yet</h2>
+            <p className="mt-1 max-w-sm text-sm text-slate-500">
+              Create your first project to start tracking requirements,
+              building traceability, and managing your systems engineering workflow.
+            </p>
+          </div>
+          <button
+            onClick={() => router.push('/projects/new')}
+            className="flex items-center gap-2 rounded-lg bg-gradient-to-r from-blue-500 to-violet-500 px-6 py-3 text-sm font-semibold text-white shadow-lg shadow-blue-500/20 transition hover:shadow-blue-500/40 hover:brightness-110"
+          >
+            <Plus className="h-4 w-4" />
+            Create New Project
+          </button>
+        </div>
+      )}
+
+      {/* ── Project Cards ── */}
+      {projects.length > 0 && (
+        <div className="grid gap-4 lg:grid-cols-2">
+          {projects.map((proj) => {
+            const status = PROJECT_STATUS[proj.status] || PROJECT_STATUS.active;
+            const hasStats = !!proj.stats;
+            const verifiedPct =
+              hasStats && proj.stats!.total_requirements > 0
+                ? Math.round((proj.stats!.verified_count / proj.stats!.total_requirements) * 100)
+                : 0;
+
+            return (
+              <button
+                key={proj.id}
+                onClick={() => router.push(`/requirements?project=${proj.id}`)}
+                className="group relative w-full rounded-xl border border-astra-border bg-astra-surface p-5 text-left transition-all hover:border-blue-500/30 hover:shadow-lg hover:shadow-blue-500/5"
+              >
+                {/* Top row: code badge, name, status, chevron */}
+                <div className="flex items-start gap-3">
+                  {/* Project icon */}
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-blue-500/20 to-violet-500/20 text-sm font-extrabold text-blue-400 ring-1 ring-blue-500/20">
+                    {proj.code.slice(0, 2)}
+                  </div>
+
+                  {/* Name + description */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-sm font-bold text-slate-100 group-hover:text-blue-400 transition truncate">
+                        {proj.name}
+                      </h3>
+                      <span
+                        className="shrink-0 rounded-full px-2 py-0.5 text-[9px] font-bold"
+                        style={{ background: status.bg, color: status.color }}
+                      >
+                        {status.label}
+                      </span>
+                    </div>
+                    <p className="mt-0.5 text-xs text-slate-500 font-mono">{proj.code}</p>
+                    {proj.description && (
+                      <p className="mt-1 text-xs text-slate-500 line-clamp-2 leading-relaxed">
+                        {proj.description}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Arrow */}
+                  <ChevronRight className="h-4 w-4 shrink-0 text-slate-600 transition group-hover:translate-x-0.5 group-hover:text-blue-400" />
                 </div>
-                {!m.raw && (
-                  <div className="h-2 overflow-hidden rounded-full bg-astra-surface-alt">
-                    <div className="h-full rounded-full transition-all duration-700" style={{ width: `${m.value}%`, background: m.color }} />
+
+                {/* Stats row */}
+                {proj.loading ? (
+                  <div className="mt-4 flex items-center gap-2">
+                    <Loader2 className="h-3 w-3 animate-spin text-slate-600" />
+                    <span className="text-[10px] text-slate-600">Loading stats…</span>
+                  </div>
+                ) : hasStats ? (
+                  <div className="mt-4 space-y-3">
+                    {/* Micro stats */}
+                    <div className="flex flex-wrap items-center gap-x-5 gap-y-1">
+                      <MicroStat
+                        icon={FileText}
+                        value={proj.stats!.total_requirements}
+                        label="requirements"
+                        color="#3B82F6"
+                      />
+                      <MicroStat
+                        icon={CheckCircle}
+                        value={`${verifiedPct}%`}
+                        label="verified"
+                        color="#10B981"
+                      />
+                      <MicroStat
+                        icon={Sparkles}
+                        value={proj.stats!.avg_quality_score?.toFixed(1) || '—'}
+                        label="quality"
+                        color="#F59E0B"
+                      />
+                      {proj.stats!.orphan_count > 0 && (
+                        <MicroStat
+                          icon={AlertTriangle}
+                          value={proj.stats!.orphan_count}
+                          label="orphans"
+                          color="#EF4444"
+                        />
+                      )}
+                    </div>
+
+                    {/* Coverage bars */}
+                    {proj.coverage && (
+                      <div className="space-y-1.5">
+                        <CoverageBar label="Forward" pct={proj.coverage.forward_coverage} color="#3B82F6" />
+                        <CoverageBar label="Backward" pct={proj.coverage.backward_coverage} color="#8B5CF6" />
+                        <CoverageBar label="V&V" pct={proj.coverage.verification_coverage} color="#10B981" />
+                      </div>
+                    )}
+
+                    {/* Status breakdown chips */}
+                    {Object.keys(proj.stats!.by_status).length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {Object.entries(proj.stats!.by_status).map(([key, count]) => {
+                          if (count === 0) return null;
+                          return (
+                            <span
+                              key={key}
+                              className="rounded-full px-2 py-0.5 text-[9px] font-semibold text-slate-400"
+                              style={{ background: 'rgba(100,116,139,0.12)' }}
+                            >
+                              {key.replace('_', ' ')} {count}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="mt-4 text-[10px] text-slate-600 italic">
+                    No requirements data yet
                   </div>
                 )}
-              </div>
-            ))}
-          </div>
+
+                {/* Footer: dates */}
+                <div className="mt-3 flex items-center gap-4 border-t border-astra-border/50 pt-3">
+                  <div className="flex items-center gap-1.5 text-[10px] text-slate-600">
+                    <Clock className="h-3 w-3" />
+                    Created {formatDate(proj.created_at)}
+                  </div>
+                  {proj.updated_at && (
+                    <div className="text-[10px] text-slate-600">
+                      Updated {timeAgo(proj.updated_at)}
+                    </div>
+                  )}
+                </div>
+              </button>
+            );
+          })}
         </div>
       )}
     </div>
