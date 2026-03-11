@@ -1,7 +1,7 @@
 """add_embedding_and_suggestion_tables
 
 Revision ID: 0005
-Revises: 0004
+Revises: 0002
 Create Date: 2025-06-01 00:00:00.000000
 
 Adds tables for AI embedding-based semantic analysis:
@@ -15,18 +15,12 @@ from sqlalchemy.dialects.postgresql import JSON
 
 # revision identifiers
 revision = "0005"
-down_revision = None  # adjust to your latest revision
+down_revision = "0002"
 branch_labels = None
 depends_on = None
 
 
 def upgrade() -> None:
-    # ── Try to enable pgvector extension (optional) ──
-    try:
-        op.execute("CREATE EXTENSION IF NOT EXISTS vector;")
-    except Exception:
-        pass  # pgvector not installed — we'll use JSON storage
-
     # ── requirement_embeddings ──
     op.create_table(
         "requirement_embeddings",

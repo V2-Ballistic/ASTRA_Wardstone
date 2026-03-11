@@ -1,11 +1,16 @@
 """
-ASTRA — Main Application (AI-Enhanced)
-=========================================
-File: backend/app/main.py   ← REPLACES existing
+ASTRA — Main Application (Complete)
+======================================
+File: backend/app/main.py
+Path: C:\\Users\\Mason\\Documents\\ASTRA\\backend\\app\\main.py
 
-Adds:
-  - AIAnalysisCache + AIFeedback model imports
-  - All prior integrations preserved via optional imports
+All routers and models registered, including:
+  - Core: auth, projects, requirements, traceability, artifacts, dashboard, baselines
+  - Phase 1 add-ons: admin, audit, workflows, reports, integrations
+  - AI quality: (built into requirements router)
+  - AI semantic: ai router (embeddings, duplicates, trace suggestions)
+  - Impact analysis: impact router
+  - AI writer: ai_writer router
 """
 
 import logging
@@ -19,14 +24,14 @@ from app.config import settings
 if hasattr(settings, "enforce_production_guards"):
     settings.enforce_production_guards()
 
-# ── Routers ──
+# ── Core Routers (always loaded) ──
 from app.routers.auth import router as auth_router
 from app.routers.requirements import router as requirements_router
 from app.routers.projects import projects_router, traceability_router, artifacts_router
 from app.routers.dashboard import router as dashboard_router
 from app.routers.baselines import router as baselines_router
 
-# Conditional routers
+# ── Optional Routers (loaded if the module exists) ──
 _optional_routers: list = []
 for _mod, _attr in [
     ("app.routers.admin", "router"),
@@ -34,6 +39,9 @@ for _mod, _attr in [
     ("app.routers.workflows", "router"),
     ("app.routers.reports", "router"),
     ("app.routers.integrations", "router"),
+    ("app.routers.ai", "router"),            # Prompt 1: semantic analysis
+    ("app.routers.impact", "router"),        # Prompt 2: impact analysis
+    ("app.routers.ai_writer", "router"),     # Prompt 3: writing assistant
 ]:
     try:
         _m = __import__(_mod, fromlist=[_attr])
@@ -41,6 +49,7 @@ for _mod, _attr in [
     except (ImportError, AttributeError):
         pass
 
+# ── Dev Router (non-production only) ──
 dev_router = None
 is_prod = getattr(settings, "is_production", False) or settings.ENVIRONMENT == "production"
 if not is_prod:
@@ -49,7 +58,7 @@ if not is_prod:
     except ImportError:
         pass
 
-# ── Import all models ──
+# ── Import ALL models so SQLAlchemy metadata is populated ──
 from app.models import *  # noqa: F401,F403
 for _model_path in [
     "app.models.project_member",
@@ -58,14 +67,16 @@ for _model_path in [
     "app.models.security_models",
     "app.models.workflow",
     "app.models.integration",
-    "app.models.ai_models",             # ← NEW
+    "app.models.ai_models",
+    "app.models.embedding",          # Prompt 1: RequirementEmbedding, AISuggestion
+    "app.models.impact",             # Prompt 2: ImpactReport
 ]:
     try:
         __import__(_model_path)
     except ImportError:
         pass
 
-# ── Optional middleware ──
+# ── Optional Middleware ──
 _middlewares: list = []
 for _mw_path, _mw_cls in [
     ("app.middleware.security_headers", "SecurityHeadersMiddleware"),
@@ -78,7 +89,7 @@ for _mw_path, _mw_cls in [
     except (ImportError, AttributeError):
         pass
 
-# Alembic check
+# ── Alembic version check ──
 def _check_alembic_head() -> None:
     try:
         from alembic.config import Config
@@ -103,7 +114,7 @@ def _check_alembic_head() -> None:
 
 logger = logging.getLogger("astra")
 
-# Log AI status at startup
+# ── Log AI status at startup ──
 from app.services.ai.llm_client import is_ai_available, AI_PROVIDER
 
 
@@ -125,7 +136,7 @@ app = FastAPI(
     redoc_url=None if is_prod else "/redoc",
 )
 
-# Middleware
+# ── Middleware ──
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -139,7 +150,7 @@ for _name, _cls in _middlewares:
     else:
         app.add_middleware(_cls)
 
-# Mount routers
+# ── Mount Routers ──
 API_PREFIX = "/api/v1"
 app.include_router(auth_router, prefix=API_PREFIX)
 app.include_router(projects_router, prefix=API_PREFIX)

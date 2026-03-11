@@ -1,17 +1,8 @@
 """
 ASTRA — Alembic Environment Configuration
 ============================================
-File: backend/alembic/env.py   ← NEW
-
-Configures Alembic to:
-  - Pull DATABASE_URL from the app's Settings (supports both str and SecretStr)
-  - Import ALL model modules so autogenerate sees every table
-  - Support online (connected) and offline (SQL-script) migration modes
-  - Render enums correctly for PostgreSQL
-
-Run migrations from the backend/ directory:
-  alembic upgrade head
-  alembic revision --autogenerate -m "description"
+File: backend/alembic/env.py
+Path: C:\\Users\\Mason\\Documents\\ASTRA\\backend\\alembic\\env.py
 """
 
 import os
@@ -38,11 +29,15 @@ from app.models import (                        # noqa: F401
 
 # Phase-1 addon models (import silently if they exist)
 _optional_models = [
-    "app.models.project_member",       # RBAC
-    "app.models.audit_log",            # Tamper-evident audit
-    "app.models.auth_models",          # MFA / refresh tokens
-    "app.models.security_models",      # Account lockout
-    "app.models.workflow",             # Approval workflows + e-signatures
+    "app.models.project_member",
+    "app.models.audit_log",
+    "app.models.auth_models",
+    "app.models.security_models",
+    "app.models.workflow",
+    "app.models.integration",
+    "app.models.ai_models",
+    "app.models.embedding",          # Prompt 1: RequirementEmbedding, AISuggestion
+    "app.models.impact",             # Prompt 2: ImpactReport
 ]
 for _mod in _optional_models:
     try:
@@ -69,12 +64,6 @@ target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
-    """
-    Generate SQL script without connecting to the database.
-    Useful for generating migration SQL to review before applying.
-
-    Usage: alembic upgrade head --sql
-    """
     url = config.get_main_option("sqlalchemy.url")
     context.configure(
         url=url,
@@ -90,16 +79,11 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    """
-    Connect to the database and run migrations directly.
-    This is the normal operational mode.
-    """
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
-
     with connectable.connect() as connection:
         context.configure(
             connection=connection,

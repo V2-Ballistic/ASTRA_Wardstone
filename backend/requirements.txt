@@ -1,3 +1,8 @@
+# ══════════════════════════════════════
+#  ASTRA — Python Dependencies
+# ══════════════════════════════════════
+
+# ── Core ──
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
 sqlalchemy==2.0.36
@@ -5,18 +10,34 @@ psycopg2-binary==2.9.10
 alembic==1.14.1
 pydantic[email]==2.10.5
 pydantic-settings==2.7.1
+
+# ── Auth ──
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 bcrypt==4.0.1
 python-multipart==0.0.19
-python-dotenv==1.0.1
-httpx==0.28.1
-# ── Multi-provider auth (Task 3) ──
-python3-saml==1.16.0
+
+# ── Multi-provider auth ──
 authlib==1.3.2
 pyotp==2.9.0
 cryptography==43.0.3
 qrcode[pil]==8.0
+
+# ── HTTP / Env ──
+python-dotenv==1.0.1
+httpx==0.28.1
+
+# ── Reports ──
 openpyxl>=3.1.0
 reportlab>=4.0
 python-docx>=1.1.0
+
+# ── AI Providers (optional — only the one you use needs to be installed) ──
+openai>=1.0.0
+anthropic>=0.34.0
+
+# ── SAML (optional — uncomment if using SAML SSO) ──
+# python3-saml==1.16.0
+# NOTE: python3-saml requires xmlsec1 system libraries.
+# If you need SAML, uncomment this AND add to Dockerfile:
+#   apt-get install -y pkg-config libxml2-dev libxmlsec1-dev libxmlsec1-openssl

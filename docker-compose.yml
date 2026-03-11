@@ -1,11 +1,7 @@
 # ══════════════════════════════════════════════════════
-#  ASTRA — Docker Compose (Development, Alembic-Managed)
-#  File: docker-compose.yml   ← REPLACES existing
-#
-#  Change from original:
-#    Backend now runs 'alembic upgrade head' before starting uvicorn.
-#    This ensures the database schema is always at the latest migration
-#    when the container starts.
+#  ASTRA — Docker Compose (Development)
+#  File: docker-compose.yml
+#  Path: C:\Users\Mason\Documents\ASTRA\docker-compose.yml
 # ══════════════════════════════════════════════════════
 
 version: "3.9"
@@ -57,6 +53,15 @@ services:
       ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES}
       BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS}
       ENVIRONMENT: ${ENVIRONMENT}
+      # ── AI (optional — leave empty in .env to disable) ──
+      AI_PROVIDER: ${AI_PROVIDER:-}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_BASE_URL: ${AI_BASE_URL:-}
+      AI_MODEL: ${AI_MODEL:-}
+      AI_MAX_TOKENS: ${AI_MAX_TOKENS:-2048}
+      AI_TIMEOUT: ${AI_TIMEOUT:-30}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
     ports:
       - "8000:8000"
     volumes:

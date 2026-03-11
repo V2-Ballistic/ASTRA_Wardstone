@@ -108,7 +108,7 @@ class User(Base):
     email = Column(String(255), unique=True, nullable=False, index=True)
     hashed_password = Column(String(255), nullable=False)
     full_name = Column(String(255), nullable=False)
-    role = Column(SQLEnum(UserRole), nullable=False, default=UserRole.DEVELOPER)
+    role = Column(SQLEnum(UserRole, values_callable=lambda x: [e.value for e in x]), nullable=False, default=UserRole.DEVELOPER)
     department = Column(String(100))
     is_active = Column(Boolean, default=True)
     last_login = Column(DateTime)
@@ -149,14 +149,14 @@ class Requirement(Base):
     title = Column(String(500), nullable=False)
     statement = Column(Text, nullable=False)
     rationale = Column(Text)
-    req_type = Column(SQLEnum(RequirementType), nullable=False)
-    priority = Column(SQLEnum(RequirementPriority), nullable=False, default=RequirementPriority.MEDIUM)
-    status = Column(SQLEnum(RequirementStatus), nullable=False, default=RequirementStatus.DRAFT)
+    req_type = Column(SQLEnum(RequirementType, values_callable=lambda x: [e.value for e in x]), nullable=False)
+    priority = Column(SQLEnum(RequirementPriority, values_callable=lambda x: [e.value for e in x]), nullable=False, default=RequirementPriority.MEDIUM)
+    status = Column(SQLEnum(RequirementStatus, values_callable=lambda x: [e.value for e in x]), nullable=False, default=RequirementStatus.DRAFT)
     version = Column(Integer, default=1)
     quality_score = Column(Float, default=0.0)
 
     # Hierarchy
-    level = Column(SQLEnum(RequirementLevel), nullable=False, default=RequirementLevel.L1)
+    level = Column(SQLEnum(RequirementLevel, values_callable=lambda x: [e.value for e in x]), nullable=False, default=RequirementLevel.L1)
     project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
     parent_id = Column(Integer, ForeignKey("requirements.id"), nullable=True)
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
@@ -186,7 +186,7 @@ class SourceArtifact(Base):
     id = Column(Integer, primary_key=True, index=True)
     artifact_id = Column(String(50), nullable=False, index=True)  # e.g., "SA-INT-001"
     title = Column(String(500), nullable=False)
-    artifact_type = Column(SQLEnum(ArtifactType), nullable=False)
+    artifact_type = Column(SQLEnum(ArtifactType, values_callable=lambda x: [e.value for e in x]), nullable=False)
     description = Column(Text)
     file_path = Column(String(500))  # Path to uploaded file
     source_date = Column(DateTime)
@@ -209,7 +209,7 @@ class TraceLink(Base):
     source_id = Column(Integer, nullable=False)
     target_type = Column(String(50), nullable=False)
     target_id = Column(Integer, nullable=False)
-    link_type = Column(SQLEnum(TraceLinkType), nullable=False)
+    link_type = Column(SQLEnum(TraceLinkType, values_callable=lambda x: [e.value for e in x]), nullable=False)
     description = Column(Text)
     status = Column(String(20), default="active")
     created_by_id = Column(Integer, ForeignKey("users.id"))
@@ -224,8 +224,8 @@ class Verification(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     requirement_id = Column(Integer, ForeignKey("requirements.id"), nullable=False)
-    method = Column(SQLEnum(VerificationMethod), nullable=False)
-    status = Column(SQLEnum(VerificationStatus), nullable=False, default=VerificationStatus.PLANNED)
+    method = Column(SQLEnum(VerificationMethod, values_callable=lambda x: [e.value for e in x]), nullable=False)
+    status = Column(SQLEnum(VerificationStatus, values_callable=lambda x: [e.value for e in x]), nullable=False, default=VerificationStatus.PLANNED)
     responsible_id = Column(Integer, ForeignKey("users.id"))
     evidence = Column(Text)  # Reference to test results, analysis docs, etc.
     criteria = Column(Text)  # Pass/fail criteria
