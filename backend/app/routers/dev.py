@@ -1,11 +1,17 @@
 """
-Development-only route to seed the database with a test user, project, and sample requirements.
-Remove or disable this in production.
+ASTRA — Dev Router (RBAC-patched)
+==================================
+Changes from original:
+  - seed_database now creates 6 users with different roles
+  - Adds all users as project members
+  - Returns credentials for each test user
 """
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from app.database import get_db, Base, engine
 from app.models import User, Project, Requirement
+from app.models.project_member import ProjectMember
 from app.services.auth import get_password_hash
 from app.services.quality_checker import check_requirement_quality
 
@@ -121,46 +127,77 @@ SAMPLE_REQUIREMENTS = [
 ]
 
 
+# ══════════════════════════════════════
+#  Test Users — one per role
+# ══════════════════════════════════════
+
+SEED_USERS = [
+    {"username": "mason",     "email": "mason@astra.local",     "full_name": "Mason (Admin)",           "role": "admin",                  "department": "Systems Engineering"},
+    {"username": "priya",     "email": "priya@astra.local",     "full_name": "Priya (PM)",              "role": "project_manager",        "department": "Program Office"},
+    {"username": "chen",      "email": "chen@astra.local",      "full_name": "Chen (Req Engineer)",     "role": "requirements_engineer",  "department": "Systems Engineering"},
+    {"username": "jess",      "email": "jess@astra.local",      "full_name": "Jess (Reviewer)",         "role": "reviewer",               "department": "Quality Assurance"},
+    {"username": "hank",      "email": "hank@astra.local",      "full_name": "Hank (Stakeholder)",      "role": "stakeholder",            "department": "Customer Programs"},
+    {"username": "dev_alex",  "email": "dev_alex@astra.local",  "full_name": "Alex (Developer)",        "role": "developer",              "department": "Software Engineering"},
+]
+
+DEFAULT_PASSWORD = "password123"
+
+
 @router.post("/seed")
 def seed_database(db: Session = Depends(get_db)):
-    """Seed the database with test user, project, and sample requirements."""
+    """Seed the database with test users (all roles), a project, and sample requirements."""
 
     # Check if already seeded
     existing_user = db.query(User).filter(User.username == "mason").first()
     if existing_user:
-        # Return existing project info
         project = db.query(Project).filter(Project.owner_id == existing_user.id).first()
         req_count = db.query(Requirement).filter(Requirement.project_id == project.id).count() if project else 0
+        user_count = db.query(User).count()
         return {
             "status": "already_seeded",
-            "user": existing_user.username,
+            "user_count": user_count,
             "project_id": project.id if project else None,
             "project_code": project.code if project else None,
             "requirements_count": req_count,
+            "credentials": {u["username"]: DEFAULT_PASSWORD for u in SEED_USERS},
         }
 
-    # ── Create user ──
-    user = User(
-        username="mason",
-        email="mason@astra.local",
-        hashed_password=get_password_hash("password123"),
-        full_name="Mason",
-        role="admin",
-        department="Systems Engineering",
-    )
-    db.add(user)
-    db.flush()
+    # ── Create all test users ──
+    users = {}
+    for u in SEED_USERS:
+        user = User(
+            username=u["username"],
+            email=u["email"],
+            hashed_password=get_password_hash(DEFAULT_PASSWORD),
+            full_name=u["full_name"],
+            role=u["role"],
+            department=u["department"],
+        )
+        db.add(user)
+        db.flush()
+        users[u["username"]] = user
+
+    admin_user = users["mason"]
 
     # ── Create project ──
     project = Project(
         code="SMDS",
         name="Satellite Missile Deployment System",
         description="Requirements tracker for satellite-deployed kinetic interceptor system",
-        owner_id=user.id,
+        owner_id=admin_user.id,
         status="active",
     )
     db.add(project)
     db.flush()
+
+    # ── Add all users as project members ──
+    for username, user in users.items():
+        member = ProjectMember(
+            project_id=project.id,
+            user_id=user.id,
+            added_by_id=admin_user.id,
+        )
+        db.add(member)
 
     # ── Create requirements ──
     TYPE_PREFIX = {
@@ -198,8 +235,8 @@ def seed_database(db: Session = Depends(get_db)):
             status=statuses[i % len(statuses)],
             level=levels[i % len(levels)],
             project_id=project.id,
-            owner_id=user.id,
-            created_by_id=user.id,
+            owner_id=admin_user.id,
+            created_by_id=admin_user.id,
             quality_score=quality["score"],
         )
         db.add(req)
@@ -208,11 +245,11 @@ def seed_database(db: Session = Depends(get_db)):
 
     return {
         "status": "seeded",
-        "user": "mason",
-        "password": "password123",
+        "users": {u["username"]: {"role": u["role"], "password": DEFAULT_PASSWORD} for u in SEED_USERS},
         "project_id": project.id,
         "project_code": project.code,
         "requirements_count": len(SAMPLE_REQUIREMENTS),
+        "project_members": len(SEED_USERS),
     }
 
 
@@ -221,5 +258,4 @@ def reset_and_seed(db: Session = Depends(get_db)):
     """Drop all tables, recreate, and seed. DEV ONLY."""
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
-    # Now seed fresh
     return seed_database(db)

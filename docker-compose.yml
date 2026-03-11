@@ -1,3 +1,13 @@
+# ══════════════════════════════════════════════════════
+#  ASTRA — Docker Compose (Development, Alembic-Managed)
+#  File: docker-compose.yml   ← REPLACES existing
+#
+#  Change from original:
+#    Backend now runs 'alembic upgrade head' before starting uvicorn.
+#    This ensures the database schema is always at the latest migration
+#    when the container starts.
+# ══════════════════════════════════════════════════════
+
 version: "3.9"
 
 services:
@@ -13,7 +23,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./database/init.sql:/docker-entrypoint-initdb.d/01-init.sql
     ports:
-      - "5433:5432"
+      - "5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
@@ -51,11 +61,20 @@ services:
       - "8000:8000"
     volumes:
       - ./backend/app:/app/app
+      - ./backend/alembic:/app/alembic
+      - ./backend/alembic.ini:/app/alembic.ini
       - upload_data:/app/uploads
     depends_on:
       db:
         condition: service_healthy
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    # ── Run migrations, then start the server ──
+    command: >
+      sh -c "
+        echo '── Running Alembic migrations ──' &&
+        alembic upgrade head &&
+        echo '── Starting ASTRA backend ──' &&
+        uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+      "
 
   # ── Next.js Frontend ──
   frontend:

@@ -108,6 +108,42 @@ export const baselinesAPI = {
   delete: (id: number) => api.delete(`/baselines/${id}`),
 };
 
+// ── Admin (NEW — RBAC) ──
+export const adminAPI = {
+  // User management
+  createUser: (data: {
+    username: string;
+    email: string;
+    password: string;
+    full_name: string;
+    role?: string;
+    department?: string;
+  }) => api.post('/admin/users', data),
+
+  listUsers: () => api.get('/admin/users'),
+
+  updateUser: (id: number, data: {
+    role?: string;
+    full_name?: string;
+    department?: string;
+    is_active?: boolean;
+  }) => api.patch(`/admin/users/${id}`, data),
+
+  deactivateUser: (id: number) => api.delete(`/admin/users/${id}`),
+
+  // Project members
+  addProjectMember: (projectId: number, data: {
+    user_id: number;
+    role_override?: string;
+  }) => api.post(`/admin/projects/${projectId}/members`, data),
+
+  listProjectMembers: (projectId: number) =>
+    api.get(`/admin/projects/${projectId}/members`),
+
+  removeProjectMember: (projectId: number, userId: number) =>
+    api.delete(`/admin/projects/${projectId}/members/${userId}`),
+};
+
 // ── Dev (remove in production) ──
 export const devAPI = {
   seed: () => api.post('/dev/seed'),

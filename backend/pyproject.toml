@@ -1,0 +1,14 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+filterwarnings = [
+    "ignore::DeprecationWarning:passlib",
+]
+
+[tool.ruff]
+line-length = 120
+
+[tool.mypy]
+python_version = "3.12"
+plugins = ["pydantic.mypy"]
+ignore_missing_imports = true
