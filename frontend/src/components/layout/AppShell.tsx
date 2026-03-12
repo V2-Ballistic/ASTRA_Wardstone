@@ -3,13 +3,13 @@
 /**
  * ASTRA — App Shell (WCAG 2.1 AA)
  * ==================================
- * File: frontend/src/components/layout/AppShell.tsx   ← REPLACES existing
+ * File: frontend/src/components/layout/AppShell.tsx
  *
- * Accessibility additions:
- *   - LiveRegionProvider wraps entire app for screen reader announcements
- *   - <main> has id="main-content" and role="main" for skip-link target
- *   - Loading spinner announced to screen readers
+ * Updated for project-scoped navigation:
+ *   - Sidebar handles its own global/project mode switching
+ *   - Main content area adjusts for sidebar width
  *   - Login page gets proper landmark structure
+ *   - LiveRegionProvider wraps entire app for screen reader announcements
  */
 
 import { usePathname } from 'next/navigation';

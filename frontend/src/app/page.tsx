@@ -302,7 +302,7 @@ export default function DashboardPage() {
             return (
               <button
                 key={proj.id}
-                onClick={() => router.push(`/requirements?project=${proj.id}`)}
+                onClick={() => router.push(`/projects/${proj.id}`)}
                 className="group relative w-full rounded-xl border border-astra-border bg-astra-surface p-5 text-left transition-all hover:border-blue-500/30 hover:shadow-lg hover:shadow-blue-500/5"
               >
                 {/* Top row: code badge, name, status, chevron */}

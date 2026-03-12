@@ -147,4 +147,5 @@ export const adminAPI = {
 // ── Dev (remove in production) ──
 export const devAPI = {
   seed: () => api.post('/dev/seed'),
+  seedProject: (projectId: number) => api.post(`/dev/seed-project/${projectId}`),
 };

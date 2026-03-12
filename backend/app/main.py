@@ -30,6 +30,7 @@ from app.routers.requirements import router as requirements_router
 from app.routers.projects import projects_router, traceability_router, artifacts_router
 from app.routers.dashboard import router as dashboard_router
 from app.routers.baselines import router as baselines_router
+from app.routers.seed_project import router as seed_project_router
 
 # ── Optional Routers (loaded if the module exists) ──
 _optional_routers: list = []
@@ -159,6 +160,7 @@ app.include_router(traceability_router, prefix=API_PREFIX)
 app.include_router(artifacts_router, prefix=API_PREFIX)
 app.include_router(dashboard_router, prefix=API_PREFIX)
 app.include_router(baselines_router, prefix=API_PREFIX)
+app.include_router(seed_project_router, prefix=API_PREFIX)
 
 for r in _optional_routers:
     app.include_router(r, prefix=API_PREFIX)
