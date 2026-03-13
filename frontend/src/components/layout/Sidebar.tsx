@@ -13,7 +13,7 @@ import {
   FileText, Network, Archive, Settings, LayoutDashboard,
   ChevronDown, ChevronRight, LogOut, Shield, FolderOpen,
   Sparkles, Search, Zap, CheckSquare, FileBarChart, Upload,
-  Users, Home, ChevronLeft, Loader2,
+  Users, Home, ChevronLeft, Loader2, Cable,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useAuth } from '@/lib/auth';
@@ -61,6 +61,7 @@ function getProjectNav(projectId: number): NavGroup[] {
         { href: `${p}/requirements`, label: 'Requirements', icon: FileText, countKey: 'requirements' },
         { href: `${p}/traceability`, label: 'Traceability', icon: Network },
         { href: `${p}/verification`, label: 'Verification', icon: CheckSquare },
+		{ href: `${p}/interfaces`, label: 'Interfaces', icon: Cable },
       ],
     },
     {
@@ -76,6 +77,7 @@ function getProjectNav(projectId: number): NavGroup[] {
       items: [
         { href: `${p}/ai`, label: 'AI Assistant', icon: Sparkles },
         { href: `${p}/impact`, label: 'Impact Analysis', icon: Zap },
+		{ href: `${p}/interfaces/auto-requirements`, label: 'Auto Requirements', icon: Sparkles },
       ],
     },
     {

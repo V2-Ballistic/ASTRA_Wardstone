@@ -36,6 +36,9 @@ PERMISSION_MATRIX: dict[UserRole, set[str]] = {
         "settings.manage",
         "reports.export",
         "imports.execute",
+        "interfaces.create",
+        "interfaces.update",
+        "interfaces.delete",
     },
     UserRole.PROJECT_MANAGER: {
         "requirements.create",
@@ -51,6 +54,9 @@ PERMISSION_MATRIX: dict[UserRole, set[str]] = {
         "projects.update",
         "reports.export",
         "imports.execute",
+        "interfaces.create",
+        "interfaces.update",
+        "interfaces.delete",
     },
     UserRole.REQUIREMENTS_ENGINEER: {
         "requirements.create",

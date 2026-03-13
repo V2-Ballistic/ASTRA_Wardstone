@@ -15,16 +15,27 @@ os.environ["BACKEND_CORS_ORIGINS"] = "http://localhost:3000"
 os.environ["ENVIRONMENT"] = "test"
 
 import pytest
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, BigInteger
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+from sqlalchemy.ext.compiler import compiles
 from fastapi.testclient import TestClient
+
+# ── SQLite compatibility: BigInteger → INTEGER ──
+# PostgreSQL uses BIGSERIAL for auto-increment BigInteger PKs.
+# SQLite only auto-generates rowid when the column type is exactly
+# "INTEGER" — not "BIGINT".  This compile hook fixes that.
+@compiles(BigInteger, "sqlite")
+def _compile_big_int_sqlite(type_, compiler, **kw):
+    return "INTEGER"
 
 # Patch the production engine immediately — database.py creates one at import
 # time with pool_size/max_overflow that are PostgreSQL-only.
 import app.database as _db_module                          # noqa: E402
 
 _sqlite_engine = create_engine(
-    "sqlite://", connect_args={"check_same_thread": False}
+    "sqlite://", connect_args={"check_same_thread": False},
+    poolclass=StaticPool,
 )
 _db_module.engine = _sqlite_engine
 _db_module.SessionLocal = sessionmaker(
@@ -38,9 +49,41 @@ from app.services.auth import (                            # noqa: E402
     create_access_token,
 )
 
-# Register ProjectMember table when RBAC is present
+# ── Import ALL models so Base.metadata knows every table ──
 try:
     from app.models.project_member import ProjectMember    # noqa: F401, E402
+except ImportError:
+    pass
+try:
+    from app.models.audit_log import AuditLog              # noqa: F401, E402
+except ImportError:
+    pass
+try:
+    from app.models.auth_models import *                   # noqa: F401, F403, E402
+except ImportError:
+    pass
+try:
+    from app.models.security_models import *               # noqa: F401, F403, E402
+except ImportError:
+    pass
+try:
+    from app.models.workflow import *                       # noqa: F401, F403, E402
+except ImportError:
+    pass
+try:
+    from app.models.integration import *                   # noqa: F401, F403, E402
+except ImportError:
+    pass
+try:
+    from app.models.ai_models import *                     # noqa: F401, F403, E402
+except ImportError:
+    pass
+try:
+    from app.models.embedding import *                     # noqa: F401, F403, E402
+except ImportError:
+    pass
+try:
+    from app.models.interface import *                     # noqa: F401, F403, E402
 except ImportError:
     pass
 
@@ -53,7 +96,8 @@ except ImportError:
 def db_engine():
     """Fresh in-memory SQLite engine for every test function."""
     engine = create_engine(
-        "sqlite://", connect_args={"check_same_thread": False}
+        "sqlite://", connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
     )
 
     @event.listens_for(engine, "connect")
@@ -61,6 +105,14 @@ def db_engine():
         cursor = dbapi_conn.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
+
+    # Render all enum columns as VARCHAR for SQLite compatibility
+    # SQLite doesn't support PostgreSQL enum types
+    from sqlalchemy import Enum as SAEnum
+    for table in Base.metadata.tables.values():
+        for column in table.columns:
+            if isinstance(column.type, SAEnum):
+                column.type.create_constraint = False
 
     Base.metadata.create_all(bind=engine)
     yield engine
@@ -100,7 +152,7 @@ def test_user(db_session) -> User:
     """Admin user that can do everything."""
     user = User(
         username="testadmin",
-        email="testadmin@astra.test",
+        email="testadmin@example.com",
         hashed_password=get_password_hash("TestPass123"),
         full_name="Test Admin",
         role="admin",
@@ -169,7 +221,7 @@ def make_user(db_session, role: str, username: str | None = None):
     username = username or f"user_{role}"
     user = User(
         username=username,
-        email=f"{username}@astra.test",
+        email=f"{username}@example.com",
         hashed_password=get_password_hash("TestPass123"),
         full_name=f"Test {role.replace('_', ' ').title()}",
         role=role,

@@ -70,9 +70,15 @@ def check_requirement_quality(statement: str, title: str = "", rationale: str = 
 
     # 2. Check for passive voice indicators
     passive_indicators = [
-        r'\bshall be\b.*\bed\b', r'\bis\s+\w+ed\b', r'\bare\s+\w+ed\b',
-        r'\bwas\s+\w+ed\b', r'\bbeen\s+\w+ed\b'
+        r'\bshall\s+be\s+\w+ed\b',       # "shall be processed"
+        r'\bis\s+\w+ed\b',                # "is processed"
+        r'\bare\s+\w+ed\b',               # "are processed"
+        r'\bwas\s+\w+ed\b',               # "was processed"
+        r'\bwere\s+\w+ed\b',              # "were processed"
+        r'\bbeen\s+\w+ed\b',              # "been processed"
+        r'\bbe\s+\w+ed\b',                # "be processed"
     ]
+    
     for pattern in passive_indicators:
         if re.search(pattern, text, re.IGNORECASE):
             suggestions.append("Possible passive voice detected — use active voice: 'The system shall [verb]'")

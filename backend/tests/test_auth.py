@@ -10,7 +10,7 @@ class TestRegister:
     def test_register_user(self, client):
         resp = client.post("/api/v1/auth/register", json={
             "username": "newuser",
-            "email": "newuser@astra.test",
+            "email": "newuser@example.com",
             "password": "SecurePass1",
             "full_name": "New User",
             "role": "developer",
@@ -18,7 +18,7 @@ class TestRegister:
         assert resp.status_code == 201, f"Expected 201, got {resp.status_code}: {resp.text}"
         data = resp.json()
         assert data["username"] == "newuser", "Returned username must match"
-        assert data["email"] == "newuser@astra.test"
+        assert data["email"] == "newuser@example.com"
         assert data["is_active"] is True
         assert "id" in data, "Response must include id"
         assert "hashed_password" not in data, "Password hash must never be exposed"
@@ -26,14 +26,14 @@ class TestRegister:
     def test_register_duplicate_username(self, client):
         payload = {
             "username": "dupeuser",
-            "email": "d1@astra.test",
+            "email": "d1@example.com",
             "password": "SecurePass1",
             "full_name": "Dupe",
         }
         first = client.post("/api/v1/auth/register", json=payload)
         assert first.status_code == 201
 
-        payload["email"] = "d2@astra.test"
+        payload["email"] = "d2@example.com"
         second = client.post("/api/v1/auth/register", json=payload)
         assert second.status_code == 400, "Duplicate username must be rejected"
         assert "already" in second.json()["detail"].lower()
@@ -44,7 +44,7 @@ class TestLogin:
     def test_login_success(self, client):
         client.post("/api/v1/auth/register", json={
             "username": "loginuser",
-            "email": "loginuser@astra.test",
+            "email": "loginuser@example.com",
             "password": "SecurePass1",
             "full_name": "Login User",
         })
@@ -60,7 +60,7 @@ class TestLogin:
     def test_login_wrong_password(self, client):
         client.post("/api/v1/auth/register", json={
             "username": "wrongpw",
-            "email": "wrongpw@astra.test",
+            "email": "wrongpw@example.com",
             "password": "SecurePass1",
             "full_name": "Wrong PW",
         })

@@ -23,14 +23,18 @@ def _get_db_url() -> str:
     return str(url)
 
 
-engine = create_engine(
-    _get_db_url(),
-    pool_size=20,              # Steady-state connections in the pool
-    max_overflow=30,           # Extra connections under burst load
-    pool_timeout=30,           # Seconds to wait for a connection before raising
-    pool_recycle=1800,         # Recycle connections every 30 min (PG default idle timeout)
-    pool_pre_ping=True,        # Verify connection is alive before handing it out
-)
+_db_url = _get_db_url()
+_pool_kwargs = {}
+if not _db_url.startswith("sqlite"):
+    _pool_kwargs = dict(
+        pool_size=20,
+        max_overflow=30,
+        pool_timeout=30,
+        pool_recycle=1800,
+        pool_pre_ping=True,
+    )
+
+engine = create_engine(_db_url, **_pool_kwargs)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

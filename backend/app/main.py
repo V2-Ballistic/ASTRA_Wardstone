@@ -41,6 +41,8 @@ for _mod, _attr in [
     ("app.routers.impact", "router"),
     ("app.routers.ai_writer", "router"),
     ("app.routers.imports", "router"),       # CSV/XLSX import
+    ("app.routers.interface", "router"),
+    ("app.routers.interface_import", "router"),
 ]:
     try:
         _m = __import__(_mod, fromlist=[_attr])
@@ -69,6 +71,7 @@ for _model_path in [
     "app.models.ai_models",
     "app.models.embedding",
     "app.models.impact",
+    "app.models.interface",
 ]:
     try:
         __import__(_model_path)

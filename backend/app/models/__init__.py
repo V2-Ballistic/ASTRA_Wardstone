@@ -7,6 +7,12 @@ from sqlalchemy.orm import relationship
 from app.database import Base
 import enum
 
+from app.models.interface import (
+    System, Unit, Connector, Pin, BusDefinition, PinBusAssignment,
+    MessageDefinition, MessageField, WireHarness, Wire, Interface,
+    UnitEnvironmentalSpec, InterfaceRequirementLink,
+    AutoRequirementLog, InterfaceChangeImpact,
+)
 
 # ══════════════════════════════════════
 #  Enums

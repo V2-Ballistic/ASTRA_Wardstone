@@ -214,6 +214,18 @@ def get_report_history(
         "items": items[skip : skip + limit],
     }
 
+@router.get("/icd")
+def report_icd(
+    project_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    gen = REPORT_REGISTRY["icd"]()
+    output = gen.generate(project_id, db, {"format": "xlsx"})
+    _log_generation("icd", project_id, "xlsx", current_user, output.metadata)
+    _audit(db, "report.generated", "project", project_id, current_user.id,
+           {"report": "icd", "format": "xlsx"}, project_id=project_id)
+    return _stream(output)
 
 # ══════════════════════════════════════
 #  Available Reports (for frontend catalog)
@@ -265,5 +277,12 @@ def get_report_catalog(current_user: User = Depends(get_current_user)):
             "description": "Detailed change log grouped by requirement, showing field diffs within a date range. For Configuration Control Board meetings.",
             "formats": ["xlsx", "pdf"],
             "icon": "History",
+        },
+        {
+            "key": "icd",
+            "name": "Interface Control Document (ICD)",
+            "description": "Comprehensive ICD with N² matrix, unit catalog, connector pinouts, bus config, message catalog, wire harnesses, signal dictionary, environmental summary, and requirements trace.",
+            "formats": ["xlsx"],
+            "icon": "Cable",
         },
     ]
