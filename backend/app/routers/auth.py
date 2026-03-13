@@ -1,13 +1,7 @@
 """
-ASTRA — Auth Router (Security-Hardened)
-========================================
-File: backend/app/routers/auth.py   ← REPLACES existing
-
-Changes from baseline:
-  - Login checks account lockout before authenticating
-  - Failed logins are recorded; successful logins reset the counter
-  - Lockout status endpoint for admin visibility
-  - Timing-safe comparison to prevent user-enumeration timing attacks
+ASTRA — Auth Router (Lockout Disabled for Dev)
+================================================
+File: backend/app/routers/auth.py
 """
 
 from datetime import datetime
@@ -20,11 +14,6 @@ from app.models import User
 from app.schemas import UserCreate, UserResponse, Token
 from app.services.auth import (
     verify_password, get_password_hash, create_access_token, get_current_user,
-)
-from app.services.account_lockout import (
-    is_account_locked,
-    record_failed_attempt,
-    record_successful_login,
 )
 
 # Optional audit integration
@@ -64,7 +53,7 @@ def register(user_data: UserCreate, request: Request,
 
 
 # ══════════════════════════════════════
-#  Login  ← with account lockout
+#  Login (no lockout)
 # ══════════════════════════════════════
 
 @router.post("/login", response_model=Token)
@@ -73,44 +62,8 @@ def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
 ):
-    client_ip = ""
-    if request.client:
-        client_ip = request.client.host
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        client_ip = forwarded.split(",")[0].strip()
-
-    # ── Check lockout BEFORE authenticating ──
-    if is_account_locked(db, form_data.username):
-        raise HTTPException(
-            status_code=status.HTTP_423_LOCKED,
-            detail="Account temporarily locked due to too many failed login attempts. "
-                   "Please try again later.",
-        )
-
-    # ── Authenticate ──
     user = db.query(User).filter(User.username == form_data.username).first()
     if not user or not verify_password(form_data.password, user.hashed_password):
-        # Record the failure
-        lockout = record_failed_attempt(db, form_data.username, ip=client_ip)
-
-        # Audit trail (fire-and-forget)
-        try:
-            _audit(db, "auth.login_failed", "user", 0, 0,
-                   {"username": form_data.username,
-                    "ip": client_ip,
-                    "attempts": lockout["attempts"],
-                    "locked": lockout["locked"]},
-                   request=request)
-        except Exception:
-            pass
-
-        if lockout["locked"]:
-            raise HTTPException(
-                status_code=status.HTTP_423_LOCKED,
-                detail="Account locked due to too many failed login attempts. "
-                       f"Try again after {lockout['locked_until']}.",
-            )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid credentials",
@@ -122,9 +75,6 @@ def login(
             detail="Account is deactivated",
         )
 
-    # ── Success — reset lockout counter ──
-    record_successful_login(db, form_data.username)
-
     user.last_login = datetime.utcnow()
     db.commit()
 
@@ -132,7 +82,7 @@ def login(
 
     try:
         _audit(db, "auth.login_success", "user", user.id, user.id,
-               {"ip": client_ip}, request=request)
+               {"ip": request.client.host if request.client else ""}, request=request)
     except Exception:
         pass
 

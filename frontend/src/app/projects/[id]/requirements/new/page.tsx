@@ -122,7 +122,7 @@ export default function NewRequirementPage() {
   // ── Load project + existing requirements ──
   useEffect(() => {
     projectsAPI.get(projectId).then((res) => setProjectCode(res.data.code)).catch(() => {});
-    requirementsAPI.list(projectId, { limit: 1000 })
+    requirementsAPI.list(projectId, { limit: 200 })
       .then((res) => setAllRequirements(Array.isArray(res.data) ? res.data : []))
       .catch(() => {});
   }, [projectId]);

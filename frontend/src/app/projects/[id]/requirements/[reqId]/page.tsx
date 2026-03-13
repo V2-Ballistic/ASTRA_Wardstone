@@ -431,7 +431,7 @@ function TracesTab({ req, children }: { req: any; children: any[] }) {
               const cS = (child.status?.value || child.status) as RequirementStatus;
               const cSc = STATUS_COLORS[cS];
               return (
-                <Link key={child.id} href={`/requirements/${child.id}`}
+                <Link key={child.id} href={`/projects/${req.project_id}/requirements/${child.id}`}
                   className="flex items-center gap-3 rounded-lg p-2 transition hover:bg-astra-surface-hover">
                   <span className="rounded-full px-1.5 py-0.5 text-[9px] font-bold" style={{ background: `${LEVEL_COLORS[cL]}20`, color: LEVEL_COLORS[cL] }}>{cL}</span>
                   <span className="font-mono text-xs font-semibold text-blue-400">{child.req_id}</span>
@@ -563,7 +563,7 @@ export default function RequirementDetailPage() {
   const handleClone = async () => {
     try {
       const res = await requirementsAPI.clone(reqId);
-      router.push(`/requirements/${res.data.id}`);
+      router.push(`/projects/${projectId}/requirements/${res.data.id}`);
     } catch (e: any) {
       setError(e.response?.data?.detail || 'Clone failed');
     }
@@ -775,7 +775,7 @@ export default function RequirementDetailPage() {
               {req.parent_id && (
                 <div className="flex items-center justify-between">
                   <span className="text-[11px] text-slate-500">Parent</span>
-                  <Link href={`/requirements/${req.parent_id}`} className="font-mono text-xs font-semibold text-blue-400 hover:text-blue-300">#{req.parent_id}</Link>
+                  <Link href={`/projects/${projectId}/requirements/${req.parent_id}`} className="font-mono text-xs font-semibold text-blue-400 hover:text-blue-300">#{req.parent_id}</Link>
                 </div>
               )}
             </div>

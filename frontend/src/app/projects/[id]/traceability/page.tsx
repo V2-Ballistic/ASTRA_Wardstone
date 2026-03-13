@@ -6,6 +6,7 @@
  * File: frontend/src/app/projects/[id]/traceability/page.tsx
  *
  * Three tabs: [Matrix] [Graph] [AI Suggestions]
+ * Graph tab uses the ForceGraph component with interactive force simulation.
  * AI Suggestions shows pending trace suggestions with bulk accept/reject.
  */
 
@@ -17,6 +18,7 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { traceabilityAPI, projectsAPI, requirementsAPI } from '@/lib/api';
+import ForceGraph from '@/components/traceability/ForceGraph';
 import {
   STATUS_COLORS, STATUS_LABELS, LEVEL_COLORS,
   type RequirementStatus, type RequirementLevel,
@@ -143,11 +145,9 @@ export default function TraceabilityPage() {
     if (!projectId || !aiAPI) return;
     setSuggestionsLoading(true);
     try {
-      // Fetch requirements, then get suggestions for each (batch)
       const reqsRes = await requirementsAPI.list(projectId, { limit: 200 });
       const reqs = Array.isArray(reqsRes.data) ? reqsRes.data : [];
       const allSuggs: any[] = [];
-      // Fetch for first 20 requirements to keep it reasonable
       const batch = reqs.slice(0, 20);
       const results = await Promise.allSettled(
         batch.map((r: any) => aiAPI.getTraceSuggestions(r.id, projectId))
@@ -197,10 +197,9 @@ export default function TraceabilityPage() {
         }
       } catch {}
     }
-    // Remove accepted from list
     setSuggestions((prev) => prev.filter((_, i) => !selectedSuggs.has(i)));
     setSelectedSuggs(new Set());
-    await fetchData(); // Refresh matrix/coverage
+    await fetchData();
   };
 
   // ── Reject selected ──
@@ -277,33 +276,42 @@ export default function TraceabilityPage() {
         matrixData.length === 0 ? (
           <div className="rounded-xl border border-dashed border-astra-border-light bg-astra-surface-alt py-16 text-center">
             <FileText className="mx-auto mb-3 h-8 w-8 text-slate-600" />
-            <p className="text-sm text-slate-500">No requirements to display. Create requirements first.</p>
+            <p className="text-sm text-slate-500">No requirements to display. Add requirements first.</p>
           </div>
         ) : (
           <div className="overflow-x-auto rounded-xl border border-astra-border bg-astra-surface">
-            <table className="w-full text-left text-xs">
+            <table className="w-full">
               <thead>
-                <tr className="border-b border-astra-border bg-astra-surface-alt text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                  <th className="px-4 py-3">Req ID</th>
-                  <th className="px-2 py-3">Lvl</th>
-                  <th className="px-4 py-3">Title</th>
-                  <th className="px-4 py-3 text-center">Status</th>
-                  <th className="px-4 py-3 text-center">Sources</th>
-                  <th className="px-4 py-3 text-center">Children</th>
-                  <th className="px-4 py-3 text-center">V&V</th>
-                  <th className="px-4 py-3 text-center">Total</th>
+                <tr className="border-b border-astra-border bg-astra-surface-alt">
+                  <th className="px-4 py-2.5 text-left text-[10px] font-bold uppercase tracking-wider text-slate-500 w-[100px]">ID</th>
+                  <th className="px-2 py-2.5 text-left text-[10px] font-bold uppercase tracking-wider text-slate-500 w-[35px]">Lvl</th>
+                  <th className="px-4 py-2.5 text-left text-[10px] font-bold uppercase tracking-wider text-slate-500">Title</th>
+                  <th className="px-4 py-2.5 text-center text-[10px] font-bold uppercase tracking-wider text-slate-500 w-[90px]">Status</th>
+                  <th className="px-4 py-2.5 text-center text-[10px] font-bold uppercase tracking-wider text-emerald-500 w-[100px]">
+                    <div className="flex items-center justify-center gap-1"><FileText className="h-3 w-3" /> Sources</div>
+                  </th>
+                  <th className="px-4 py-2.5 text-center text-[10px] font-bold uppercase tracking-wider text-blue-400 w-[100px]">
+                    <div className="flex items-center justify-center gap-1"><GitBranch className="h-3 w-3" /> Children</div>
+                  </th>
+                  <th className="px-4 py-2.5 text-center text-[10px] font-bold uppercase tracking-wider text-violet-400 w-[100px]">
+                    <div className="flex items-center justify-center gap-1"><Shield className="h-3 w-3" /> V&amp;V</div>
+                  </th>
+                  <th className="px-4 py-2.5 text-center text-[10px] font-bold uppercase tracking-wider text-slate-500 w-[70px]">Links</th>
                 </tr>
               </thead>
               <tbody>
                 {matrixData.map((row) => {
-                  const lvl = (row.level || 'L1') as RequirementLevel;
                   const sc = STATUS_COLORS[row.status as RequirementStatus];
-                  const hasNoTraces = row.source_artifact_count === 0 && row.children_count === 0 && row.verification_count === 0;
+                  const lvl = (row.level || 'L1') as RequirementLevel;
                   const hasAll = row.source_artifact_count > 0 && row.children_count > 0 && row.verification_count > 0;
+                  const hasNone = row.source_artifact_count === 0 && row.children_count === 0 && row.verification_count === 0;
                   return (
-                    <tr key={row.id} className={clsx('border-b border-astra-border/50 transition hover:bg-astra-surface-hover cursor-pointer',
-                      hasNoTraces ? 'bg-red-500/[0.03]' : hasAll ? 'bg-emerald-500/[0.02]' : '')}
-                      onClick={() => router.push(`/requirements/${row.id}`)}>
+                    <tr key={row.id}
+                      onClick={() => router.push(`/projects/${projectId}/requirements/${row.id}`)}
+                      className={clsx(
+                        'border-b border-astra-border transition-colors hover:bg-astra-surface-hover cursor-pointer',
+                        hasNone ? 'bg-red-500/[0.03]' : hasAll ? 'bg-emerald-500/[0.02]' : ''
+                      )}>
                       <td className="px-4 py-2.5"><span className="font-mono text-xs font-semibold text-blue-400">{row.req_id}</span></td>
                       <td className="px-2 py-2.5">
                         <span className="rounded-full px-1.5 py-0.5 text-[9px] font-bold" style={{ background: `${LEVEL_COLORS[lvl]}20`, color: LEVEL_COLORS[lvl] }}>{lvl}</span>
@@ -323,6 +331,7 @@ export default function TraceabilityPage() {
                 })}
               </tbody>
             </table>
+
             {/* Footer */}
             <div className="border-t border-astra-border px-4 py-3 flex items-center gap-6 bg-astra-surface-alt">
               <span className="text-[11px] text-slate-500">{matrixData.length} requirements</span>
@@ -341,16 +350,11 @@ export default function TraceabilityPage() {
 
       {/* ── Graph View ── */}
       {viewMode === 'graph' && (
-        <div className="rounded-xl border border-astra-border bg-astra-surface p-8 text-center">
-          <GitBranch className="mx-auto mb-3 h-10 w-10 text-slate-600" />
-          <h3 className="text-sm font-semibold text-slate-300 mb-1">Interactive Graph View</h3>
-          <p className="text-xs text-slate-500">
-            {graphData.nodes.length} nodes · {graphData.edges.length} edges
-          </p>
-          <p className="mt-2 text-[10px] text-slate-600">
-            Full D3 force graph available in the original /traceability page. Use Matrix or AI Suggestions for now.
-          </p>
-        </div>
+        <ForceGraph
+          nodes={graphData.nodes}
+          edges={graphData.edges}
+          onNodeClick={(id) => router.push(`/projects/${projectId}/requirements/${id}`)}
+        />
       )}
 
       {/* ── AI Suggestions View ── */}
@@ -407,7 +411,6 @@ export default function TraceabilityPage() {
             </div>
           ) : (
             <div className="space-y-2">
-              {/* Group by source requirement */}
               {(() => {
                 const grouped: Record<string, any[]> = {};
                 suggestions.forEach((s, i) => {

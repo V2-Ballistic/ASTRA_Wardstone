@@ -2,15 +2,12 @@
 ASTRA — Main Application (Complete)
 ======================================
 File: backend/app/main.py
-Path: C:\\Users\\Mason\\Documents\\ASTRA\\backend\\app\\main.py
 
 All routers and models registered, including:
   - Core: auth, projects, requirements, traceability, artifacts, dashboard, baselines
   - Phase 1 add-ons: admin, audit, workflows, reports, integrations
-  - AI quality: (built into requirements router)
-  - AI semantic: ai router (embeddings, duplicates, trace suggestions)
-  - Impact analysis: impact router
-  - AI writer: ai_writer router
+  - AI: ai, impact, ai_writer
+  - Import: CSV/XLSX requirement import
 """
 
 import logging
@@ -40,9 +37,10 @@ for _mod, _attr in [
     ("app.routers.workflows", "router"),
     ("app.routers.reports", "router"),
     ("app.routers.integrations", "router"),
-    ("app.routers.ai", "router"),            # Prompt 1: semantic analysis
-    ("app.routers.impact", "router"),        # Prompt 2: impact analysis
-    ("app.routers.ai_writer", "router"),     # Prompt 3: writing assistant
+    ("app.routers.ai", "router"),
+    ("app.routers.impact", "router"),
+    ("app.routers.ai_writer", "router"),
+    ("app.routers.imports", "router"),       # CSV/XLSX import
 ]:
     try:
         _m = __import__(_mod, fromlist=[_attr])
@@ -69,8 +67,8 @@ for _model_path in [
     "app.models.workflow",
     "app.models.integration",
     "app.models.ai_models",
-    "app.models.embedding",          # Prompt 1: RequirementEmbedding, AISuggestion
-    "app.models.impact",             # Prompt 2: ImpactReport
+    "app.models.embedding",
+    "app.models.impact",
 ]:
     try:
         __import__(_model_path)

@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from app.models.audit_log import AuditLog
 from app.middleware.audit_middleware import get_request_context
+from sqlalchemy.orm import lazyload
 
 # Genesis hash — the "previous_hash" for the very first record
 GENESIS_HASH = hashlib.sha256(b"ASTRA_GENESIS_BLOCK").hexdigest()
@@ -86,6 +87,7 @@ def record_event(
     # so the chain is strictly ordered.  Plain FOR UPDATE is correct.
     prev = (
         db.query(AuditLog)
+        .options(lazyload(AuditLog.user))
         .order_by(AuditLog.sequence_number.desc())
         .with_for_update()
         .first()

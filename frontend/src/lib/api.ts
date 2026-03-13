@@ -69,6 +69,18 @@ export const requirementsAPI = {
     api.post('/requirements/quality-check', null, { params: { statement, title, rationale } }),
 };
 
+// ── Verifications ──
+export const verificationsAPI = {
+  list: (requirementId: number) =>
+    api.get(`/requirements/${requirementId}/verifications`),
+  create: (requirementId: number, data: {
+    requirement_id: number;
+    method: string;
+    criteria?: string;
+    responsible_id?: number;
+  }) => api.post(`/requirements/${requirementId}/verifications`, data),
+};
+
 // ── Source Artifacts ──
 export const artifactsAPI = {
   list: (projectId: number) => api.get('/artifacts/', { params: { project_id: projectId } }),
@@ -96,6 +108,33 @@ export const dashboardAPI = {
     api.get('/dashboard/stats', { params: { project_id: projectId } }),
 };
 
+// ── Reports ──
+export const reportsAPI = {
+  generate: (reportType: string, projectId: number, format: string, params?: any) =>
+    api.get(`/reports/${reportType}`, {
+      params: { project_id: projectId, format, ...params },
+      responseType: 'blob',
+    }),
+  catalog: () => api.get('/reports/catalog'),
+  history: (projectId?: number, params?: any) =>
+    api.get('/reports/history', { params: { project_id: projectId, ...params } }),
+};
+
+// ── Imports ──
+export const importsAPI = {
+  preview: (projectId: number, file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return api.post(`/imports/requirements?project_id=${projectId}`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
+  confirm: (projectId: number, rows: any[]) =>
+    api.post('/imports/requirements/confirm', { project_id: projectId, rows }),
+  downloadTemplate: () =>
+    api.get('/imports/template', { responseType: 'blob' }),
+};
+
 // ── Baselines ──
 export const baselinesAPI = {
   list: (projectId: number) =>
@@ -108,9 +147,8 @@ export const baselinesAPI = {
   delete: (id: number) => api.delete(`/baselines/${id}`),
 };
 
-// ── Admin (NEW — RBAC) ──
+// ── Admin (RBAC) ──
 export const adminAPI = {
-  // User management
   createUser: (data: {
     username: string;
     email: string;
@@ -131,7 +169,6 @@ export const adminAPI = {
 
   deactivateUser: (id: number) => api.delete(`/admin/users/${id}`),
 
-  // Project members
   addProjectMember: (projectId: number, data: {
     user_id: number;
     role_override?: string;

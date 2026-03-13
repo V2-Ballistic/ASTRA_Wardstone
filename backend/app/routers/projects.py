@@ -1,10 +1,12 @@
 """
 ASTRA — Projects & Traceability Router (Audit-Instrumented)
 =============================================================
-File: backend/app/routers/projects.py   ← REPLACES existing
+File: backend/app/routers/projects.py
 
-Adds record_event() calls to: create_project, create_trace_link, delete_trace_link.
-Read-only endpoints (list, matrix, graph, coverage) are unchanged.
+Routers:
+  projects_router      — /projects
+  traceability_router  — /traceability (links, matrix, graph, coverage)
+  artifacts_router     — /artifacts
 """
 
 from typing import List, Optional
@@ -26,6 +28,12 @@ try:
 except ImportError:
     def require_permission(action):
         return get_current_user
+
+
+def _ev(v):
+    """Enum-safe value extraction."""
+    return v.value if hasattr(v, "value") else str(v) if v else ""
+
 
 # ══════════════════════════════════════
 #  Projects
@@ -138,7 +146,7 @@ def delete_trace_link(link_id: int, request: Request,
                  detail, request=request)
 
 
-# ── Matrix / Graph / Coverage (read-only — unchanged) ──
+# ── Matrix ──
 
 @traceability_router.get("/matrix")
 def get_traceability_matrix(project_id: int, db: Session = Depends(get_db),
@@ -184,6 +192,8 @@ def get_traceability_matrix(project_id: int, db: Session = Depends(get_db),
     return {"project_id": project_id, "requirements_count": len(reqs), "matrix": matrix}
 
 
+# ── Graph ──
+
 @traceability_router.get("/graph")
 def get_traceability_graph(project_id: int, db: Session = Depends(get_db),
                            current_user: User = Depends(get_current_user)):
@@ -214,39 +224,135 @@ def get_traceability_graph(project_id: int, db: Session = Depends(get_db),
     return {"nodes": nodes, "edges": edges}
 
 
+# ── Coverage ──
+
 @traceability_router.get("/coverage")
 def get_coverage_stats(project_id: int, db: Session = Depends(get_db),
                        current_user: User = Depends(get_current_user)):
+    """
+    Compute coverage statistics for a project.
+
+    Returns counts and percentages for:
+      - with_source:       reqs traced back to at least one source artifact
+      - with_children:     reqs that have at least one child (decomposition)
+      - with_verification: reqs that have at least one verification record
+      - orphans:           reqs with NO trace links at all
+
+    Also returns legacy fields (forward_coverage, backward_coverage,
+    verification_coverage) for backward compatibility with the landing page.
+    """
     reqs = db.query(Requirement).filter(
         Requirement.project_id == project_id, Requirement.status != "deleted"
     ).all()
     req_ids = [r.id for r in reqs]
+    req_id_set = set(req_ids)
+    t = len(req_ids)
+
+    empty = {
+        "project_id": project_id, "total_requirements": 0, "total": 0,
+        "with_source": 0, "with_source_pct": 0.0,
+        "with_children": 0, "with_children_pct": 0.0,
+        "with_verification": 0, "with_verification_pct": 0.0,
+        "orphans": 0, "orphan_pct": 0.0,
+        "forward_traced": 0, "backward_traced": 0, "verified": 0,
+        "forward_coverage": 0.0, "backward_coverage": 0.0,
+        "verification_coverage": 0.0,
+    }
     if not req_ids:
-        return {"project_id": project_id, "total_requirements": 0,
-                "forward_traced": 0, "backward_traced": 0, "verified": 0,
-                "forward_coverage": 0.0, "backward_coverage": 0.0,
-                "verification_coverage": 0.0}
+        return empty
+
+    # ── Load all relevant trace links ──
+    # Include links where a source_artifact points to a requirement
+    art_ids = [a.id for a in db.query(SourceArtifact.id).filter(
+        SourceArtifact.project_id == project_id
+    ).all()]
+
     links = db.query(TraceLink).filter(
         ((TraceLink.source_type == "requirement") & (TraceLink.source_id.in_(req_ids))) |
-        ((TraceLink.target_type == "requirement") & (TraceLink.target_id.in_(req_ids)))
+        ((TraceLink.target_type == "requirement") & (TraceLink.target_id.in_(req_ids))) |
+        ((TraceLink.source_type == "source_artifact") & (TraceLink.source_id.in_(art_ids)))
     ).all()
-    fwd, bwd = set(), set()
-    for l in links:
-        if l.source_type == "requirement" and l.source_id in req_ids:
-            fwd.add(l.source_id)
-        if l.target_type == "requirement" and l.target_id in req_ids:
-            bwd.add(l.target_id)
-        if l.source_type == "source_artifact" and l.target_type == "requirement":
-            bwd.add(l.target_id)
-    verified = {v.requirement_id for v in
-                db.query(Verification).filter(Verification.requirement_id.in_(req_ids)).all()}
-    t = len(req_ids)
+
+    # ── Categorize ──
+    # Reqs that have at least one source artifact tracing to them
+    with_source_ids: set = set()
+    # Reqs that have at least one child (via parent_id OR decomposition link)
+    with_children_ids: set = set()
+    # Reqs that participate in ANY trace link (for orphan detection)
+    linked_ids: set = set()
+
+    for link in links:
+        src_type = link.source_type
+        tgt_type = link.target_type
+        link_type = _ev(link.link_type)
+
+        # Track all linked requirement IDs (for orphan detection)
+        if src_type == "requirement" and link.source_id in req_id_set:
+            linked_ids.add(link.source_id)
+        if tgt_type == "requirement" and link.target_id in req_id_set:
+            linked_ids.add(link.target_id)
+
+        # With source: source_artifact → requirement
+        if src_type == "source_artifact" and tgt_type == "requirement":
+            if link.target_id in req_id_set:
+                with_source_ids.add(link.target_id)
+
+        # With children: decomposition links (parent → child)
+        if link_type == "decomposition":
+            if src_type == "requirement" and link.source_id in req_id_set:
+                with_children_ids.add(link.source_id)
+
+    # Also count parent_id relationships as "with_children"
+    for req in reqs:
+        if req.parent_id and req.parent_id in req_id_set:
+            with_children_ids.add(req.parent_id)
+
+    # ── Verification coverage ──
+    verified_ids: set = set()
+    if req_ids:
+        verif_rows = db.query(Verification.requirement_id).filter(
+            Verification.requirement_id.in_(req_ids)
+        ).distinct().all()
+        verified_ids = {v[0] for v in verif_rows}
+
+    # ── Orphans: no trace links AND no verifications AND no children ──
+    orphan_ids = req_id_set - linked_ids - verified_ids
+    # Also remove reqs that have children via parent_id (they're connected)
+    parent_ids = {r.parent_id for r in reqs if r.parent_id and r.parent_id in req_id_set}
+    child_ids_set = {r.id for r in reqs if r.parent_id and r.parent_id in req_id_set}
+    orphan_ids = orphan_ids - parent_ids - child_ids_set
+
+    # ── Compute counts and percentages ──
+    with_source = len(with_source_ids)
+    with_children = len(with_children_ids)
+    with_verification = len(verified_ids)
+    orphans = len(orphan_ids)
+
+    def pct(n):
+        return round(n / t * 100, 1) if t else 0.0
+
     return {
-        "project_id": project_id, "total_requirements": t,
-        "forward_traced": len(fwd), "backward_traced": len(bwd), "verified": len(verified),
-        "forward_coverage": round(len(fwd) / t * 100, 1) if t else 0.0,
-        "backward_coverage": round(len(bwd) / t * 100, 1) if t else 0.0,
-        "verification_coverage": round(len(verified) / t * 100, 1) if t else 0.0,
+        "project_id": project_id,
+        "total_requirements": t,
+        "total": t,
+
+        # New fields (used by traceability pages + project dashboard)
+        "with_source": with_source,
+        "with_source_pct": pct(with_source),
+        "with_children": with_children,
+        "with_children_pct": pct(with_children),
+        "with_verification": with_verification,
+        "with_verification_pct": pct(with_verification),
+        "orphans": orphans,
+        "orphan_pct": pct(orphans),
+
+        # Legacy fields (used by landing page ProjectWithStats)
+        "forward_traced": with_source,
+        "backward_traced": with_children,
+        "verified": with_verification,
+        "forward_coverage": pct(with_source),
+        "backward_coverage": pct(with_children),
+        "verification_coverage": pct(with_verification),
     }
 
 

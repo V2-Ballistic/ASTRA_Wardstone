@@ -1,16 +1,14 @@
 """
 ASTRA — Requirements Router (AI-Enhanced)
 ============================================
-File: backend/app/routers/requirements.py   ← REPLACES existing
+File: backend/app/routers/requirements.py
 
-Additions:
-  POST /requirements/quality-check/deep   — Tier 2 AI analysis
-  POST /requirements/quality-check/batch  — Tier 3 batch analysis
-  GET  /requirements/{id}/ai-analysis     — Stored AI results
-  POST /requirements/{id}/ai-feedback     — Accept/reject AI suggestion
-  GET  /requirements/ai/stats             — AI usage + feedback stats
-
-All existing endpoints preserved exactly as-is.
+Includes:
+  - Full CRUD with status workflow
+  - Verification sub-endpoints (list + create per requirement)
+  - History, transitions, comments
+  - Quality checks (Tier 1 regex, Tier 2 AI deep, Tier 3 batch)
+  - AI analysis storage and feedback
 """
 
 from typing import Optional, List
@@ -28,6 +26,7 @@ from app.models import (
 from app.schemas import (
     RequirementCreate, RequirementUpdate, RequirementResponse,
     RequirementDetail, QualityCheckResult,
+    VerificationCreate, VerificationResponse,
 )
 from app.services.auth import get_current_user
 from app.services.quality_checker import check_requirement_quality, generate_requirement_id
@@ -96,6 +95,21 @@ def _ev(v):
     return v.value if hasattr(v, "value") else str(v) if v else ""
 
 
+def _serialize_verification(v):
+    """Serialize a Verification ORM object to a dict."""
+    return {
+        "id": v.id,
+        "requirement_id": v.requirement_id,
+        "method": _ev(v.method),
+        "status": _ev(v.status),
+        "responsible_id": v.responsible_id,
+        "evidence": v.evidence,
+        "criteria": v.criteria,
+        "completed_at": v.completed_at.isoformat() if v.completed_at else None,
+        "created_at": v.created_at.isoformat() if v.created_at else None,
+    }
+
+
 # ══════════════════════════════════════
 #  Read endpoints
 # ══════════════════════════════════════
@@ -132,13 +146,77 @@ def get_requirement(req_id: int, db: Session = Depends(get_db),
         ((TraceLink.source_type == "requirement") & (TraceLink.source_id == req.id)) |
         ((TraceLink.target_type == "requirement") & (TraceLink.target_id == req.id))
     ).count()
-    verification = db.query(Verification).filter(Verification.requirement_id == req.id).first()
+
+    # Load all verifications for this requirement
+    verifs = db.query(Verification).filter(
+        Verification.requirement_id == req.id
+    ).order_by(Verification.created_at.desc()).all()
+
+    # First verification status (for backward compat)
+    first_verif = verifs[0] if verifs else None
+
     result = RequirementDetail.model_validate(req)
     result.trace_count = trace_count
-    result.verification_status = verification.status if verification else None
+    result.verification_status = _ev(first_verif.status) if first_verif else None
     result.owner = req.owner
     result.children = req.children or []
+    result.verifications = [_serialize_verification(v) for v in verifs]
     return result
+
+
+# ══════════════════════════════════════
+#  Verification sub-endpoints
+# ══════════════════════════════════════
+
+@router.get("/{req_id}/verifications")
+def list_requirement_verifications(
+    req_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """List all verifications for a specific requirement."""
+    req = db.query(Requirement).filter(Requirement.id == req_id).first()
+    if not req:
+        raise HTTPException(404, "Requirement not found")
+    verifs = db.query(Verification).filter(
+        Verification.requirement_id == req.id
+    ).order_by(Verification.created_at.desc()).all()
+    return [_serialize_verification(v) for v in verifs]
+
+
+@router.post("/{req_id}/verifications", status_code=201)
+def create_verification(
+    req_id: int,
+    data: VerificationCreate,
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Create a verification record for a requirement."""
+    req = db.query(Requirement).filter(Requirement.id == req_id).first()
+    if not req:
+        raise HTTPException(404, "Requirement not found")
+
+    verif = Verification(
+        requirement_id=req.id,
+        method=data.method,
+        status="planned",
+        criteria=data.criteria,
+        responsible_id=data.responsible_id or current_user.id,
+    )
+    db.add(verif)
+    db.commit()
+    db.refresh(verif)
+
+    try:
+        _audit(db, "verification.created", "verification", verif.id,
+               current_user.id,
+               {"requirement_id": req.id, "method": data.method},
+               project_id=req.project_id, request=request)
+    except Exception:
+        pass
+
+    return _serialize_verification(verif)
 
 
 # ══════════════════════════════════════
@@ -367,7 +445,7 @@ def clone_requirement(req_id: int, request: Request = None,
 
 
 # ══════════════════════════════════════
-#  History / Transitions / Comments (unchanged)
+#  History / Transitions / Comments
 # ══════════════════════════════════════
 
 @router.get("/{req_id}/history")
@@ -462,7 +540,7 @@ def quality_check(statement: str, title: str = "", rationale: str = "",
 
 
 # ══════════════════════════════════════
-#  Tier 2: Deep AI Quality Check        ← NEW
+#  Tier 2: Deep AI Quality Check
 # ══════════════════════════════════════
 
 @router.post("/quality-check/deep", response_model=DeepQualityResult)
@@ -482,7 +560,7 @@ def quality_check_deep(
 
 
 # ══════════════════════════════════════
-#  Tier 3: Batch Analysis                ← NEW
+#  Tier 3: Batch Analysis
 # ══════════════════════════════════════
 
 @router.post("/quality-check/batch", response_model=SetAnalysisResult)
@@ -518,7 +596,7 @@ def quality_check_batch(
 
 
 # ══════════════════════════════════════
-#  Stored AI Analysis Results            ← NEW
+#  Stored AI Analysis Results
 # ══════════════════════════════════════
 
 @router.get("/{req_id}/ai-analysis")
@@ -542,7 +620,7 @@ def get_ai_analysis(
 
 
 # ══════════════════════════════════════
-#  AI Feedback                           ← NEW
+#  AI Feedback
 # ══════════════════════════════════════
 
 @router.post("/{req_id}/ai-feedback", status_code=201)
@@ -561,7 +639,7 @@ def submit_ai_feedback(
 
 
 # ══════════════════════════════════════
-#  AI Stats                              ← NEW
+#  AI Stats
 # ══════════════════════════════════════
 
 @router.get("/ai/stats")

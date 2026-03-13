@@ -2,121 +2,357 @@
 
 /**
  * ASTRA — Reports Page (Project-Scoped)
+ * ========================================
  * File: frontend/src/app/projects/[id]/reports/page.tsx
+ *
+ * 6 report types with format selection, generation, and download.
+ * Compliance matrix has framework picker, Change History has date range.
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams } from 'next/navigation';
-import { FileText, Network, Shield, CheckSquare, LayoutDashboard, History, Download, Loader2, FileDown, Calendar, AlertCircle } from 'lucide-react';
-import api from '@/lib/api';
+import {
+  Loader2, FileBarChart, Network, FileText, Shield, CheckSquare,
+  LayoutDashboard, Clock, Download, RefreshCw, ChevronDown,
+  AlertTriangle, CheckCircle,
+} from 'lucide-react';
+import clsx from 'clsx';
 import { projectsAPI } from '@/lib/api';
+import api from '@/lib/api';
 
-interface ReportItem { key: string; name: string; description: string; formats: string[]; frameworks?: string[]; icon: string; }
-const ICON_MAP: Record<string, any> = { Network, FileText, Shield, CheckSquare, LayoutDashboard, History };
+// ── Report catalog ──
+
+interface ReportType {
+  key: string;
+  name: string;
+  description: string;
+  formats: string[];
+  icon: any;
+  iconColor: string;
+  frameworks?: string[];
+  hasDateRange?: boolean;
+}
+
+const REPORTS: ReportType[] = [
+  {
+    key: 'traceability-matrix',
+    name: 'Traceability Matrix (RTM)',
+    description: 'Full requirements-to-artifacts-to-verification traceability matrix with color-coded coverage status.',
+    formats: ['xlsx', 'pdf', 'html'],
+    icon: Network,
+    iconColor: '#3B82F6',
+  },
+  {
+    key: 'requirements-spec',
+    name: 'Requirements Specification (SRS)',
+    description: 'Formal IEEE 830 / ISO 29148 specification document with cover page, revision history, and grouped requirements.',
+    formats: ['docx', 'pdf'],
+    icon: FileText,
+    iconColor: '#8B5CF6',
+  },
+  {
+    key: 'quality',
+    name: 'Quality Assessment',
+    description: 'Quality score distribution, common issues, prohibited terms tracking, TBD/TBR counts, and improvement recommendations.',
+    formats: ['xlsx', 'pdf'],
+    icon: Shield,
+    iconColor: '#F59E0B',
+  },
+  {
+    key: 'compliance',
+    name: 'Compliance Matrix',
+    description: 'Map requirements to compliance frameworks with gap analysis.',
+    formats: ['xlsx', 'pdf'],
+    icon: CheckSquare,
+    iconColor: '#10B981',
+    frameworks: ['nist-800-53', 'mil-std-882e', 'do-178c', 'iso-29148'],
+  },
+  {
+    key: 'status-dashboard',
+    name: 'Status Dashboard',
+    description: 'Project snapshot: requirement counts, verification progress, traceability coverage, baselines, and recent activity.',
+    formats: ['pdf'],
+    icon: LayoutDashboard,
+    iconColor: '#06B6D4',
+  },
+  {
+    key: 'change-history',
+    name: 'Change History (CCB)',
+    description: 'Detailed change log grouped by requirement, showing field diffs within a date range. For Configuration Control Board meetings.',
+    formats: ['xlsx', 'pdf'],
+    icon: Clock,
+    iconColor: '#EF4444',
+    hasDateRange: true,
+  },
+];
+
 const FORMAT_LABELS: Record<string, { label: string; color: string }> = {
-  xlsx: { label: 'Excel', color: '#10B981' }, pdf: { label: 'PDF', color: '#EF4444' },
-  html: { label: 'HTML', color: '#3B82F6' }, docx: { label: 'Word', color: '#8B5CF6' },
+  xlsx: { label: 'XLSX', color: '#10B981' },
+  pdf: { label: 'PDF', color: '#EF4444' },
+  docx: { label: 'DOCX', color: '#3B82F6' },
+  html: { label: 'HTML', color: '#F59E0B' },
 };
+
+const FRAMEWORK_LABELS: Record<string, string> = {
+  'nist-800-53': 'NIST 800-53',
+  'mil-std-882e': 'MIL-STD-882E',
+  'do-178c': 'DO-178C',
+  'iso-29148': 'ISO 29148',
+};
+
+// ── Format button ──
+
+function FormatButton({ format, generating, onClick }: {
+  format: string; generating: boolean; onClick: () => void;
+}) {
+  const cfg = FORMAT_LABELS[format] || { label: format.toUpperCase(), color: '#6B7280' };
+  return (
+    <button
+      onClick={onClick}
+      disabled={generating}
+      className={clsx(
+        'flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-[11px] font-bold transition',
+        generating
+          ? 'border-slate-700 text-slate-600 cursor-wait'
+          : 'border-astra-border hover:border-blue-500/30 hover:bg-astra-surface-hover'
+      )}
+      style={!generating ? { color: cfg.color } : undefined}
+    >
+      {generating ? (
+        <Loader2 className="h-3 w-3 animate-spin" />
+      ) : (
+        <Download className="h-3 w-3" />
+      )}
+      {cfg.label}
+    </button>
+  );
+}
+
+// ── Report Card ──
+
+function ReportCard({ report, projectId, projectCode }: {
+  report: ReportType; projectId: number; projectCode: string;
+}) {
+  const [generating, setGenerating] = useState<string | null>(null);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+
+  // Compliance framework
+  const [framework, setFramework] = useState(report.frameworks?.[0] || '');
+
+  // Date range
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+
+  const handleGenerate = async (format: string) => {
+    setGenerating(format);
+    setError('');
+    setSuccess('');
+
+    try {
+      const params: Record<string, string> = {
+        project_id: String(projectId),
+      };
+
+      // Format (status-dashboard is always pdf)
+      if (report.key !== 'status-dashboard') {
+        params.format = format;
+      }
+
+      // Compliance framework
+      if (report.key === 'compliance' && framework) {
+        params.framework = framework;
+      }
+
+      // Date range
+      if (report.key === 'change-history') {
+        if (dateFrom) params.date_from = dateFrom;
+        if (dateTo) params.date_to = dateTo;
+      }
+
+      const response = await api.get(`/reports/${report.key}`, {
+        params,
+        responseType: 'blob',
+      });
+
+      // Extract filename from Content-Disposition header
+      const disposition = response.headers['content-disposition'] || '';
+      const filenameMatch = disposition.match(/filename="?([^"]+)"?/);
+      const filename = filenameMatch
+        ? filenameMatch[1]
+        : `${projectCode}_${report.key.replace(/-/g, '_')}.${format}`;
+
+      // Download
+      const blob = new Blob([response.data]);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      setSuccess(`${FORMAT_LABELS[format]?.label || format} downloaded`);
+      setTimeout(() => setSuccess(''), 3000);
+    } catch (e: any) {
+      if (e.response?.data instanceof Blob) {
+        const text = await e.response.data.text();
+        try {
+          const json = JSON.parse(text);
+          setError(json.detail || 'Generation failed');
+        } catch {
+          setError('Report generation failed');
+        }
+      } else {
+        setError(e.response?.data?.detail || 'Report generation failed');
+      }
+    }
+    setGenerating(null);
+  };
+
+  const Icon = report.icon;
+
+  return (
+    <div className="rounded-xl border border-astra-border bg-astra-surface p-5 transition hover:border-astra-border-light">
+      {/* Header */}
+      <div className="flex items-start gap-3 mb-3">
+        <div
+          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl"
+          style={{ background: `${report.iconColor}15` }}
+        >
+          <Icon className="h-5 w-5" style={{ color: report.iconColor }} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <h3 className="text-sm font-bold text-slate-200">{report.name}</h3>
+          <p className="mt-0.5 text-[11px] text-slate-500 leading-relaxed">{report.description}</p>
+        </div>
+      </div>
+
+      {/* Compliance framework selector */}
+      {report.frameworks && (
+        <div className="mb-3">
+          <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+            Framework
+          </label>
+          <div className="relative">
+            <select
+              value={framework}
+              onChange={(e) => setFramework(e.target.value)}
+              className="w-full appearance-none rounded-lg border border-astra-border bg-astra-surface-alt px-3 py-2 pr-8 text-xs text-slate-200 outline-none focus:border-blue-500/50"
+            >
+              {report.frameworks.map((fw) => (
+                <option key={fw} value={fw}>{FRAMEWORK_LABELS[fw] || fw}</option>
+              ))}
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3 w-3 -translate-y-1/2 text-slate-500" />
+          </div>
+        </div>
+      )}
+
+      {/* Date range for change history */}
+      {report.hasDateRange && (
+        <div className="mb-3 grid grid-cols-2 gap-2">
+          <div>
+            <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-500">From</label>
+            <input
+              type="date"
+              value={dateFrom}
+              onChange={(e) => setDateFrom(e.target.value)}
+              className="w-full rounded-lg border border-astra-border bg-astra-surface-alt px-3 py-2 text-xs text-slate-200 outline-none focus:border-blue-500/50"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-500">To</label>
+            <input
+              type="date"
+              value={dateTo}
+              onChange={(e) => setDateTo(e.target.value)}
+              className="w-full rounded-lg border border-astra-border bg-astra-surface-alt px-3 py-2 text-xs text-slate-200 outline-none focus:border-blue-500/50"
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Format buttons */}
+      <div className="flex items-center gap-2">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-600 mr-1">
+          Download
+        </span>
+        {report.formats.map((fmt) => (
+          <FormatButton
+            key={fmt}
+            format={fmt}
+            generating={generating === fmt}
+            onClick={() => handleGenerate(fmt)}
+          />
+        ))}
+      </div>
+
+      {/* Status messages */}
+      {error && (
+        <div className="mt-3 flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2">
+          <AlertTriangle className="h-3.5 w-3.5 text-red-400 shrink-0" />
+          <span className="text-[11px] text-red-400">{error}</span>
+        </div>
+      )}
+      {success && (
+        <div className="mt-3 flex items-center gap-2 rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2">
+          <CheckCircle className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+          <span className="text-[11px] text-emerald-400">{success}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════
+//  Main Page
+// ══════════════════════════════════════
 
 export default function ReportsPage() {
   const params = useParams();
   const projectId = Number(params.id);
-  const [catalog, setCatalog] = useState<ReportItem[]>([]);
+
   const [projectCode, setProjectCode] = useState('');
   const [loading, setLoading] = useState(true);
-  const [activeKey, setActiveKey] = useState<string | null>(null);
-  const [selectedFormat, setSelectedFormat] = useState('');
-  const [generating, setGenerating] = useState(false);
-  const [error, setError] = useState('');
-  const [success, setSuccess] = useState('');
 
   useEffect(() => {
-    Promise.all([
-      api.get('/reports/catalog').catch(() => ({ data: [] })),
-      projectsAPI.get(projectId).catch(() => null),
-    ]).then(([catRes, projRes]) => {
-      setCatalog(catRes.data || []);
-      setProjectCode(projRes?.data?.code || '');
-      setLoading(false);
-    });
+    projectsAPI.get(projectId)
+      .then((res) => setProjectCode(res.data?.code || ''))
+      .catch(() => {})
+      .finally(() => setLoading(false));
   }, [projectId]);
 
-  const activeItem = catalog.find(c => c.key === activeKey);
-
-  const generateReport = async () => {
-    if (!activeKey || !selectedFormat) return;
-    setGenerating(true); setError(''); setSuccess('');
-    try {
-      const params: any = { project_id: projectId };
-      if (selectedFormat !== 'pdf' && selectedFormat !== 'html') params.format = selectedFormat;
-      const res = await api.get(`/reports/${activeKey}`, { params, responseType: 'blob' });
-      const url = window.URL.createObjectURL(new Blob([res.data]));
-      const link = document.createElement('a'); link.href = url;
-      link.download = `${projectCode}-${activeKey}.${selectedFormat}`; link.click();
-      window.URL.revokeObjectURL(url);
-      setSuccess(`${activeItem?.name} generated successfully`);
-      setTimeout(() => setSuccess(''), 3000);
-    } catch (e: any) { setError('Report generation failed. Check the backend logs.'); }
-    setGenerating(false);
-  };
-
-  if (loading) return <div className="flex min-h-[60vh] items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-blue-500" /></div>;
+  if (loading) {
+    return (
+      <div className="flex min-h-[60vh] items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
+      </div>
+    );
+  }
 
   return (
     <div>
+      {/* Header */}
       <div className="mb-6">
         <h1 className="text-xl font-bold tracking-tight">Reports</h1>
-        <p className="mt-0.5 text-sm text-slate-500">{projectCode} · Generate SRS, RTM, quality, and compliance reports</p>
+        <p className="mt-0.5 text-sm text-slate-500">
+          {projectCode} · Generate and download project reports
+        </p>
       </div>
 
-      {error && <div className="mb-4 rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-400">{error}</div>}
-      {success && <div className="mb-4 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-400">{success}</div>}
-
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-        {catalog.map(item => {
-          const Icon = ICON_MAP[item.icon] || FileText;
-          const isActive = activeKey === item.key;
-          return (
-            <button key={item.key} onClick={() => { setActiveKey(isActive ? null : item.key); setSelectedFormat(item.formats[0] || 'pdf'); }}
-              className={`rounded-xl border p-5 text-left transition-all ${isActive ? 'border-blue-500/40 bg-blue-500/5 shadow-lg shadow-blue-500/5' : 'border-astra-border bg-astra-surface hover:border-blue-500/20'}`}>
-              <div className="flex items-center gap-3 mb-2">
-                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-500/10"><Icon className="h-4 w-4 text-blue-400" /></div>
-                <h3 className="text-sm font-bold text-slate-200">{item.name}</h3>
-              </div>
-              <p className="text-xs text-slate-500 leading-relaxed mb-3">{item.description}</p>
-              <div className="flex gap-1.5">
-                {item.formats.map(fmt => (
-                  <span key={fmt} className="rounded-full px-2 py-0.5 text-[9px] font-semibold" style={{ background: `${FORMAT_LABELS[fmt]?.color || '#6B7280'}20`, color: FORMAT_LABELS[fmt]?.color || '#6B7280' }}>
-                    {FORMAT_LABELS[fmt]?.label || fmt.toUpperCase()}
-                  </span>
-                ))}
-              </div>
-            </button>
-          );
-        })}
+      {/* Report cards grid */}
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        {REPORTS.map((report) => (
+          <ReportCard
+            key={report.key}
+            report={report}
+            projectId={projectId}
+            projectCode={projectCode}
+          />
+        ))}
       </div>
-
-      {/* Active report config */}
-      {activeItem && (
-        <div className="mt-6 rounded-xl border border-blue-500/20 bg-astra-surface p-5">
-          <h3 className="text-sm font-bold text-slate-200 mb-3">Generate: {activeItem.name}</h3>
-          <div className="flex items-center gap-3">
-            <div className="flex gap-2">
-              {activeItem.formats.map(fmt => (
-                <button key={fmt} onClick={() => setSelectedFormat(fmt)}
-                  className={`rounded-lg border px-3 py-2 text-xs font-semibold transition ${selectedFormat === fmt ? 'border-blue-500/40 bg-blue-500/10 text-blue-400' : 'border-astra-border text-slate-400 hover:text-slate-200'}`}>
-                  <FileDown className="inline h-3.5 w-3.5 mr-1" />{FORMAT_LABELS[fmt]?.label || fmt}
-                </button>
-              ))}
-            </div>
-            <button onClick={generateReport} disabled={generating}
-              className="flex items-center gap-2 rounded-lg bg-blue-500 px-5 py-2 text-xs font-semibold text-white hover:bg-blue-600 disabled:opacity-50">
-              {generating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-              {generating ? 'Generating…' : 'Download'}
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

@@ -103,6 +103,7 @@ class RequirementResponse(BaseModel):
 class RequirementDetail(RequirementResponse):
     owner: Optional[UserResponse] = None
     children: List["RequirementResponse"] = []
+    verifications: list = []
     trace_count: int = 0
     verification_status: Optional[str] = None
 
@@ -207,6 +208,7 @@ class DashboardStats(BaseModel):
     total_requirements: int
     by_status: dict
     by_type: dict
+    by_level: dict
     verified_count: int
     avg_quality_score: float
     total_trace_links: int

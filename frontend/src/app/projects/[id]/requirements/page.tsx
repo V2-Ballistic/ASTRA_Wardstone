@@ -474,7 +474,7 @@ export default function ProjectRequirementsPage() {
   };
 
   // ── Navigate to requirement ──
-  const navigateToReq = (id: number) => router.push(`/requirements/${id}`);
+  const navigateToReq = (id: number) => router.push(`${p}/requirements/${id}`);
 
   // ── Quick stat counts ──
   const statusCounts = requirements.reduce((acc, r) => {

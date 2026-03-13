@@ -19,7 +19,15 @@ def get_dashboard_stats(
     current_user: User = Depends(get_current_user),
 ):
     """Aggregate dashboard statistics for a project."""
-    reqs = db.query(Requirement).filter(Requirement.project_id == project_id).all()
+    # Fetch all requirements, excluding soft-deleted ones
+    reqs = (
+        db.query(Requirement)
+        .filter(
+            Requirement.project_id == project_id,
+            Requirement.status != "deleted",
+        )
+        .all()
+    )
     total = len(reqs)
     req_ids = [r.id for r in reqs]
 
@@ -34,6 +42,12 @@ def get_dashboard_stats(
     for r in reqs:
         t = r.req_type.value if hasattr(r.req_type, "value") else str(r.req_type)
         by_type[t] = by_type.get(t, 0) + 1
+
+    # ── By Level ──
+    by_level = {}
+    for r in reqs:
+        lv = r.level.value if hasattr(r.level, "value") else str(r.level)
+        by_level[lv] = by_level.get(lv, 0) + 1
 
     # ── Verified Count ──
     verified_count = 0
@@ -115,6 +129,7 @@ def get_dashboard_stats(
         total_requirements=total,
         by_status=by_status,
         by_type=by_type,
+        by_level=by_level,
         verified_count=verified_count,
         avg_quality_score=avg_quality,
         total_trace_links=total_trace_links,

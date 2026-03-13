@@ -3,24 +3,23 @@
 /**
  * ASTRA — Verification & Validation Dashboard
  * File: frontend/src/app/projects/[id]/verification/page.tsx
+ *
+ * Fixed: No longer fires N individual API calls per requirement.
+ * Uses a batched approach with delays to avoid rate limiting / CORS issues.
  */
 
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
-  Loader2, CheckSquare, AlertTriangle, Sparkles, Plus,
+  Loader2, CheckSquare, AlertTriangle, Plus,
   RefreshCw, ChevronRight, FlaskConical, Eye, FileText,
   Search, Shield, CheckCircle, XCircle, Clock,
 } from 'lucide-react';
 import clsx from 'clsx';
-import { requirementsAPI, projectsAPI } from '@/lib/api';
+import { requirementsAPI, projectsAPI, verificationsAPI } from '@/lib/api';
 import api from '@/lib/api';
 import { STATUS_COLORS, STATUS_LABELS, LEVEL_COLORS, type RequirementLevel, type RequirementStatus } from '@/lib/types';
 
-let aiAPI: any = null;
-try { aiAPI = require('@/lib/ai-api').aiAPI; } catch {}
-
-const METHOD_ICONS: Record<string, any> = { test: FlaskConical, analysis: FileText, inspection: Eye, demonstration: Shield };
 const METHOD_COLORS: Record<string, string> = { test: '#3B82F6', analysis: '#8B5CF6', inspection: '#F59E0B', demonstration: '#10B981' };
 const STATUS_CFG: Record<string, { color: string; bg: string; icon: any }> = {
   planned: { color: '#6B7280', bg: '#6B728015', icon: Clock },
@@ -43,7 +42,6 @@ export default function VerificationPage() {
   const [statusFilter, setStatusFilter] = useState('all');
   const [showAddForm, setShowAddForm] = useState(false);
 
-  // Add form state
   const [addReqId, setAddReqId] = useState<number | null>(null);
   const [addMethod, setAddMethod] = useState('test');
   const [addCriteria, setAddCriteria] = useState('');
@@ -55,19 +53,41 @@ export default function VerificationPage() {
     try {
       const [projRes, reqsRes] = await Promise.all([
         projectsAPI.get(projectId).catch(() => null),
-        requirementsAPI.list(projectId, { limit: 1000 }),
+        requirementsAPI.list(projectId, { limit: 200 }),
       ]);
       const reqs = Array.isArray(reqsRes.data) ? reqsRes.data : [];
       setRequirements(reqs);
       setProjectCode(projRes?.data?.code || '');
 
-      // Fetch verifications for all requirements
+      // Fetch verifications in small batches of 5 with delays
       const allVerifs: any[] = [];
-      for (const req of reqs) {
-        try {
-          const vRes = await api.get('/requirements/' + req.id);
-          if (vRes.data?.verifications) allVerifs.push(...vRes.data.verifications.map((v: any) => ({ ...v, req_id: req.req_id, req_title: req.title, req_level: req.level })));
-        } catch {}
+      const batchSize = 5;
+      for (let i = 0; i < reqs.length; i += batchSize) {
+        const batch = reqs.slice(i, i + batchSize);
+        const results = await Promise.allSettled(
+          batch.map((req: any) =>
+            verificationsAPI.list(req.id).catch(() => null)
+          )
+        );
+        results.forEach((result, idx) => {
+          if (result.status === 'fulfilled' && result.value?.data) {
+            const vData = result.value.data;
+            const vList = Array.isArray(vData) ? vData : vData.items || vData.verifications || [];
+            const req = batch[idx];
+            vList.forEach((v: any) => {
+              allVerifs.push({
+                ...v,
+                req_id: req.req_id,
+                req_title: req.title,
+                req_level: req.level,
+              });
+            });
+          }
+        });
+        // Small delay between batches to avoid rate limiting
+        if (i + batchSize < reqs.length) {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
       }
       setVerifications(allVerifs);
     } catch {}
@@ -80,25 +100,37 @@ export default function VerificationPage() {
     if (!addReqId) return;
     setSaving(true);
     try {
-      await api.post('/requirements/' + addReqId + '/verifications', { requirement_id: addReqId, method: addMethod, criteria: addCriteria });
-      setShowAddForm(false); setAddCriteria(''); setAddReqId(null);
+      await verificationsAPI.create(addReqId, {
+        requirement_id: addReqId,
+        method: addMethod,
+        criteria: addCriteria,
+      });
+      setShowAddForm(false);
+      setAddCriteria('');
+      setAddReqId(null);
       await fetchData();
     } catch {}
     setSaving(false);
   };
 
-  // Stats
-  const counts = { planned: 0, in_progress: 0, pass: 0, fail: 0 };
-  verifications.forEach(v => { const s = v.status?.value || v.status || 'planned'; counts[s as keyof typeof counts] = (counts[s as keyof typeof counts] || 0) + 1; });
-  const reqsWithoutVerif = requirements.filter(r => !verifications.some(v => v.requirement_id === r.id));
+  const counts: Record<string, number> = { planned: 0, in_progress: 0, pass: 0, fail: 0 };
+  verifications.forEach((v) => {
+    const s = v.status?.value || v.status || 'planned';
+    if (s in counts) counts[s]++;
+  });
+  const verifiedReqIds = new Set(verifications.map((v) => v.requirement_id));
+  const reqsWithoutVerif = requirements.filter((r) => !verifiedReqIds.has(r.id));
 
-  // Filter
-  const filtered = verifications.filter(v => {
+  const filtered = verifications.filter((v) => {
     const s = v.status?.value || v.status || 'planned';
     if (statusFilter !== 'all' && s !== statusFilter) return false;
     if (search) {
       const q = search.toLowerCase();
-      if (!(v.req_id || '').toLowerCase().includes(q) && !(v.req_title || '').toLowerCase().includes(q) && !(v.criteria || '').toLowerCase().includes(q)) return false;
+      if (
+        !(v.req_id || '').toLowerCase().includes(q) &&
+        !(v.req_title || '').toLowerCase().includes(q) &&
+        !(v.criteria || '').toLowerCase().includes(q)
+      ) return false;
     }
     return true;
   });
@@ -113,7 +145,8 @@ export default function VerificationPage() {
           <p className="mt-0.5 text-sm text-slate-500">{projectCode} · V&V status and test mapping</p>
         </div>
         <div className="flex gap-2">
-          <button onClick={() => setShowAddForm(true)} className="flex items-center gap-1.5 rounded-lg bg-blue-500 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-600">
+          <button onClick={() => setShowAddForm(true)} disabled={requirements.length === 0}
+            className="flex items-center gap-1.5 rounded-lg bg-blue-500 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-600 disabled:opacity-50">
             <Plus className="h-3.5 w-3.5" /> Add Verification
           </button>
           <button onClick={fetchData} className="rounded-full border border-astra-border p-2 text-slate-400 hover:text-slate-200"><RefreshCw className="h-3.5 w-3.5" /></button>
@@ -127,7 +160,8 @@ export default function VerificationPage() {
           const Icon = cfg?.icon || Clock;
           return (
             <button key={key} onClick={() => setStatusFilter(statusFilter === key ? 'all' : key)}
-              className={clsx('rounded-xl border p-4 text-left transition', statusFilter === key ? 'border-blue-500/30 bg-blue-500/5' : 'border-astra-border bg-astra-surface hover:border-blue-500/20')}>
+              className={clsx('rounded-xl border p-4 text-left transition',
+                statusFilter === key ? 'border-blue-500/30 bg-blue-500/5' : 'border-astra-border bg-astra-surface hover:border-blue-500/20')}>
               <div className="flex items-center gap-2"><Icon className="h-4 w-4" style={{ color: cfg?.color }} /><span className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">{key.replace('_', ' ')}</span></div>
               <div className="mt-2 text-2xl font-bold" style={{ color: cfg?.color }}>{val}</div>
             </button>
@@ -135,37 +169,42 @@ export default function VerificationPage() {
         })}
       </div>
 
-      {/* Warning: reqs without verification */}
       {reqsWithoutVerif.length > 0 && (
         <div className="mb-4 flex items-center gap-3 rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-3">
           <AlertTriangle className="h-4 w-4 text-amber-400 flex-shrink-0" />
-          <span className="flex-1 text-xs text-amber-300">{reqsWithoutVerif.length} requirement{reqsWithoutVerif.length !== 1 ? 's' : ''} without verification assigned</span>
-          <button onClick={() => router.push(`${p}/ai`)} className="flex items-center gap-1 text-[11px] font-semibold text-violet-400 hover:text-violet-300">
-            <Sparkles className="h-3 w-3" /> Auto-suggest methods
-          </button>
+          <span className="flex-1 text-xs text-amber-300">{reqsWithoutVerif.length} requirement{reqsWithoutVerif.length !== 1 ? 's' : ''} without verification</span>
         </div>
       )}
 
-      {/* Search + filter */}
       <div className="mb-4 flex items-center gap-3">
-        <div className="flex flex-1 items-center gap-2 rounded-lg border border-astra-border bg-astra-surface px-3 py-2" style={{ maxWidth: 320 }}>
-          <Search className="h-4 w-4 text-slate-500" />
-          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search verifications..." className="flex-1 bg-transparent text-[13px] text-slate-200 outline-none placeholder:text-slate-600" />
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search verifications…"
+            className="w-full rounded-lg border border-astra-border bg-astra-surface pl-9 pr-3 py-2 text-sm text-slate-200 outline-none focus:border-blue-500/50" />
         </div>
-        <span className="text-[11px] text-slate-500">{filtered.length} of {verifications.length} verifications</span>
+        {statusFilter !== 'all' && (
+          <button onClick={() => setStatusFilter('all')} className="rounded-lg border border-astra-border px-3 py-2 text-[11px] text-slate-400 hover:text-slate-200">Clear filter</button>
+        )}
       </div>
 
-      {/* Verification table */}
-      <div className="overflow-hidden rounded-xl border border-astra-border bg-astra-surface">
-        <div className="grid grid-cols-[100px_1fr_90px_80px_1fr_60px] border-b border-astra-border bg-astra-surface-alt px-4 py-2.5 text-[10px] font-bold uppercase tracking-wider text-slate-500">
-          <span>Req ID</span><span>Title</span><span>Method</span><span>Status</span><span>Criteria</span><span></span>
+      <div className="rounded-xl border border-astra-border bg-astra-surface overflow-hidden">
+        <div className="grid grid-cols-[100px_1fr_90px_80px_1fr_60px] border-b border-astra-border bg-astra-surface-alt px-4 py-2.5">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Req ID</span>
+          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Title</span>
+          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Method</span>
+          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Status</span>
+          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Criteria</span>
+          <span></span>
         </div>
         {filtered.length === 0 ? (
-          <div className="py-16 text-center text-sm text-slate-500">{verifications.length === 0 ? 'No verifications yet. Add one or use AI to auto-suggest.' : 'No matches for your filter.'}</div>
+          <div className="py-16 text-center text-sm text-slate-500">
+            {verifications.length === 0 ? 'No verifications yet. Add one to get started.' : 'No matches for your filter.'}
+          </div>
         ) : filtered.map((v, i) => {
           const method = v.method?.value || v.method || 'test';
           const status = v.status?.value || v.status || 'planned';
-          const cfg = STATUS_CFG[status]; const mc = METHOD_COLORS[method] || '#6B7280';
+          const cfg = STATUS_CFG[status];
+          const mc = METHOD_COLORS[method] || '#6B7280';
           return (
             <div key={v.id || i} className="grid grid-cols-[100px_1fr_90px_80px_1fr_60px] items-center border-b border-astra-border/50 px-4 py-3 hover:bg-astra-surface-hover">
               <span className="font-mono text-xs font-semibold text-blue-400">{v.req_id}</span>
@@ -173,13 +212,14 @@ export default function VerificationPage() {
               <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold capitalize" style={{ background: `${mc}20`, color: mc }}>{method}</span>
               <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold capitalize" style={{ background: cfg?.bg, color: cfg?.color }}>{status.replace('_', ' ')}</span>
               <span className="text-[11px] text-slate-400 truncate">{v.criteria || '—'}</span>
-              <button onClick={() => router.push(`/requirements/${v.requirement_id}`)} className="text-slate-500 hover:text-blue-400"><ChevronRight className="h-3.5 w-3.5" /></button>
+              <button onClick={() => router.push(`${p}/requirements/${v.requirement_id}`)} className="text-slate-500 hover:text-blue-400">
+                <ChevronRight className="h-3.5 w-3.5" />
+              </button>
             </div>
           );
         })}
       </div>
 
-      {/* Add Verification Modal */}
       {showAddForm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
           <div className="w-full max-w-md rounded-2xl border border-astra-border bg-astra-surface p-6 shadow-2xl">
@@ -187,27 +227,37 @@ export default function VerificationPage() {
             <div className="space-y-3">
               <div>
                 <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-500">Requirement</label>
-                <select value={addReqId || ''} onChange={(e) => setAddReqId(Number(e.target.value))} className="w-full rounded-lg border border-astra-border bg-astra-surface-alt px-3 py-2 text-sm text-slate-200 outline-none">
+                <select value={addReqId || ''} onChange={(e) => setAddReqId(Number(e.target.value))}
+                  className="w-full rounded-lg border border-astra-border bg-astra-surface-alt px-3 py-2 text-sm text-slate-200 outline-none">
                   <option value="">Select…</option>
-                  {requirements.map(r => <option key={r.id} value={r.id}>{r.req_id} — {r.title}</option>)}
+                  {requirements.map((r) => <option key={r.id} value={r.id}>{r.req_id} — {r.title}</option>)}
                 </select>
               </div>
               <div>
                 <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-500">Method</label>
                 <div className="flex gap-2">
-                  {['test', 'analysis', 'inspection', 'demonstration'].map(m => (
-                    <button key={m} onClick={() => setAddMethod(m)} className={clsx('flex-1 rounded-lg py-2 text-[11px] font-bold capitalize transition', addMethod === m ? 'text-white' : 'border border-astra-border text-slate-400')} style={addMethod === m ? { background: METHOD_COLORS[m] } : {}}>{m}</button>
+                  {['test', 'analysis', 'inspection', 'demonstration'].map((m) => (
+                    <button key={m} onClick={() => setAddMethod(m)}
+                      className={clsx('flex-1 rounded-lg py-2 text-[11px] font-bold capitalize transition',
+                        addMethod === m ? 'text-white' : 'border border-astra-border text-slate-400')}
+                      style={addMethod === m ? { background: METHOD_COLORS[m] } : {}}>
+                      {m}
+                    </button>
                   ))}
                 </div>
               </div>
               <div>
                 <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-500">Pass/Fail Criteria</label>
-                <textarea value={addCriteria} onChange={(e) => setAddCriteria(e.target.value)} rows={3} placeholder="Describe how to verify…" className="w-full rounded-lg border border-astra-border bg-astra-surface-alt px-3 py-2 text-sm text-slate-200 outline-none focus:border-blue-500/50" />
+                <textarea value={addCriteria} onChange={(e) => setAddCriteria(e.target.value)} rows={3} placeholder="Describe how to verify…"
+                  className="w-full rounded-lg border border-astra-border bg-astra-surface-alt px-3 py-2 text-sm text-slate-200 outline-none focus:border-blue-500/50" />
               </div>
             </div>
             <div className="mt-4 flex justify-between">
               <button onClick={() => setShowAddForm(false)} className="rounded-lg border border-astra-border px-4 py-2 text-xs text-slate-400 hover:text-slate-200">Cancel</button>
-              <button onClick={handleAdd} disabled={!addReqId || saving} className="rounded-lg bg-blue-500 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-600 disabled:opacity-50">{saving ? 'Saving…' : 'Add Verification'}</button>
+              <button onClick={handleAdd} disabled={!addReqId || saving}
+                className="rounded-lg bg-blue-500 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-600 disabled:opacity-50">
+                {saving ? 'Saving…' : 'Add Verification'}
+              </button>
             </div>
           </div>
         </div>
