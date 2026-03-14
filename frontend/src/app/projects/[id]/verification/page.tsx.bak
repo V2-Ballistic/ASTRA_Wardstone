@@ -190,13 +190,13 @@ export default function VerificationPage() {
       </div>
 
       <div className="rounded-xl border border-astra-border bg-astra-surface overflow-hidden">
-        <div className="grid grid-cols-[100px_1fr_90px_80px_1fr_80px] border-b border-astra-border bg-astra-surface-alt px-4 py-2.5">
+        <div className="grid grid-cols-[100px_1fr_90px_80px_1fr_60px] border-b border-astra-border bg-astra-surface-alt px-4 py-2.5">
           <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Req ID</span>
           <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Title</span>
           <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Method</span>
           <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Status</span>
           <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Criteria</span>
-          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Actions</span>
+          <span></span>
         </div>
         {filtered.length === 0 ? (
           <div className="py-16 text-center text-sm text-slate-500">

@@ -10,7 +10,7 @@ Called when wires are created, units imported, or bus/message definitions wired.
 10 requirement templates + matching verification templates.
 All generated requirements pass through the standard quality checker,
 are linked to source entities via InterfaceRequirementLink, and start
-as 'draft' status for engineer review.
+as 'pending_review' status for engineer review on the Auto Requirements page.
 """
 
 import re
@@ -1159,7 +1159,7 @@ class AutoRequirementGenerator:
             req_type=req_type,
             priority=priority,
             level=level,
-            status="draft",
+            status="pending_review",
             project_id=self.project_id,
             owner_id=self.user.id,
             created_by_id=self.user.id,

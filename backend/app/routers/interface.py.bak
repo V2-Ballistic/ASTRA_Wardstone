@@ -2235,25 +2235,11 @@ def auto_wire_harness(
            {"matched": len(matched), "unmatched_from": len(unmatched_from), "unmatched_to": len(unmatched_to)},
            project_id=harness.project_id, request=request)
 
-    # Auto-generate requirements from new wires
-    auto_result = {"requirements_generated": 0}
-    if matched:
-        try:
-            from app.services.interface.auto_requirements import AutoRequirementGenerator
-            generator = AutoRequirementGenerator(db, harness.project_id, current_user)
-            auto_result = generator.on_wires_created(harness, matched)
-            db.commit()
-        except Exception as e:
-            import logging
-            logging.getLogger("astra").error(f"Auto-req generation on auto-wire failed: {e}")
-            auto_result = {"requirements_generated": 0, "error": str(e)}
-
     return {
         "matched": len(matched),
         "unmatched_from": unmatched_from,
         "unmatched_to": unmatched_to,
         "wires_created": wire_results,
-        "auto_requirements": auto_result,
     }
 
 
