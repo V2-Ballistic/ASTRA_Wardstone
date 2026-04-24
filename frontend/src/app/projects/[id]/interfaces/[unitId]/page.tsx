@@ -22,7 +22,7 @@ import type {
   UnitDetail, ConnectorWithPins, Pin, BusWithMessages, MessageSummary,
   UnitEnvironmentalSpec, PinBusAssignment,
 } from '@/lib/interface-types';
-import { SIGNAL_TYPE_COLORS } from '@/lib/interface-types';
+import { SIGNAL_TYPE_COLORS, labelize } from '@/lib/interface-types';
 
 type Tab = 'overview' | 'connectors' | 'communication' | 'specifications';
 
@@ -132,9 +132,9 @@ export default function UnitDetailPage() {
             <span>·</span>
             <span>{unit.part_number}</span>
             <span>·</span>
-            <span className="capitalize">{unit.unit_type.replace(/_/g, ' ')}</span>
+            <span>{labelize(unit.unit_type)}</span>
             <span>·</span>
-            <span className="capitalize rounded-full bg-astra-surface-alt px-2 py-0.5 text-[10px]">{unit.status.replace(/_/g, ' ')}</span>
+            <span className="rounded-full bg-astra-surface-alt px-2 py-0.5 text-[10px]">{labelize(unit.status)}</span>
           </div>
         </div>
         <div className="flex gap-2">
@@ -234,16 +234,68 @@ export default function UnitDetailPage() {
                 <div>
                   <label className="text-[10px] text-slate-500 mb-1 block">Type</label>
                   <select value={connForm.connector_type} onChange={e => setConnForm({...connForm, connector_type: e.target.value})} className="w-full rounded-lg border border-astra-border bg-astra-surface-alt px-3 py-2 text-sm text-slate-300 outline-none">
-                    {['d_sub_9','d_sub_15','d_sub_25','d_sub_37','mil_dtl_38999_series_iii','mil_dtl_5015','rj45','usb_c','sma','bnc','m12_4pin','m12_8pin','fiber_lc','fiber_sc','terminal_block_4','terminal_block_8','backplane_vpx','custom'].map(t => (
-                      <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>
-                    ))}
+                    <optgroup label="MIL-Spec circular">
+                      {['mil_dtl_38999_series_iii','mil_dtl_38999_series_i','mil_dtl_38999_series_ii','mil_dtl_38999_series_iv','mil_dtl_26482_series_i','mil_dtl_26482_series_ii','mil_dtl_5015','amphenol_pt','amphenol_ms'].map(t => (
+                        <option key={t} value={t}>{labelize(t)}</option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="D-Sub / Micro-D / Nano-D">
+                      {['d_sub_9','d_sub_15','d_sub_25','d_sub_37','d_sub_50','d_sub_hd15','d_sub_hd26','micro_d_9','micro_d_15','micro_d_25','micro_d_37','nano_d_9','nano_d_15','nano_d_25'].map(t => (
+                        <option key={t} value={t}>{labelize(t)}</option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="Board-level headers (Pi, Arduino, FPGA)">
+                      {['pcb_header','pcb_header_2_54mm','pcb_header_2_00mm','pcb_header_1_27mm','pcb_header_idc','pcb_header_shrouded','qwiic_stemma_qt'].map(t => (
+                        <option key={t} value={t}>{labelize(t)}</option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="Small-signal / JST">
+                      {['jst_sh','jst_gh','jst_zh','jst_xh','jst_ph','molex_mini_fit','molex_micro_fit'].map(t => (
+                        <option key={t} value={t}>{labelize(t)}</option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="Ethernet / USB / Data">
+                      {['rj45','rj45_shielded','rj11','usb_c','usb_a','usb_b','usb_mini_b','usb_micro_b'].map(t => (
+                        <option key={t} value={t}>{labelize(t)}</option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="RF / Coax">
+                      {['sma','sma_reverse','smb','smc','bnc','tnc','n_type','f_type'].map(t => (
+                        <option key={t} value={t}>{labelize(t)}</option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="Fiber">
+                      {['fiber_lc','fiber_sc','fiber_st','fiber_fc','fiber_mtp_mpo'].map(t => (
+                        <option key={t} value={t}>{labelize(t)}</option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="M-Series / Industrial">
+                      {['m8_3pin','m8_4pin','m12_4pin','m12_5pin','m12_8pin','m12_12pin'].map(t => (
+                        <option key={t} value={t}>{labelize(t)}</option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="Backplane / High-speed">
+                      {['backplane_vme','backplane_cpci','backplane_vpx','backplane_vita_46','samtec_searay','samtec_tiger_eye','harwin_m80','harwin_gecko'].map(t => (
+                        <option key={t} value={t}>{labelize(t)}</option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="Terminal blocks">
+                      {['terminal_block_2','terminal_block_4','terminal_block_8','terminal_block_12','terminal_block_16','terminal_block_24'].map(t => (
+                        <option key={t} value={t}>{labelize(t)}</option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="Power / Other">
+                      {['power_anderson','power_mil_c_22992','winchester','burndy','circular_plastic','rectangular_sealed','hermetic_feedthrough','custom'].map(t => (
+                        <option key={t} value={t}>{labelize(t)}</option>
+                      ))}
+                    </optgroup>
                   </select>
                 </div>
                 <div>
                   <label className="text-[10px] text-slate-500 mb-1 block">Gender</label>
                   <select value={connForm.gender} onChange={e => setConnForm({...connForm, gender: e.target.value})} className="w-full rounded-lg border border-astra-border bg-astra-surface-alt px-3 py-2 text-sm text-slate-300 outline-none">
                     {['male_pin','female_socket','hermaphroditic','genderless'].map(g => (
-                      <option key={g} value={g}>{g.replace(/_/g, ' ')}</option>
+                      <option key={g} value={g}>{labelize(g)}</option>
                     ))}
                   </select>
                 </div>
@@ -274,7 +326,7 @@ export default function UnitDetailPage() {
                     {c.name && <span className="text-[13px] text-slate-300">{c.name}</span>}
                   </div>
                   <div className="text-[10px] text-slate-500">
-                    {c.connector_type.replace(/_/g, ' ')} · {c.gender.replace(/_/g, ' ')} · {c.total_contacts} contacts
+                    {labelize(c.connector_type)} · {labelize(c.gender)} · {c.total_contacts} contacts
                     {c.shell_size && ` · Shell ${c.shell_size}`}
                     {c.mil_spec && ` · ${c.mil_spec}`}
                   </div>
@@ -307,15 +359,15 @@ export default function UnitDetailPage() {
                               <span className="font-semibold text-slate-200">{pin.signal_name}</span>
                             </div>
                           </td>
-                          <td className="px-3 py-1.5 text-slate-400 capitalize">{pin.signal_type.replace(/_/g, ' ')}</td>
-                          <td className="px-3 py-1.5 text-slate-400 capitalize">{pin.direction.replace(/_/g, ' ')}</td>
+                          <td className="px-3 py-1.5 text-slate-400">{labelize(pin.signal_type)}</td>
+                          <td className="px-3 py-1.5 text-slate-400">{labelize(pin.direction)}</td>
                           <td className="px-3 py-1.5 text-slate-400">{pin.voltage_nominal || '—'}</td>
                           <td className="px-3 py-1.5 text-slate-400">{pin.current_max_amps ? `${pin.current_max_amps}A` : '—'}</td>
                           <td className="px-3 py-1.5 text-slate-400">{pin.impedance_ohms ? `${pin.impedance_ohms}Ω` : '—'}</td>
                           <td className="px-3 py-1.5">
                             {pin.bus_assignment ? (
                               <span className="rounded-full bg-violet-500/15 px-2 py-0.5 text-[9px] font-bold text-violet-400">
-                                {pin.bus_assignment.pin_role.replace(/_/g, ' ')}
+                                {labelize(pin.bus_assignment.pin_role)}
                               </span>
                             ) : <span className="text-slate-600">—</span>}
                           </td>
@@ -351,7 +403,7 @@ export default function UnitDetailPage() {
                   <label className="text-[10px] text-slate-500 mb-1 block">Bus Type</label>
                   <select value={busForm.bus_type} onChange={e => setBusForm({...busForm, bus_type: e.target.value})} className="w-full rounded-lg border border-astra-border bg-astra-surface-alt px-3 py-2 text-sm text-slate-300 outline-none">
                     {['mil_std_1553b','arinc_429','can_2_0b','can_fd','rs_422','rs_485','rs_232','spi','i2c','uart','ethernet_100base_t','ethernet_1000base_t','spacewire','fiber_channel','custom'].map(t => (
-                      <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>
+                      <option key={t} value={t}>{labelize(t)}</option>
                     ))}
                   </select>
                 </div>
@@ -378,11 +430,11 @@ export default function UnitDetailPage() {
                     <Wifi className="h-4 w-4 text-violet-400" />
                     <span className="text-sm font-bold text-slate-200">{bus.name}</span>
                     <span className="rounded-full bg-violet-500/15 px-2 py-0.5 text-[10px] font-bold text-violet-400">
-                      {bus.protocol.replace(/_/g, '-').toUpperCase()}
+                      {labelize(bus.protocol)}
                     </span>
                   </div>
                   <div className="mt-1 text-[10px] text-slate-500">
-                    Role: {bus.bus_role.replace(/_/g, ' ')}
+                    Role: {labelize(bus.bus_role)}
                     {bus.bus_address && ` · Addr: ${bus.bus_address}`}
                     {bus.data_rate && ` · ${bus.data_rate}`}
                     {bus.bus_name_network && ` · Network: ${bus.bus_name_network}`}
@@ -400,7 +452,7 @@ export default function UnitDetailPage() {
                   <div className="flex flex-wrap gap-1.5">
                     {bus.pin_assignments.map(pa => (
                       <span key={pa.id} className="rounded border border-astra-border bg-astra-bg px-2 py-0.5 text-[10px] text-slate-400">
-                        {pa.connector_designator}:{pa.pin_number} ({pa.pin_role.replace(/_/g, ' ')})
+                        {pa.connector_designator}:{pa.pin_number} ({labelize(pa.pin_role)})
                       </span>
                     ))}
                   </div>
@@ -511,7 +563,7 @@ export default function UnitDetailPage() {
                 <tbody>
                   {unit.environmental_specs.map(es => (
                     <tr key={es.id} className="border-t border-astra-border/30">
-                      <td className="py-1.5 pr-3 capitalize text-slate-300">{es.category.replace(/_/g, ' ')}</td>
+                      <td className="py-1.5 pr-3 text-slate-300">{labelize(es.category)}</td>
                       <td className="py-1.5 pr-3 text-slate-400">{es.standard || '—'}</td>
                       <td className="py-1.5 pr-3 text-slate-400">{es.test_method || '—'}</td>
                       <td className="py-1.5 pr-3 font-mono text-slate-300">{es.limit_value ?? '—'} {es.limit_unit || ''}</td>

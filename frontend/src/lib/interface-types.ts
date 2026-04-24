@@ -46,27 +46,68 @@ export type ConnectorType =
   | 'mil_dtl_5015' | 'd_sub_9' | 'd_sub_15' | 'd_sub_25' | 'd_sub_37'
   | 'micro_d_9' | 'micro_d_15' | 'micro_d_25' | 'rj45' | 'rj45_shielded'
   | 'usb_c' | 'sma' | 'bnc' | 'tnc' | 'n_type' | 'fiber_lc' | 'fiber_sc'
-  | 'm12_4pin' | 'm12_8pin' | 'backplane_vpx' | 'custom' | string;
+  | 'm12_4pin' | 'm12_8pin' | 'backplane_vpx'
+  // ── Board-level / prototype headers (Pi, Arduino, FPGA mezzanines) ──
+  | 'pcb_header' | 'pcb_header_2_54mm' | 'pcb_header_2_00mm' | 'pcb_header_1_27mm'
+  | 'pcb_header_idc' | 'pcb_header_shrouded'
+  // ── Small-signal JST variants (HATs, sensor breakouts) ──
+  | 'jst_sh' | 'jst_gh' | 'jst_zh'
+  // ── Modular interop ──
+  | 'qwiic_stemma_qt'
+  | 'custom' | string;
 
 export type ConnectorGender = 'male_pin' | 'female_socket' | 'hermaphroditic' | 'genderless';
 
 export type SignalType =
+  // ── Power ──
   | 'power_primary' | 'power_secondary' | 'power_return'
   | 'chassis_ground' | 'signal_ground'
+  // ── Generic digital / analog (legacy backend) ──
   | 'signal_digital_single' | 'signal_digital_differential'
   | 'signal_analog_single' | 'signal_analog_differential'
+  // ── Voltage-specific digital (board-level) ──
+  | 'digital_3v3' | 'digital_5v' | 'digital_12v' | 'digital_lvds'
+  // ── Specific analog ──
+  | 'analog_voltage' | 'analog_current_4_20ma'
+  // ── Clocks ──
   | 'clock_single' | 'clock_differential' | 'clock_reference'
+  // ── RF ──
   | 'rf_signal' | 'rf_lo' | 'rf_if'
+  // ── Discrete I/O ──
   | 'discrete_input' | 'discrete_output' | 'discrete_bidirectional'
-  | 'serial_data' | 'parallel_data' | 'pwm' | 'pulse'
+  | 'discrete_command' | 'discrete_status'
+  // ── Serial protocols ──
+  | 'serial_data' | 'parallel_data' | 'serial_rs232' | 'serial_rs422'
+  | 'serial_rs485' | 'serial_uart'
+  // ── Board-level digital buses ──
+  | 'i2c_scl' | 'i2c_sda'
+  | 'spi_clk' | 'spi_mosi' | 'spi_miso' | 'spi_cs'
+  | 'can_high' | 'can_low'
+  // ── Aerospace buses (pin-level) ──
+  | 'mil_std_1553_a' | 'mil_std_1553_b' | 'arinc_429' | 'arinc_664'
+  | 'spacewire_data' | 'spacewire_strobe'
+  // ── Ethernet variants (pin-level) ──
+  | 'ethernet_100base_t' | 'ethernet_1000base_t'
+  // ── Media ──
+  | 'video_analog' | 'video_sdi' | 'audio_analog' | 'audio_digital_aes'
+  // ── Fiber ──
+  | 'fiber_optic_single' | 'fiber_optic_multi' | 'fiber_tx' | 'fiber_rx'
+  // ── Pulse / timing ──
+  | 'pwm' | 'pulse'
+  // ── Transducers ──
   | 'thermocouple' | 'rtd' | 'strain_gauge' | 'lvdt'
-  | 'fiber_optic_single' | 'fiber_optic_multi' | 'coax_signal'
-  | 'spare' | 'no_connect' | 'shield_overall' | 'shield_individual'
-  | 'shield_drain' | 'test_point' | 'key_pin' | 'alignment_pin'
+  // ── Ordnance ──
+  | 'pyro_fire' | 'pyro_arm'
+  // ── Misc ──
+  | 'coax_signal'
+  | 'spare' | 'no_connect'
+  | 'shield' | 'shield_overall' | 'shield_individual' | 'shield_drain'
+  | 'test_point' | 'key_pin' | 'alignment_pin'
   | 'reserved' | 'custom';
 
 export type PinDirection =
   | 'input' | 'output' | 'bidirectional' | 'tri_state'
+  | 'open_collector' | 'open_drain' | 'passive'
   | 'power_source' | 'power_sink' | 'power_return'
   | 'ground' | 'chassis_ground' | 'no_connect' | 'spare' | 'custom';
 
@@ -885,21 +926,99 @@ export const CRITICALITY_COLORS: Record<string, { bg: string; text: string }> = 
 };
 
 export const SIGNAL_TYPE_COLORS: Record<string, string> = {
+  // Power
   power_primary: '#EF4444',
   power_secondary: '#F97316',
   power_return: '#F59E0B',
+  // Ground
   chassis_ground: '#6B7280',
   signal_ground: '#9CA3AF',
+  // Generic digital
   signal_digital_single: '#3B82F6',
   signal_digital_differential: '#2563EB',
+  digital_3v3: '#3B82F6',
+  digital_5v: '#2563EB',
+  digital_12v: '#1D4ED8',
+  digital_lvds: '#4F46E5',
+  // Analog
   signal_analog_single: '#10B981',
   signal_analog_differential: '#059669',
+  analog_voltage: '#10B981',
+  analog_current_4_20ma: '#047857',
+  // Transducers
+  thermocouple: '#D97706',
+  rtd: '#C2410C',
+  strain_gauge: '#B45309',
+  lvdt: '#92400E',
+  // RF
   rf_signal: '#8B5CF6',
+  rf_lo: '#7C3AED',
+  rf_if: '#A78BFA',
+  // Discrete
   discrete_input: '#06B6D4',
   discrete_output: '#0891B2',
+  discrete_bidirectional: '#0E7490',
+  discrete_command: '#06B6D4',
+  discrete_status: '#0891B2',
+  // Serial
+  serial_data: '#14B8A6',
+  serial_rs232: '#14B8A6',
+  serial_rs422: '#0D9488',
+  serial_rs485: '#0F766E',
+  serial_uart: '#14B8A6',
+  // I²C / SPI / CAN
+  i2c_sda: '#F472B6',
+  i2c_scl: '#EC4899',
+  spi_mosi: '#A855F7',
+  spi_miso: '#9333EA',
+  spi_clk: '#7E22CE',
+  spi_cs: '#6B21A8',
+  can_high: '#F59E0B',
+  can_low: '#D97706',
+  // Aerospace buses
+  mil_std_1553_a: '#DC2626',
+  mil_std_1553_b: '#B91C1C',
+  arinc_429: '#EA580C',
+  arinc_664: '#C2410C',
+  spacewire_data: '#4F46E5',
+  spacewire_strobe: '#4338CA',
+  // Ethernet
+  ethernet_100base_t: '#0284C7',
+  ethernet_1000base_t: '#0369A1',
+  // Media
+  video_analog: '#DB2777',
+  video_sdi: '#BE185D',
+  audio_analog: '#E11D48',
+  audio_digital_aes: '#BE123C',
+  // Fiber
+  fiber_optic_single: '#22C55E',
+  fiber_optic_multi: '#16A34A',
+  fiber_tx: '#22C55E',
+  fiber_rx: '#16A34A',
+  // Clocks
+  clock_single: '#818CF8',
+  clock_differential: '#6366F1',
+  clock_reference: '#4F46E5',
+  // Pulse
+  pwm: '#FB923C',
+  pulse: '#F97316',
+  // Ordnance
+  pyro_fire: '#DC2626',
+  pyro_arm: '#991B1B',
+  // Coax
+  coax_signal: '#7C3AED',
+  // Misc
   spare: '#475569',
   no_connect: '#334155',
+  shield: '#A78BFA',
   shield_overall: '#A78BFA',
+  shield_individual: '#8B5CF6',
+  shield_drain: '#7C3AED',
+  test_point: '#EAB308',
+  key_pin: '#64748B',
+  alignment_pin: '#64748B',
+  reserved: '#475569',
+  custom: '#64748B',
 };
 
 export const RISK_COLORS: Record<string, { bg: string; text: string }> = {
@@ -909,3 +1028,216 @@ export const RISK_COLORS: Record<string, { bg: string; text: string }> = {
   high:     { bg: 'rgba(239,68,68,0.15)',  text: '#EF4444' },
   critical: { bg: 'rgba(239,68,68,0.25)',  text: '#DC2626' },
 };
+
+// ══════════════════════════════════════════════════════════════
+//  labelize() — smart human-readable labels for enum values
+//
+//  Turns snake_case enum values into properly-cased display labels,
+//  with domain-aware overrides for acronyms and standards.
+//    'signal_ground'      → 'Signal Ground'
+//    'i2c_sda'            → 'I²C SDA'
+//    'mil_std_1553_a'     → 'MIL-STD-1553 A'
+//    'rj45'               → 'RJ-45'
+//    'd_sub_25'           → 'D-Sub 25'
+//    'rs232'              → 'RS-232'
+//    'open_collector'     → 'Open Collector'
+//
+//  Use in every <option> label and display chip throughout the app.
+// ══════════════════════════════════════════════════════════════
+
+// Exact-match overrides (take precedence over word-level rules)
+const LABEL_OVERRIDES: Record<string, string> = {
+  // Pin / signal
+  i2c_sda: 'I²C SDA',
+  i2c_scl: 'I²C SCL',
+  spi_mosi: 'SPI MOSI',
+  spi_miso: 'SPI MISO',
+  spi_clk: 'SPI CLK',
+  spi_cs: 'SPI CS',
+  can_high: 'CAN High',
+  can_low: 'CAN Low',
+  serial_rs232: 'Serial RS-232',
+  serial_rs422: 'Serial RS-422',
+  serial_rs485: 'Serial RS-485',
+  serial_uart: 'Serial UART',
+  rs232: 'RS-232',
+  rs422: 'RS-422',
+  rs485: 'RS-485',
+  uart: 'UART',
+  digital_3v3: 'Digital 3.3V',
+  digital_5v: 'Digital 5V',
+  digital_12v: 'Digital 12V',
+  digital_lvds: 'Digital LVDS',
+  analog_voltage: 'Analog Voltage',
+  analog_current_4_20ma: 'Analog Current 4–20 mA',
+  mil_std_1553_a: 'MIL-STD-1553 A',
+  mil_std_1553_b: 'MIL-STD-1553 B',
+  arinc_429: 'ARINC-429',
+  arinc_664: 'ARINC-664',
+  spacewire_data: 'SpaceWire Data',
+  spacewire_strobe: 'SpaceWire Strobe',
+  ethernet_100base_t: 'Ethernet 100BASE-T',
+  ethernet_1000base_t: 'Ethernet 1000BASE-T',
+  ethernet_10gbase_t: 'Ethernet 10GBASE-T',
+  ethernet_100base_tx: 'Ethernet 100BASE-TX',
+  audio_digital_aes: 'Audio Digital AES',
+  video_sdi: 'Video SDI',
+  video_analog: 'Video Analog',
+  audio_analog: 'Audio Analog',
+  fiber_tx: 'Fiber TX',
+  fiber_rx: 'Fiber RX',
+  fiber_optic_single: 'Fiber Optic (Single-Mode)',
+  fiber_optic_multi: 'Fiber Optic (Multi-Mode)',
+  pyro_fire: 'Pyro Fire',
+  pyro_arm: 'Pyro Arm',
+  pwm: 'PWM',
+  lvdt: 'LVDT',
+  rtd: 'RTD',
+  rf_signal: 'RF Signal',
+  rf_lo: 'RF LO',
+  rf_if: 'RF IF',
+  tri_state: 'Tri-State',
+  open_collector: 'Open Collector',
+  open_drain: 'Open Drain',
+  no_connect: 'No Connect',
+  test_point: 'Test Point',
+  key_pin: 'Key Pin',
+  alignment_pin: 'Alignment Pin',
+
+  // Connector
+  rj45: 'RJ-45',
+  rj45_shielded: 'RJ-45 Shielded',
+  rj11: 'RJ-11',
+  usb_a: 'USB-A',
+  usb_b: 'USB-B',
+  usb_c: 'USB-C',
+  usb_mini_b: 'USB Mini-B',
+  usb_micro_b: 'USB Micro-B',
+  sma: 'SMA',
+  sma_reverse: 'SMA Reverse',
+  smb: 'SMB',
+  smc: 'SMC',
+  bnc: 'BNC',
+  tnc: 'TNC',
+  n_type: 'N-Type',
+  f_type: 'F-Type',
+  d_sub_9: 'D-Sub 9',
+  d_sub_15: 'D-Sub 15',
+  d_sub_25: 'D-Sub 25',
+  d_sub_37: 'D-Sub 37',
+  d_sub_50: 'D-Sub 50',
+  d_sub_hd15: 'D-Sub HD15',
+  d_sub_hd26: 'D-Sub HD26',
+  micro_d_9: 'Micro-D 9',
+  micro_d_15: 'Micro-D 15',
+  micro_d_25: 'Micro-D 25',
+  micro_d_37: 'Micro-D 37',
+  micro_d_51: 'Micro-D 51',
+  nano_d_9: 'Nano-D 9',
+  nano_d_15: 'Nano-D 15',
+  nano_d_25: 'Nano-D 25',
+  nano_d_31: 'Nano-D 31',
+  nano_d_37: 'Nano-D 37',
+  m8_3pin: 'M8 3-Pin',
+  m8_4pin: 'M8 4-Pin',
+  m12_4pin: 'M12 4-Pin',
+  m12_5pin: 'M12 5-Pin',
+  m12_8pin: 'M12 8-Pin',
+  m12_12pin: 'M12 12-Pin',
+  fiber_lc: 'Fiber LC',
+  fiber_sc: 'Fiber SC',
+  fiber_st: 'Fiber ST',
+  fiber_fc: 'Fiber FC',
+  fiber_mtp_mpo: 'Fiber MTP/MPO',
+  mil_dtl_38999_series_i: 'MIL-DTL-38999 Series I',
+  mil_dtl_38999_series_ii: 'MIL-DTL-38999 Series II',
+  mil_dtl_38999_series_iii: 'MIL-DTL-38999 Series III',
+  mil_dtl_38999_series_iv: 'MIL-DTL-38999 Series IV',
+  mil_dtl_26482_series_i: 'MIL-DTL-26482 Series I',
+  mil_dtl_26482_series_ii: 'MIL-DTL-26482 Series II',
+  mil_dtl_83723_series_iii: 'MIL-DTL-83723 Series III',
+  mil_dtl_5015: 'MIL-DTL-5015',
+  mil_c_26500: 'MIL-C-26500',
+  backplane_vme: 'Backplane VME',
+  backplane_cpci: 'Backplane cPCI',
+  backplane_vpx: 'Backplane VPX',
+  backplane_vita_46: 'Backplane VITA-46',
+  samtec_searay: 'Samtec SEARAY',
+  samtec_tiger_eye: 'Samtec Tiger Eye',
+  harwin_m80: 'Harwin M80',
+  harwin_gecko: 'Harwin Gecko',
+  molex_mini_fit: 'Molex Mini-Fit',
+  molex_micro_fit: 'Molex Micro-Fit',
+  jst_xh: 'JST XH',
+  jst_ph: 'JST PH',
+  jst_sh: 'JST SH',
+  jst_gh: 'JST GH',
+  jst_zh: 'JST ZH',
+  amphenol_pt: 'Amphenol PT',
+  amphenol_ms: 'Amphenol MS',
+  power_anderson: 'Power Anderson',
+  power_mil_c_22992: 'Power MIL-C-22992',
+  hermetic_feedthrough: 'Hermetic Feedthrough',
+  pcb_header: 'PCB Header',
+  pcb_header_2_54mm: 'PCB Header 2.54 mm',
+  pcb_header_2_00mm: 'PCB Header 2.00 mm',
+  pcb_header_1_27mm: 'PCB Header 1.27 mm',
+  pcb_header_idc: 'PCB Header IDC',
+  pcb_header_shrouded: 'PCB Header Shrouded',
+  qwiic_stemma_qt: 'Qwiic / STEMMA QT',
+
+  // Gender
+  male_pin: 'Male (Pin)',
+  female_socket: 'Female (Socket)',
+
+  // Bus protocol shortforms
+  mil_std_1553a: 'MIL-STD-1553A',
+  mil_std_1553b: 'MIL-STD-1553B',
+  mil_std_1773: 'MIL-STD-1773',
+  spacewire: 'SpaceWire',
+  spacewire_rmap: 'SpaceWire RMAP',
+  can_2b: 'CAN 2.0B',
+  canfd: 'CAN FD',
+  canopen: 'CANopen',
+  spi_mode0: 'SPI Mode 0',
+  i2c_standard: 'I²C Standard',
+  i2c_fast: 'I²C Fast',
+  arinc_664_part7: 'ARINC-664 Part 7',
+  usb_2_0: 'USB 2.0',
+  usb_3_0: 'USB 3.0',
+  jtag: 'JTAG',
+  swd: 'SWD',
+  ccsds_tm: 'CCSDS TM',
+  ccsds_tc: 'CCSDS TC',
+  analog_4_20ma: 'Analog 4–20 mA',
+  discrete_28v: 'Discrete 28V',
+  discrete_5v: 'Discrete 5V',
+};
+
+// Words that should stay uppercase when they appear as tokens
+const ACRONYMS = new Set([
+  'id', 'ip', 'rf', 'dc', 'ac', 'tx', 'rx', 'io',
+  'mosi', 'miso', 'clk', 'cs', 'sck', 'cpu', 'gpu',
+  'lo', 'if', 'hi', 'lo',
+  'pcb', 'icd', 'ecu', 'mcu',
+]);
+
+/**
+ * Convert a snake_case enum value to a human-readable label.
+ * Handles overrides (I²C, MIL-STD, etc.), acronyms, and Title Case fallback.
+ */
+export function labelize(value: string | null | undefined): string {
+  if (!value) return '';
+  const key = String(value).toLowerCase().trim();
+  if (LABEL_OVERRIDES[key]) return LABEL_OVERRIDES[key];
+
+  // Fallback: split on underscores and title-case each word
+  return key.split('_').map(word => {
+    if (!word) return word;
+    if (ACRONYMS.has(word)) return word.toUpperCase();
+    // Numbers stay as-is
+    if (/^\d/.test(word)) return word;
+    // Capitalize first letter
+    return word.charAt(0).toUpperCase() + word.slice(1);
+  }).join(' ');
+}

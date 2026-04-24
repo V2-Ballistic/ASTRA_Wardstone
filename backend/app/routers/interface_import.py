@@ -70,25 +70,92 @@ VALID_UNIT_STATUSES = [
     "production", "installed", "qualified", "accepted", "operational",
 ]
 VALID_CONNECTOR_TYPES = [
-    "mil_dtl_38999_series_iii", "mil_dtl_38999_series_i", "mil_dtl_26482_series_i",
-    "d_sub_9", "d_sub_15", "d_sub_25", "d_sub_37",
-    "micro_d_9", "micro_d_15", "micro_d_25",
-    "rj45", "usb_c", "sma", "bnc", "fiber_lc", "fiber_sc",
-    "m12_4pin", "m12_8pin", "backplane_vpx", "custom",
+    # MIL-Spec
+    "mil_dtl_38999_series_i", "mil_dtl_38999_series_ii", "mil_dtl_38999_series_iii",
+    "mil_dtl_38999_series_iv", "mil_dtl_26482_series_i", "mil_dtl_26482_series_ii",
+    "mil_dtl_83723_series_iii", "mil_dtl_5015", "mil_c_26500",
+    # D-Sub / Micro-D / Nano-D
+    "d_sub_9", "d_sub_15", "d_sub_25", "d_sub_37", "d_sub_50",
+    "d_sub_hd15", "d_sub_hd26",
+    "micro_d_9", "micro_d_15", "micro_d_25", "micro_d_37", "micro_d_51",
+    "nano_d_9", "nano_d_15", "nano_d_25", "nano_d_31", "nano_d_37",
+    # Ethernet / USB / data
+    "rj11", "rj45", "rj45_shielded",
+    "usb_a", "usb_b", "usb_mini_b", "usb_micro_b", "usb_c",
+    # RF / Coax
+    "sma", "sma_reverse", "smb", "smc", "bnc", "tnc", "n_type", "f_type",
+    # Fiber
+    "fiber_lc", "fiber_sc", "fiber_st", "fiber_fc", "fiber_mtp_mpo",
+    # M-series industrial
+    "m8_3pin", "m8_4pin", "m12_4pin", "m12_5pin", "m12_8pin", "m12_12pin",
+    # Board-level headers (Pi, Arduino, FPGA mezzanines)
+    "pcb_header", "pcb_header_2_54mm", "pcb_header_2_00mm", "pcb_header_1_27mm",
+    "pcb_header_idc", "pcb_header_shrouded",
+    # Small-signal JST + Molex
+    "jst_xh", "jst_ph", "jst_sh", "jst_gh", "jst_zh",
+    "molex_mini_fit", "molex_micro_fit",
+    # Modular interop
+    "qwiic_stemma_qt",
+    # Industrial / misc
+    "amphenol_pt", "amphenol_ms", "winchester", "burndy",
+    "power_anderson", "power_mil_c_22992",
+    "terminal_block_2", "terminal_block_4", "terminal_block_8",
+    "terminal_block_12", "terminal_block_16", "terminal_block_24",
+    # Backplane / high-speed
+    "backplane_vme", "backplane_cpci", "backplane_vpx", "backplane_vita_46",
+    "samtec_searay", "samtec_tiger_eye", "harwin_m80", "harwin_gecko",
+    # Generic
+    "circular_plastic", "rectangular_sealed", "hermetic_feedthrough", "custom",
 ]
 VALID_GENDERS = ["male_pin", "female_socket", "hermaphroditic", "genderless"]
 VALID_SIGNAL_TYPES = [
+    # Power
     "power_primary", "power_secondary", "power_return",
     "chassis_ground", "signal_ground",
+    # Generic digital / analog
     "signal_digital_single", "signal_digital_differential",
     "signal_analog_single", "signal_analog_differential",
-    "clock_single", "clock_differential",
-    "rf_signal", "discrete_input", "discrete_output",
-    "serial_data", "parallel_data", "spare", "no_connect",
-    "shield_overall", "shield_drain", "test_point", "custom",
+    # Voltage-specific digital
+    "digital_3v3", "digital_5v", "digital_12v", "digital_lvds",
+    # Specific analog
+    "analog_voltage", "analog_current_4_20ma",
+    # Clocks
+    "clock_single", "clock_differential", "clock_reference",
+    # RF
+    "rf_signal", "rf_lo", "rf_if",
+    # Discrete
+    "discrete_input", "discrete_output", "discrete_bidirectional",
+    "discrete_command", "discrete_status",
+    # Serial
+    "serial_data", "parallel_data",
+    "serial_rs232", "serial_rs422", "serial_rs485", "serial_uart",
+    # Board-level digital buses
+    "i2c_scl", "i2c_sda",
+    "spi_clk", "spi_mosi", "spi_miso", "spi_cs",
+    "can_high", "can_low",
+    # Aerospace buses (pin-level)
+    "mil_std_1553_a", "mil_std_1553_b", "arinc_429", "arinc_664",
+    "spacewire_data", "spacewire_strobe",
+    # Ethernet (pin-level)
+    "ethernet_100base_t", "ethernet_1000base_t",
+    # Media
+    "video_analog", "video_sdi", "audio_analog", "audio_digital_aes",
+    # Fiber
+    "fiber_optic_single", "fiber_optic_multi", "fiber_tx", "fiber_rx",
+    # Transducers
+    "thermocouple", "rtd", "strain_gauge", "lvdt",
+    # Pulse / timing
+    "pwm", "pulse",
+    # Ordnance
+    "pyro_fire", "pyro_arm",
+    # Misc
+    "coax_signal", "spare", "no_connect",
+    "shield", "shield_overall", "shield_individual", "shield_drain",
+    "test_point", "key_pin", "alignment_pin", "reserved", "custom",
 ]
 VALID_PIN_DIRECTIONS = [
     "input", "output", "bidirectional", "tri_state",
+    "open_collector", "open_drain", "passive",
     "power_source", "power_sink", "power_return",
     "ground", "chassis_ground", "no_connect", "spare", "custom",
 ]
@@ -319,53 +386,133 @@ def generate_import_template(
     # ── Sheet 2: Connectors (one row per PIN) ──
     ws_conn = wb.create_sheet("Connectors")
     conn_headers = [
+        # Unit + connector identity
         ("unit_designation*", 16), ("connector_designator*", 18), ("connector_name", 20),
-        ("connector_type*", 22), ("gender*", 14), ("shell_size", 10),
+        ("connector_type*", 26), ("gender*", 16), ("shell_size", 10),
         ("insert_arrangement", 14), ("total_contacts*", 14), ("mil_spec", 20),
         ("keying", 10), ("mounting", 14),
-        ("pin_number*", 10), ("signal_name*", 22), ("signal_type*", 20),
-        ("direction*", 14), ("voltage_nominal", 12), ("current_max_amps", 14),
-        ("impedance_ohms", 12), ("description", 30),
+        # Pin identity
+        ("pin_number*", 10), ("pin_label", 14), ("signal_name*", 22),
+        ("signal_type*", 28), ("direction*", 18),
+        # Electrical
+        ("voltage_nominal", 12), ("voltage_min", 10), ("voltage_max", 10),
+        ("current_max_amps", 14), ("impedance_ohms", 14), ("frequency_mhz", 12),
+        # Notes
+        ("description", 36),
     ]
-    conn_required = {0, 1, 3, 4, 7, 11, 12, 13, 14}
+    # indices of required columns
+    conn_required = {0, 1, 3, 4, 7, 11, 13, 14, 15}
     conn_examples = [
+        # ── Example 1: Pi-style 40-pin GPIO header ──
+        ["RPI-5", "J8", "GPIO Header", "pcb_header_2_54mm", "male_pin",
+         "", "", 40, "", "", "pcb_through_hole",
+         "1", "3V3_PWR", "3V3_PWR", "power_primary", "power_source",
+         "3.3VDC", 3.13, 3.47, 0.5, "", "", "3.3V power rail (max 500mA)"],
+        ["RPI-5", "J8", "", "", "", "", "", "", "", "", "",
+         "2", "5V_PWR", "5V_PWR", "power_primary", "power_source",
+         "5VDC", 4.75, 5.25, 3.0, "", "", "5V power rail"],
+        ["RPI-5", "J8", "", "", "", "", "", "", "", "", "",
+         "3", "GPIO2", "I2C1_SDA", "i2c_sda", "open_drain",
+         "3.3VDC", 0, 3.3, "", "", "", "I²C bus 1 data (pull-up 1.8kΩ)"],
+        ["RPI-5", "J8", "", "", "", "", "", "", "", "", "",
+         "5", "GPIO3", "I2C1_SCL", "i2c_scl", "open_drain",
+         "3.3VDC", 0, 3.3, "", "", "", "I²C bus 1 clock (pull-up 1.8kΩ)"],
+        ["RPI-5", "J8", "", "", "", "", "", "", "", "", "",
+         "6", "GND", "GND", "signal_ground", "ground",
+         "0V", "", "", "", "", "", "Ground"],
+        ["RPI-5", "J8", "", "", "", "", "", "", "", "", "",
+         "8", "GPIO14", "UART0_TX", "serial_uart", "output",
+         "3.3VDC", 0, 3.3, "", "", "", "UART TX (console)"],
+        ["RPI-5", "J8", "", "", "", "", "", "", "", "", "",
+         "10", "GPIO15", "UART0_RX", "serial_uart", "input",
+         "3.3VDC", 0, 3.3, "", "", "", "UART RX (console)"],
+        ["RPI-5", "J8", "", "", "", "", "", "", "", "", "",
+         "19", "GPIO10", "SPI0_MOSI", "spi_mosi", "output",
+         "3.3VDC", 0, 3.3, "", "", 50, "SPI0 MOSI"],
+        ["RPI-5", "J8", "", "", "", "", "", "", "", "", "",
+         "21", "GPIO9", "SPI0_MISO", "spi_miso", "input",
+         "3.3VDC", 0, 3.3, "", "", 50, "SPI0 MISO"],
+        ["RPI-5", "J8", "", "", "", "", "", "", "", "", "",
+         "23", "GPIO11", "SPI0_SCK", "spi_clk", "output",
+         "3.3VDC", 0, 3.3, "", "", 50, "SPI0 clock"],
+        ["RPI-5", "J8", "", "", "", "", "", "", "", "", "",
+         "24", "GPIO8", "SPI0_CE0", "spi_cs", "output",
+         "3.3VDC", 0, 3.3, "", "", "", "SPI0 chip select 0"],
+        # ── Example 2: MIL-DTL-38999 data connector ──
         ["RSP-100", "J1", "1553 Bus A", "mil_dtl_38999_series_iii", "female_socket",
          "13", "13-35", 22, "M38999/26WB35SN", "N", "panel_mount",
-         "A", "1553A_HI", "signal_digital_differential", "bidirectional",
-         "", "", "78", "MIL-STD-1553B Bus A High"],
-        ["RSP-100", "J1", "1553 Bus A", "mil_dtl_38999_series_iii", "female_socket",
-         "13", "13-35", 22, "", "", "",
-         "B", "1553A_LO", "signal_digital_differential", "bidirectional",
-         "", "", "78", "MIL-STD-1553B Bus A Low"],
-        ["RSP-100", "J1", "1553 Bus A", "mil_dtl_38999_series_iii", "female_socket",
-         "13", "13-35", 22, "", "", "",
-         "C", "1553A_SHIELD", "shield_drain", "ground",
-         "", "", "", "Bus A shield drain"],
-        ["RSP-100", "J1", "1553 Bus A", "", "", "", "", "", "", "", "",
-         "D", "1553B_HI", "signal_digital_differential", "bidirectional",
-         "", "", "78", "MIL-STD-1553B Bus B High"],
+         "A", "", "1553A_HI", "mil_std_1553_a", "bidirectional",
+         "", "", "", "", 78, 1.0, "MIL-STD-1553B Bus A High"],
         ["RSP-100", "J1", "", "", "", "", "", "", "", "", "",
-         "E", "1553B_LO", "signal_digital_differential", "bidirectional",
-         "", "", "78", "Bus B Low"],
+         "B", "", "1553A_LO", "mil_std_1553_a", "bidirectional",
+         "", "", "", "", 78, 1.0, "MIL-STD-1553B Bus A Low"],
+        ["RSP-100", "J1", "", "", "", "", "", "", "", "", "",
+         "C", "", "1553A_SHIELD", "shield_drain", "ground",
+         "", "", "", "", "", "", "Bus A shield drain"],
+        # ── Example 3: Power connector ──
         ["RSP-100", "J2", "Power Input", "mil_dtl_38999_series_iii", "female_socket",
          "11", "11-2", 4, "", "A", "panel_mount",
-         "1", "PWR_28V_PRI", "power_primary", "power_sink",
-         "28VDC", "5.0", "", "Primary 28V input"],
-        ["RSP-100", "J2", "Power Input", "", "", "", "", "", "", "", "",
-         "2", "PWR_28V_RTN", "power_return", "power_return",
-         "", "5.0", "", "Primary 28V return"],
+         "1", "", "PWR_28V_PRI", "power_primary", "power_sink",
+         "28VDC", 22, 32, 5.0, "", "", "Primary 28V input"],
         ["RSP-100", "J2", "", "", "", "", "", "", "", "", "",
-         "3", "CHASSIS_GND", "chassis_ground", "chassis_ground",
-         "", "", "", "Chassis ground stud"],
+         "2", "", "PWR_28V_RTN", "power_return", "power_return",
+         "", "", "", 5.0, "", "", "Primary 28V return"],
         ["RSP-100", "J2", "", "", "", "", "", "", "", "", "",
-         "4", "SPARE_J2_4", "spare", "no_connect",
-         "", "", "", "Spare contact"],
+         "3", "", "CHASSIS_GND", "chassis_ground", "chassis_ground",
+         "", "", "", "", "", "", "Chassis ground stud"],
+        # ── Example 4: Ethernet ──
         ["RSP-100", "J3", "Ethernet", "rj45", "female_socket",
          "", "", 8, "", "", "panel_mount",
-         "1", "ETH_TX_P", "signal_digital_differential", "output",
-         "", "", "100", "Ethernet TX+"],
+         "1", "", "ETH_TX_P", "ethernet_100base_t", "output",
+         "", "", "", "", 100, 100.0, "Ethernet TX+"],
+        ["RSP-100", "J3", "", "", "", "", "", "", "", "", "",
+         "2", "", "ETH_TX_N", "ethernet_100base_t", "output",
+         "", "", "", "", 100, 100.0, "Ethernet TX-"],
     ]
     _style_sheet(ws_conn, conn_headers, conn_required, conn_examples)
+
+    # ── Data validation dropdowns for the Connectors sheet ──
+    # Excel's list validation has a ~255-char limit per formula — chunk if needed.
+    def _chunked_list_validation(ws, values: list, col_letter: str, row_start: int = 2, row_end: int = 5000):
+        """Add list-based data validation, with an error popup for invalid entries."""
+        formula = f'"{",".join(values)}"'
+        if len(formula) > 250:
+            # Too long for inline list — write to a hidden sheet + reference the range
+            # For simplicity we skip validation in this case; users can still type valid values
+            return
+        dv = DataValidation(type="list", formula1=formula, allow_blank=True)
+        dv.error = "Invalid value — pick one from the dropdown"
+        dv.errorTitle = "Not a valid enum value"
+        dv.prompt = "Select from dropdown"
+        ws.add_data_validation(dv)
+        dv.add(f"{col_letter}{row_start}:{col_letter}{row_end}")
+
+    # Column D = connector_type (index 3), E = gender (index 4)
+    # Column O = signal_type (index 14, A=1..O=15), P = direction (index 15)
+    # Connector type list is > 250 chars, so use a subset for the inline dropdown; full list still imports fine
+    _common_connector_types = [
+        "mil_dtl_38999_series_iii", "d_sub_9", "d_sub_15", "d_sub_25", "d_sub_37",
+        "rj45", "usb_c", "sma", "bnc",
+        "pcb_header_2_54mm", "pcb_header_1_27mm", "pcb_header_idc",
+        "jst_sh", "jst_ph", "jst_xh",
+        "m12_4pin", "m12_8pin", "fiber_lc", "backplane_vpx",
+        "terminal_block_4", "terminal_block_8", "custom",
+    ]
+    _chunked_list_validation(ws_conn, _common_connector_types, "D")
+    _chunked_list_validation(ws_conn, VALID_GENDERS, "E")
+    # signal_type is at column O (15th column: A B C D E F G H I J K L M N O)
+    # The full list is too long; use a Pi-friendly subset
+    _common_signal_types = [
+        "power_primary", "power_return", "signal_ground", "chassis_ground",
+        "digital_3v3", "digital_5v", "digital_lvds",
+        "i2c_sda", "i2c_scl", "spi_mosi", "spi_miso", "spi_clk", "spi_cs",
+        "can_high", "can_low", "serial_uart", "serial_rs232", "serial_rs485",
+        "signal_digital_differential", "discrete_input", "discrete_output",
+        "mil_std_1553_a", "arinc_429", "ethernet_100base_t",
+        "spare", "no_connect", "shield", "test_point", "custom",
+    ]
+    _chunked_list_validation(ws_conn, _common_signal_types, "O")
+    _chunked_list_validation(ws_conn, VALID_PIN_DIRECTIONS, "P")
 
     # ── Sheet 3: Buses ──
     ws_bus = wb.create_sheet("Buses")
@@ -800,12 +947,16 @@ async def confirm_import(
             pin = Pin(
                 connector_id=conn_id,
                 pin_number=pin_num,
+                pin_label=_safe_str(row.get("pin_label"), max_len=30) or None,
                 signal_name=_safe_str(row.get("signal_name")) or f"SPARE_{pin_num}",
                 signal_type=_safe_str(row.get("signal_type")).lower().replace(" ", "_") or "spare",
                 direction=_safe_str(row.get("direction")).lower().replace(" ", "_") or "no_connect",
                 voltage_nominal=_safe_str(row.get("voltage_nominal")),
+                voltage_min=_safe_float(row.get("voltage_min")),
+                voltage_max=_safe_float(row.get("voltage_max")),
                 current_max_amps=_safe_float(row.get("current_max_amps")),
                 impedance_ohms=_safe_float(row.get("impedance_ohms")),
+                frequency_mhz=_safe_float(row.get("frequency_mhz")),
                 description=_safe_str(row.get("description")),
             )
             db.add(pin)

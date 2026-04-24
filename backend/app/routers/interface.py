@@ -21,7 +21,9 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
 
 from app.database import get_db
-from app.models import User, Project
+from app.models import (
+    User, Project, RequirementHistory, TraceLink,
+)
 from app.models.interface import (
     System, Unit, Connector, Pin, BusDefinition,
     PinBusAssignment, MessageDefinition, MessageField,
@@ -83,6 +85,13 @@ logger = logging.getLogger("astra.interface")
 
 router = APIRouter(prefix="/interfaces", tags=["Interface Management"])
 
+class AutoReqApproveRequest(BaseModel):
+    requirement_ids: List[int]
+
+
+class AutoReqRejectRequest(BaseModel):
+    requirement_ids: List[int]
+    reason: Optional[str] = None
 
 # ══════════════════════════════════════════════════════════════
 #  Helpers
@@ -2256,6 +2265,238 @@ def auto_wire_harness(
         "auto_requirements": auto_result,
     }
 
+@router.post("/harnesses/{har_pk}/generate-requirements")
+def generate_harness_requirements(
+    har_pk: int,
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("interfaces.create")),
+):
+    """
+    Generate (or regenerate) auto-requirements for all wires in a harness.
+    
+    Unlike auto-wire (which creates wires AND generates reqs), this endpoint
+    runs the requirement generator on existing wires. Useful when:
+      - Wires were created manually without triggering auto-req
+      - Requirements were rejected and user wants to regenerate
+      - Bus assignments changed after initial wiring
+    
+    Returns the same result shape as AutoRequirementGenerator.on_wires_created().
+    """
+    harness = db.query(WireHarness).filter(WireHarness.id == har_pk).first()
+    if not harness:
+        raise HTTPException(404, "Harness not found")
+
+    wires = db.query(Wire).filter(Wire.harness_id == har_pk).all()
+    if not wires:
+        return {
+            "requirements_generated": 0,
+            "verifications_generated": 0,
+            "links_generated": 0,
+            "requirements": [],
+            "message": "No wires found on this harness. Create wires first (manually or via auto-wire).",
+        }
+
+    try:
+        from app.services.interface.auto_requirements import AutoRequirementGenerator
+        generator = AutoRequirementGenerator(db, harness.project_id, current_user)
+        result = generator.on_wires_created(harness, wires)
+        db.commit()
+
+        _audit(db, "harness.requirements_generated", "wire_harness", har_pk,
+               current_user.id,
+               {
+                   "requirements_generated": result.get("requirements_generated", 0),
+                   "verifications_generated": result.get("verifications_generated", 0),
+                   "links_generated": result.get("links_generated", 0),
+               },
+               project_id=harness.project_id, request=request)
+
+        return result
+    except Exception as e:
+        logger.error(f"Requirement generation failed for harness {har_pk}: {e}")
+        db.rollback()
+        raise HTTPException(500, f"Requirement generation failed: {str(e)}")
+
+@router.post("/auto-requirements/approve")
+def approve_auto_requirements(
+    data: AutoReqApproveRequest,
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("interfaces.update")),
+):
+    """
+    Approve auto-generated requirements:
+      1. Set each requirement status → 'draft'
+      2. Set each InterfaceRequirementLink status → 'approved'
+      3. Auto-create trace links to parent requirements
+      4. Return summary with counts
+    """
+    approved = 0
+    trace_links_created = 0
+
+    for req_id in data.requirement_ids:
+        req = db.query(Requirement).filter(Requirement.id == req_id).first()
+        if not req:
+            continue
+
+        # 1. Update requirement status to draft
+        old_status = _ev(req.status)
+        if old_status in ("pending_review", "under_review"):
+            req.status = "draft"
+            req.version = (req.version or 1) + 1
+
+            # Record history
+            hist = RequirementHistory(
+                requirement_id=req.id,
+                version=req.version,
+                field_changed="status",
+                old_value=old_status,
+                new_value="draft",
+                changed_by_id=current_user.id,
+                change_description="Approved from auto-requirement review",
+            )
+            db.add(hist)
+
+        # 2. Update all interface requirement links for this req
+        links = db.query(InterfaceRequirementLink).filter(
+            InterfaceRequirementLink.requirement_id == req_id,
+            InterfaceRequirementLink.auto_generated.is_(True),
+        ).all()
+        for link in links:
+            link.status = "approved"
+            link.reviewed_by_id = current_user.id
+            link.reviewed_at = datetime.utcnow()
+
+        # 3. Auto-create trace links
+        # a) If requirement has a parent_id, create derives_from trace
+        if req.parent_id:
+            from app.models import TraceLink
+            existing_trace = db.query(TraceLink).filter(
+                TraceLink.source_type == "requirement",
+                TraceLink.source_id == req.id,
+                TraceLink.target_type == "requirement",
+                TraceLink.target_id == req.parent_id,
+                TraceLink.link_type == "derives_from",
+            ).first()
+            if not existing_trace:
+                trace = TraceLink(
+                    source_type="requirement",
+                    source_id=req.id,
+                    target_type="requirement",
+                    target_id=req.parent_id,
+                    link_type="derives_from",
+                    description=f"Auto-traced on approval: {req.req_id} derives from parent",
+                    status="active",
+                    created_by_id=current_user.id,
+                )
+                db.add(trace)
+                trace_links_created += 1
+
+        # b) For each interface link, create a trace link to source entity's requirement
+        for link in links:
+            # Find other requirements linked to the same source entity
+            sibling_links = db.query(InterfaceRequirementLink).filter(
+                InterfaceRequirementLink.entity_type == link.entity_type,
+                InterfaceRequirementLink.entity_id == link.entity_id,
+                InterfaceRequirementLink.requirement_id != req_id,
+                InterfaceRequirementLink.status == "approved",
+            ).all()
+            for sib in sibling_links:
+                from app.models import TraceLink
+                existing = db.query(TraceLink).filter(
+                    TraceLink.source_type == "requirement",
+                    TraceLink.source_id == req.id,
+                    TraceLink.target_type == "requirement",
+                    TraceLink.target_id == sib.requirement_id,
+                ).first()
+                if not existing:
+                    trace = TraceLink(
+                        source_type="requirement",
+                        source_id=req.id,
+                        target_type="requirement",
+                        target_id=sib.requirement_id,
+                        link_type="related_to",
+                        description=f"Auto-traced: shared interface entity {link.entity_type}:{link.entity_id}",
+                        status="active",
+                        created_by_id=current_user.id,
+                    )
+                    db.add(trace)
+                    trace_links_created += 1
+
+        approved += 1
+
+    db.commit()
+
+    _audit(db, "auto_requirements.approved", "bulk", 0, current_user.id,
+           {"approved": approved, "trace_links_created": trace_links_created,
+            "requirement_ids": data.requirement_ids},
+           request=request)
+
+    return {
+        "approved": approved,
+        "trace_links_created": trace_links_created,
+        "requirement_ids": data.requirement_ids,
+    }
+
+
+@router.post("/auto-requirements/reject")
+def reject_auto_requirements(
+    data: AutoReqRejectRequest,
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("interfaces.update")),
+):
+    """
+    Reject auto-generated requirements:
+      1. Soft-delete each requirement (status → 'deleted')
+      2. Set each InterfaceRequirementLink status → 'rejected'
+    """
+    rejected = 0
+
+    for req_id in data.requirement_ids:
+        req = db.query(Requirement).filter(Requirement.id == req_id).first()
+        if not req:
+            continue
+
+        old_status = _ev(req.status)
+        req.status = "deleted"
+        req.version = (req.version or 1) + 1
+
+        hist = RequirementHistory(
+            requirement_id=req.id,
+            version=req.version,
+            field_changed="status",
+            old_value=old_status,
+            new_value="deleted",
+            changed_by_id=current_user.id,
+            change_description=f"Rejected from auto-requirement review. {data.reason or ''}".strip(),
+        )
+        db.add(hist)
+
+        # Update links
+        db.query(InterfaceRequirementLink).filter(
+            InterfaceRequirementLink.requirement_id == req_id,
+            InterfaceRequirementLink.auto_generated.is_(True),
+        ).update({
+            InterfaceRequirementLink.status: "rejected",
+            InterfaceRequirementLink.reviewed_by_id: current_user.id,
+            InterfaceRequirementLink.reviewed_at: datetime.utcnow(),
+        }, synchronize_session="fetch")
+
+        rejected += 1
+
+    db.commit()
+
+    _audit(db, "auto_requirements.rejected", "bulk", 0, current_user.id,
+           {"rejected": rejected, "reason": data.reason,
+            "requirement_ids": data.requirement_ids},
+           request=request)
+
+    return {
+        "rejected": rejected,
+        "requirement_ids": data.requirement_ids,
+    }
 
 @router.patch("/wires/{wire_pk}", response_model=WireResponse)
 def update_wire(

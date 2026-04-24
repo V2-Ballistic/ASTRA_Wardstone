@@ -382,12 +382,16 @@ export default function ProjectRequirementsPage() {
       const res = await requirementsAPI.list(projectId, { limit: 200 });
       setRequirements(Array.isArray(res.data) ? res.data : []);
     } catch (e: any) {
-        const detail = e.response?.data?.detail;
-		setError(
-		  typeof detail === 'string' ? detail :
-		  Array.isArray(detail) ? detail.map((d: any) => d.msg || JSON.stringify(d)).join('; ') :
-		  'Failed to load requirements'
-		);
+      // Log full error for dev diagnosis (visible in browser console)
+      console.error('[requirements] list failed:', e);
+      const status = e?.response?.status;
+      const detail = e?.response?.data?.detail;
+      setError(
+        typeof detail === 'string' ? detail :
+        Array.isArray(detail) ? detail.map((d: any) => d.msg || JSON.stringify(d)).join('; ') :
+        status ? `Failed to load requirements (HTTP ${status})` :
+        'Failed to load requirements — is the backend running?'
+      );
     }
     setLoading(false);
   }, [projectId]);
@@ -534,17 +538,33 @@ export default function ProjectRequirementsPage() {
       />
 
       {/* Error */}
-      {error && (
-        <div className="mb-4 rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-400">{error}</div>
+      {error && !loading && (
+        <div className="mb-4 rounded-xl border border-red-500/30 bg-red-500/10 p-4">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" />
+            <div className="flex-1">
+              <div className="text-sm font-semibold text-red-400">Couldn&apos;t load requirements</div>
+              <div className="mt-1 text-[12px] text-red-300/90">{error}</div>
+              <div className="mt-2 text-[11px] text-slate-500">
+                Check the browser console (F12) for technical details, or that the backend container is running
+                (<code className="text-slate-400">docker compose ps</code>).
+              </div>
+            </div>
+            <button onClick={fetchRequirements}
+              className="flex shrink-0 items-center gap-1 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-[11px] font-bold text-red-300 transition hover:bg-red-500/20">
+              <RefreshCw className="h-3 w-3" /> Retry
+            </button>
+          </div>
+        </div>
       )}
 
-      {/* Empty state */}
-      {!loading && requirements.length === 0 && (
+      {/* Empty state — only when we successfully loaded and got zero results */}
+      {!loading && !error && requirements.length === 0 && (
         <EmptyState projectId={projectId} />
       )}
 
-      {/* Content (only if we have requirements) */}
-      {requirements.length > 0 && (
+      {/* Content (only if we have requirements and no error) */}
+      {!error && requirements.length > 0 && (
         <>
           {/* Quick stats */}
           <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-5">

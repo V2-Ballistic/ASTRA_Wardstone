@@ -650,6 +650,10 @@ class AutoRequirementGenerator:
         self.generated_links: List[InterfaceRequirementLink] = []
         self._req_count_cache: Optional[int] = None
 
+        # Cache project-level approval toggle (checked once per generation run)
+        project = self.db.query(Project).filter(Project.id == self.project_id).first()
+        self._approval_required = getattr(project, 'auto_req_approval_required', True) if project else True
+
     # ══════════════════════════════════════
     #  Public entry points
     # ══════════════════════════════════════
@@ -1151,6 +1155,10 @@ class AutoRequirementGenerator:
                 parent_num = int(_ev(parent.level).replace("L", ""))
                 level = f"L{min(parent_num + 1, 5)}"
 
+        # Use project-level approval toggle (cached in __init__)
+        req_status = "pending_review" if self._approval_required else "draft"
+        link_status = "pending_review" if self._approval_required else "approved"
+
         req = Requirement(
             req_id=req_id,
             title=title[:500],
@@ -1159,7 +1167,7 @@ class AutoRequirementGenerator:
             req_type=req_type,
             priority=priority,
             level=level,
-            status="pending_review",
+            status=req_status,
             project_id=self.project_id,
             owner_id=self.user.id,
             created_by_id=self.user.id,
@@ -1181,21 +1189,68 @@ class AutoRequirementGenerator:
         )
         self.db.add(hist)
 
-        # Create interface link
-        if source_type and source_id:
-            link = InterfaceRequirementLink(
-                entity_type=source_type,
-                entity_id=source_id,
-                requirement_id=req.id,
-                link_type="satisfies",
-                auto_generated=True,
-                auto_req_source=template_name or "manual",
-                auto_req_template=template_name,
-                status="pending_review",
-                created_by_id=self.user.id,
+        # Create interface link — ALWAYS, even if source info is missing.
+        # A missing or invalid source_id means we can't attach the requirement to
+        # a specific interface entity, but we still want the Auto Requirements
+        # Review dashboard to see the requirement. Falling back to entity_type
+        # 'orphan' with entity_id=req.id makes the row easy to find later.
+        valid_source = (
+            isinstance(source_type, str) and source_type.strip() != ""
+            and isinstance(source_id, int) and source_id > 0
+        )
+
+        if valid_source:
+            link_entity_type = source_type
+            link_entity_id = source_id
+        else:
+            # This shouldn't happen — every caller in this engine is expected to
+            # provide both. If you see this in logs, a new caller was added and
+            # forgot to pass source info. Trace the template_name to find it.
+            logger.warning(
+                "auto-req: missing or invalid source (type=%r, id=%r) for "
+                "requirement %r (template=%r). Creating orphan link row so the "
+                "review dashboard still surfaces this requirement.",
+                source_type, source_id, req.req_id, template_name,
             )
-            self.db.add(link)
-            self.generated_links.append(link)
+            link_entity_type = "orphan"
+            link_entity_id = req.id
+
+        link = InterfaceRequirementLink(
+            entity_type=link_entity_type,
+            entity_id=link_entity_id,
+            requirement_id=req.id,
+            link_type="satisfies",
+            auto_generated=True,
+            auto_req_source=template_name or "unknown",
+            auto_req_template=template_name,
+            status=link_status,
+            created_by_id=self.user.id,
+        )
+        self.db.add(link)
+        self.generated_links.append(link)
+
+        # When auto-approval is active (no manual review), create trace links immediately
+        if not self._approval_required and req.parent_id:
+            from app.models import TraceLink
+            existing_trace = self.db.query(TraceLink).filter(
+                TraceLink.source_type == "requirement",
+                TraceLink.source_id == req.id,
+                TraceLink.target_type == "requirement",
+                TraceLink.target_id == req.parent_id,
+                TraceLink.link_type == "derives_from",
+            ).first()
+            if not existing_trace:
+                trace = TraceLink(
+                    source_type="requirement",
+                    source_id=req.id,
+                    target_type="requirement",
+                    target_id=req.parent_id,
+                    link_type="derives_from",
+                    description=f"Auto-traced: {req.req_id} derives from parent (auto-approved)",
+                    status="active",
+                    created_by_id=self.user.id,
+                )
+                self.db.add(trace)
 
         self.generated_reqs.append(req)
         return req
@@ -1222,7 +1277,7 @@ class AutoRequirementGenerator:
             link_type=link_type,
             auto_generated=True,
             auto_req_source=template,
-            status="pending_review",
+            status="pending_review" if self._approval_required else "approved",
             created_by_id=self.user.id,
         )
         self.db.add(link)

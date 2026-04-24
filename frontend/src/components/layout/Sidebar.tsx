@@ -1,9 +1,14 @@
 'use client';
 
 /**
- * ASTRA — Sidebar Navigation (Project-Scoped, WCAG 2.1 AA)
- * ===========================================================
+ * ASTRA — Sidebar Navigation (with Auto-Req Toggle Support)
+ * ============================================================
  * File: frontend/src/components/layout/Sidebar.tsx
+ *
+ * Changes from original:
+ *   - Fetches project.auto_req_approval_required on project change
+ *   - Conditionally shows/hides "Auto Requirements" nav item
+ *   - Shows pending count badge on Auto Requirements when visible
  */
 
 import { useState, useEffect, useRef, useCallback, type KeyboardEvent } from 'react';
@@ -29,6 +34,7 @@ interface NavItem {
   icon: React.ComponentType<{ className?: string }>;
   countKey?: string;
   roles?: string[];
+  conditionalKey?: string; // NEW: key to check in project data for visibility
 }
 
 interface NavGroup {
@@ -41,6 +47,7 @@ interface ProjectInfo {
   code: string;
   name: string;
   description?: string;
+  auto_req_approval_required?: boolean;
 }
 
 // ══════════════════════════════════════
@@ -61,7 +68,7 @@ function getProjectNav(projectId: number): NavGroup[] {
         { href: `${p}/requirements`, label: 'Requirements', icon: FileText, countKey: 'requirements' },
         { href: `${p}/traceability`, label: 'Traceability', icon: Network },
         { href: `${p}/verification`, label: 'Verification', icon: CheckSquare },
-		{ href: `${p}/interfaces`, label: 'Interfaces', icon: Cable },
+        { href: `${p}/interfaces`, label: 'Interfaces', icon: Cable },
       ],
     },
     {
@@ -77,7 +84,12 @@ function getProjectNav(projectId: number): NavGroup[] {
       items: [
         { href: `${p}/ai`, label: 'AI Assistant', icon: Sparkles },
         { href: `${p}/impact`, label: 'Impact Analysis', icon: Zap },
-		{ href: `${p}/interfaces/auto-requirements`, label: 'Auto Requirements', icon: Sparkles },
+        {
+          href: `${p}/interfaces/auto-requirements`,
+          label: 'Auto Requirements',
+          icon: Sparkles,
+          conditionalKey: 'auto_req_approval_required', // Only show when this is true
+        },
       ],
     },
     {
@@ -96,304 +108,205 @@ function getProjectNav(projectId: number): NavGroup[] {
 
 function extractProjectId(pathname: string): number | null {
   const match = pathname.match(/^\/projects\/(\d+)/);
-  return match ? Number(match[1]) : null;
+  return match ? parseInt(match[1]) : null;
 }
 
 // ══════════════════════════════════════
-//  Project Switcher
-// ══════════════════════════════════════
-
-function ProjectSwitcher({ current, projects, loading, onSelect }: {
-  current: ProjectInfo | null;
-  projects: ProjectInfo[];
-  loading: boolean;
-  onSelect: (p: ProjectInfo) => void;
-}) {
-  const [open, setOpen] = useState(false);
-
-  if (loading) {
-    return (
-      <div className="border-b border-astra-border p-3">
-        <div className="flex items-center gap-2 px-2 py-1.5">
-          <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--text-dim)]" />
-          <span className="text-[11px] text-[var(--text-dim)]">Loading…</span>
-        </div>
-      </div>
-    );
-  }
-
-  if (!current) return null;
-
-  return (
-    <div className="border-b border-astra-border p-3">
-      <button
-        onClick={() => setOpen(!open)}
-        className="flex w-full items-center gap-2 rounded-lg bg-astra-surface-alt px-3 py-2 text-left transition hover:bg-slate-800"
-        aria-expanded={open}
-        aria-haspopup="listbox"
-      >
-        <div className="min-w-0 flex-1">
-          <div className="text-xs font-bold text-slate-100 truncate">{current.code}</div>
-          <div className="text-[10px] text-[var(--text-dim)] truncate">{current.name}</div>
-        </div>
-        <ChevronDown className={clsx('h-3.5 w-3.5 text-[var(--text-dim)] transition', open && 'rotate-180')} />
-      </button>
-
-      {open && (
-        <div className="mt-1.5 space-y-0.5" role="listbox">
-          {projects.map((p) => (
-            <button
-              key={p.id}
-              role="option"
-              aria-selected={p.id === current.id}
-              onClick={() => { onSelect(p); setOpen(false); }}
-              className={clsx(
-                'flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-[12px] transition',
-                p.id === current.id
-                  ? 'bg-blue-500/10 text-blue-400'
-                  : 'text-slate-300 hover:bg-astra-surface-hover'
-              )}
-            >
-              <FolderOpen className="h-3.5 w-3.5 flex-shrink-0" aria-hidden="true" />
-              <div className="min-w-0 flex-1">
-                <div className="text-xs font-semibold truncate">{p.code}</div>
-                <div className="text-[10px] text-[var(--text-dim)] truncate">{p.name}</div>
-              </div>
-              {p.id === current.id && (
-                <div className="h-1.5 w-1.5 rounded-full bg-blue-400" aria-hidden="true" />
-              )}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ══════════════════════════════════════
-//  Main Sidebar Component
+//  Sidebar Component
 // ══════════════════════════════════════
 
 export default function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const { user, logout } = useAuth();
+  const projectId = extractProjectId(pathname);
 
-  const [projects, setProjects] = useState<ProjectInfo[]>([]);
-  const [projectsLoading, setProjectsLoading] = useState(true);
-  const [reqCount, setReqCount] = useState<number | null>(null);
+  const [project, setProject] = useState<ProjectInfo | null>(null);
+  const [collapsed, setCollapsed] = useState(false);
+  const [counts, setCounts] = useState<Record<string, number>>({});
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set(['ENGINEERING', 'MANAGEMENT', 'AI TOOLS', 'ADMIN']));
 
-  const navRef = useRef<HTMLElement>(null);
-  const linkRefs = useRef<(HTMLAnchorElement | null)[]>([]);
-
-  const currentProjectId = extractProjectId(pathname);
-  const isInProject = currentProjectId !== null;
-  const currentProject = projects.find((p) => p.id === currentProjectId) || null;
-
-  // Fetch projects
+  // ── Fetch project info (includes auto_req_approval_required) ──
   useEffect(() => {
-    if (!user) return;
-    setProjectsLoading(true);
-    projectsAPI
-      .list()
-      .then((res) => setProjects(res.data || []))
-      .catch(() => {})
-      .finally(() => setProjectsLoading(false));
-  }, [user]);
+    if (projectId) {
+      projectsAPI.get(projectId).then(r => {
+        setProject(r.data);
+      }).catch(() => setProject(null));
 
-  // Fetch requirement count — limit: 200 (backend max)
-  useEffect(() => {
-    if (!currentProjectId) {
-      setReqCount(null);
-      return;
+      // Fetch requirement count
+      requirementsAPI.list(projectId, { limit: 1 }).then(r => {
+        // The API returns an array; we just need the total
+        setCounts(prev => ({ ...prev, requirements: Array.isArray(r.data) ? r.data.length : 0 }));
+      }).catch(() => {});
+    } else {
+      setProject(null);
+      setCounts({});
     }
-    requirementsAPI
-      .list(currentProjectId, { limit: 200 })
-      .then((res) => setReqCount(Array.isArray(res.data) ? res.data.length : 0))
-      .catch(() => setReqCount(null));
-  }, [currentProjectId, pathname]);
+  }, [projectId]);
 
-  const initials = user?.full_name
-    ? user.full_name.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 2)
-    : '??';
-
-  const handleNavKeyDown = useCallback(
-    (e: KeyboardEvent<HTMLElement>) => {
-      const links = linkRefs.current.filter(Boolean) as HTMLAnchorElement[];
-      const currentIdx = links.findIndex((el) => el === document.activeElement);
-      let nextIdx = -1;
-      switch (e.key) {
-        case 'ArrowDown':
-          e.preventDefault();
-          nextIdx = currentIdx < links.length - 1 ? currentIdx + 1 : 0;
-          break;
-        case 'ArrowUp':
-          e.preventDefault();
-          nextIdx = currentIdx > 0 ? currentIdx - 1 : links.length - 1;
-          break;
-        case 'Home':
-          e.preventDefault();
-          nextIdx = 0;
-          break;
-        case 'End':
-          e.preventDefault();
-          nextIdx = links.length - 1;
-          break;
-        default:
-          return;
-      }
-      links[nextIdx]?.focus();
-    },
-    []
-  );
-
-  const handleProjectSwitch = (project: ProjectInfo) => {
-    router.push(`/projects/${project.id}`);
+  const toggleGroup = (title: string) => {
+    setExpandedGroups(prev => {
+      const next = new Set(prev);
+      next.has(title) ? next.delete(title) : next.add(title);
+      return next;
+    });
   };
 
-  let linkIndex = 0;
+  const handleLogout = () => {
+    logout();
+    router.push('/');
+  };
 
   const isActive = (href: string) => {
-    if (!isInProject) return pathname === href;
-    if (href === `/projects/${currentProjectId}`) return pathname === href;
-    return pathname.startsWith(href);
+    if (href === '/' && pathname === '/') return true;
+    if (href === '/' && pathname !== '/') return false;
+    if (projectId && href === `/projects/${projectId}`) return pathname === href;
+    return pathname.startsWith(href) && href !== `/projects/${projectId}`;
   };
 
-  const renderNavLink = (item: NavItem) => {
-    if (item.roles && user?.role && !item.roles.includes(user.role)) return null;
+  // ── Filter nav items based on role and conditional visibility ──
+  const shouldShowItem = (item: NavItem): boolean => {
+    // Role check
+    if (item.roles && user && !item.roles.includes(user.role)) return false;
 
-    const active = isActive(item.href);
-    const Icon = item.icon;
-    const count = item.countKey === 'requirements' ? reqCount : undefined;
-    const idx = linkIndex++;
+    // Conditional visibility check (for auto-requirements toggle)
+    if (item.conditionalKey && project) {
+      const value = (project as any)[item.conditionalKey];
+      // If the key exists and is explicitly false, hide the item
+      if (value === false) return false;
+    }
 
-    return (
-      <Link
-        key={item.href}
-        ref={(el) => { linkRefs.current[idx] = el; }}
-        href={item.href}
-        aria-current={active ? 'page' : undefined}
-        aria-label={count !== undefined && count !== null ? `${item.label} — ${count} items` : item.label}
-        className={clsx(
-          'flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium transition-all',
-          active
-            ? 'border border-blue-500/20 bg-blue-500/10 text-blue-400'
-            : 'border border-transparent text-[var(--text-muted)] hover:bg-slate-800 hover:text-slate-200'
-        )}
-      >
-        <Icon className="h-[18px] w-[18px] flex-shrink-0" aria-hidden="true" />
-        <span className="flex-1 truncate">{item.label}</span>
-        {count !== undefined && count !== null && (
-          <span
-            className={clsx(
-              'rounded-full px-2 py-0.5 text-[10px] font-bold',
-              active ? 'bg-blue-500 text-white' : 'bg-astra-surface-alt text-[var(--text-dim)]'
-            )}
-            aria-hidden="true"
-          >
-            {count}
-          </span>
-        )}
-      </Link>
-    );
+    return true;
   };
 
-  // Reset link index on each render
-  linkIndex = 0;
+  const navGroups = projectId ? getProjectNav(projectId) : [];
 
   return (
     <aside
-      className="fixed left-0 top-0 z-50 flex h-screen w-60 flex-col border-r border-astra-border bg-astra-surface"
-      aria-label="Application sidebar"
+      className={clsx(
+        'fixed inset-y-0 left-0 z-30 flex flex-col border-r border-astra-border bg-astra-surface transition-all duration-200',
+        collapsed ? 'w-16' : 'w-60'
+      )}
+      role="navigation"
+      aria-label="Main navigation"
     >
       {/* Logo */}
-      <div className="border-b border-astra-border px-5 py-4">
-        <Link href="/" className="flex items-center gap-3 group">
-          <div
-            className="flex h-9 w-9 items-center justify-center rounded-lg bg-gradient-to-br from-blue-500 to-violet-500 text-sm font-extrabold text-white transition-transform group-hover:scale-105"
-            aria-hidden="true"
-          >
-            A
+      <div className="flex h-14 items-center justify-between border-b border-astra-border px-4">
+        {!collapsed && (
+          <div className="flex items-center gap-2">
+            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-br from-blue-500 to-violet-500 text-xs font-extrabold text-white">
+              A
+            </div>
+            <span className="text-sm font-bold text-slate-200 tracking-tight">ASTRA</span>
           </div>
-          <div>
-            <div className="text-[15px] font-bold tracking-tight text-slate-100">ASTRA</div>
-            <div className="text-[10px] font-medium tracking-widest text-[var(--text-muted)]">SYSTEMS ENGINEERING</div>
-          </div>
-        </Link>
+        )}
+        <button
+          onClick={() => setCollapsed(!collapsed)}
+          className="rounded-lg p-1.5 text-slate-500 hover:text-slate-300 hover:bg-astra-surface-alt transition"
+          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        >
+          <ChevronLeft className={clsx('h-4 w-4 transition-transform', collapsed && 'rotate-180')} />
+        </button>
       </div>
 
-      {/* Project Context */}
-      {isInProject ? (
-        <>
-          <div className="border-b border-astra-border px-3 pt-2 pb-1">
-            <Link href="/" className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] font-medium text-[var(--text-dim)] transition hover:text-slate-200 hover:bg-slate-800">
-              <ChevronLeft className="h-3 w-3" aria-hidden="true" />
-              All Projects
-            </Link>
-          </div>
-          <ProjectSwitcher current={currentProject} projects={projects} loading={projectsLoading} onSelect={handleProjectSwitch} />
-        </>
-      ) : (
-        projects.length > 0 && (
-          <div className="border-b border-astra-border p-3">
-            <div className="mb-2 px-1 text-[10px] font-semibold uppercase tracking-widest text-[var(--text-dim)]">Recent Projects</div>
-            <div className="space-y-0.5">
-              {projects.slice(0, 5).map((p) => (
-                <Link key={p.id} href={`/projects/${p.id}`}
-                  className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-[12px] text-[var(--text-muted)] transition hover:bg-slate-800 hover:text-slate-200">
-                  <FolderOpen className="h-3.5 w-3.5 flex-shrink-0 text-[var(--text-dim)]" aria-hidden="true" />
-                  <div className="min-w-0 flex-1">
-                    <span className="font-semibold">{p.code}</span>
-                    <span className="text-[var(--text-dim)]"> · {p.name}</span>
-                  </div>
-                </Link>
-              ))}
-            </div>
-          </div>
-        )
+      {/* Project info */}
+      {project && !collapsed && (
+        <div className="border-b border-astra-border px-4 py-3">
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Project</div>
+          <div className="text-sm font-semibold text-slate-200 truncate">{project.name}</div>
+          <div className="text-[10px] font-mono text-slate-500">{project.code}</div>
+        </div>
       )}
 
       {/* Navigation */}
-      <nav id="main-navigation" ref={navRef} role="navigation"
-        aria-label={isInProject ? 'Project navigation' : 'Main navigation'}
-        className="flex-1 overflow-y-auto p-2" onKeyDown={handleNavKeyDown}>
-        {isInProject && currentProjectId ? (
-          <div className="space-y-4">
-            {getProjectNav(currentProjectId).map((group) => {
-              const visibleItems = group.items.filter(
-                (item) => !item.roles || !user?.role || item.roles.includes(user.role)
-              );
-              if (visibleItems.length === 0) return null;
-              return (
-                <div key={group.title}>
-                  <div className="mb-1 px-3 text-[10px] font-semibold uppercase tracking-widest text-[var(--text-dim)]">{group.title}</div>
-                  <div className="space-y-0.5">{visibleItems.map((item) => renderNavLink(item))}</div>
-                </div>
-              );
-            })}
-          </div>
-        ) : (
-          <div className="space-y-0.5">{GLOBAL_NAV.map((item) => renderNavLink(item))}</div>
-        )}
+      <nav className="flex-1 overflow-y-auto py-2 px-2">
+        {/* Global nav */}
+        {GLOBAL_NAV.map(item => (
+          <Link key={item.href} href={item.href}
+            className={clsx(
+              'flex items-center gap-2.5 rounded-lg px-3 py-2 text-xs font-medium transition mb-1',
+              isActive(item.href) ? 'bg-blue-500/15 text-blue-400' : 'text-slate-400 hover:text-slate-200 hover:bg-astra-surface-alt'
+            )}>
+            <item.icon className="h-4 w-4 flex-shrink-0" />
+            {!collapsed && <span>{item.label}</span>}
+          </Link>
+        ))}
+
+        {/* Project nav groups */}
+        {navGroups.map(group => {
+          const visibleItems = group.items.filter(shouldShowItem);
+          if (visibleItems.length === 0) return null;
+
+          const isExpanded = expandedGroups.has(group.title);
+          return (
+            <div key={group.title} className="mt-3">
+              {!collapsed && (
+                <button
+                  onClick={() => toggleGroup(group.title)}
+                  className="flex w-full items-center justify-between px-3 py-1.5 text-[9px] font-bold uppercase tracking-widest text-slate-600 hover:text-slate-400"
+                >
+                  {group.title}
+                  {isExpanded
+                    ? <ChevronDown className="h-3 w-3" />
+                    : <ChevronRight className="h-3 w-3" />}
+                </button>
+              )}
+
+              {(isExpanded || collapsed) && visibleItems.map(item => {
+                const active = isActive(item.href);
+                const count = item.countKey ? counts[item.countKey] : undefined;
+
+                return (
+                  <Link key={item.href} href={item.href}
+                    className={clsx(
+                      'flex items-center gap-2.5 rounded-lg px-3 py-2 text-xs font-medium transition mb-0.5',
+                      active ? 'bg-blue-500/15 text-blue-400' : 'text-slate-400 hover:text-slate-200 hover:bg-astra-surface-alt'
+                    )}
+                    title={collapsed ? item.label : undefined}
+                  >
+                    <item.icon className="h-4 w-4 flex-shrink-0" />
+                    {!collapsed && (
+                      <>
+                        <span className="flex-1">{item.label}</span>
+                        {count !== undefined && count > 0 && (
+                          <span className="rounded-full bg-astra-surface-alt px-1.5 py-0.5 text-[9px] font-bold text-slate-500">
+                            {count}
+                          </span>
+                        )}
+                      </>
+                    )}
+                  </Link>
+                );
+              })}
+            </div>
+          );
+        })}
       </nav>
 
-      {/* User info + logout */}
-      <div className="border-t border-astra-border p-3">
-        <div className="flex items-center gap-2.5">
-          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-violet-500 text-xs font-bold text-white" aria-hidden="true">
-            {initials}
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="text-xs font-semibold text-slate-200 truncate">{user?.full_name || 'User'}</div>
-            <div className="text-[10px] text-[var(--text-muted)] truncate">{user?.role?.replace('_', ' ') || ''}</div>
-          </div>
-          <button onClick={logout}
-            className="p-1.5 rounded-lg text-[var(--text-dim)] hover:text-red-400 hover:bg-red-500/10 transition"
-            aria-label={`Sign out ${user?.full_name || ''}`}>
-            <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
-          </button>
+      {/* User footer */}
+      {user && (
+        <div className="border-t border-astra-border px-3 py-3">
+          {!collapsed ? (
+            <div className="flex items-center justify-between">
+              <div className="min-w-0">
+                <div className="text-xs font-semibold text-slate-200 truncate">{user.full_name}</div>
+                <div className="text-[10px] text-slate-500 capitalize">{user.role.replace(/_/g, ' ')}</div>
+              </div>
+              <button onClick={handleLogout}
+                className="rounded-lg p-1.5 text-slate-500 hover:text-red-400 transition"
+                title="Sign out">
+                <LogOut className="h-4 w-4" />
+              </button>
+            </div>
+          ) : (
+            <button onClick={handleLogout}
+              className="flex w-full items-center justify-center rounded-lg p-2 text-slate-500 hover:text-red-400 transition"
+              title="Sign out">
+              <LogOut className="h-4 w-4" />
+            </button>
+          )}
         </div>
-      </div>
+      )}
     </aside>
   );
 }

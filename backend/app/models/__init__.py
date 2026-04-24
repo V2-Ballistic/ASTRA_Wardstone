@@ -137,6 +137,7 @@ class Project(Base):
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     status = Column(String(50), default="active")
     config = Column(JSON, default={})  # Project-specific settings
+    auto_req_approval_required = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

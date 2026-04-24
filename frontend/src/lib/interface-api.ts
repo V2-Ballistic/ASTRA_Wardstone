@@ -207,7 +207,10 @@ export const interfaceAPI = {
 
   autoWire: (harnessId: number) =>
     api.post(`${BASE}/harnesses/${harnessId}/auto-wire`),
-
+	
+  generateRequirements: (harnessId: number) =>
+	api.post(`${BASE}/harnesses/${harnessId}/generate-requirements`),
+	
   updateWire: (id: number, data: Partial<Wire>) =>
     api.patch<Wire>(`${BASE}/wires/${id}`, data),
 

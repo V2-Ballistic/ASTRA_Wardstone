@@ -235,6 +235,19 @@ class ConnectorType(str, enum.Enum):
     CIRCULAR_PLASTIC = "circular_plastic"
     RECTANGULAR_SEALED = "rectangular_sealed"
     HERMETIC_FEEDTHROUGH = "hermetic_feedthrough"
+    # ── Board-level / prototype headers (Pi GPIO, Arduino, FPGA mezzanines) ──
+    PCB_HEADER = "pcb_header"
+    PCB_HEADER_2_54MM = "pcb_header_2_54mm"
+    PCB_HEADER_2_00MM = "pcb_header_2_00mm"
+    PCB_HEADER_1_27MM = "pcb_header_1_27mm"
+    PCB_HEADER_IDC = "pcb_header_idc"
+    PCB_HEADER_SHROUDED = "pcb_header_shrouded"
+    # ── Small-signal JST variants (HATs, sensor breakouts) ──
+    JST_SH = "jst_sh"
+    JST_GH = "jst_gh"
+    JST_ZH = "jst_zh"
+    # ── Modular interop (SparkFun Qwiic / Adafruit STEMMA QT) ──
+    QWIIC_STEMMA_QT = "qwiic_stemma_qt"
     CUSTOM = "custom"
 
 
@@ -352,6 +365,56 @@ class SignalType(str, enum.Enum):
     KEY_PIN = "key_pin"
     ALIGNMENT_PIN = "alignment_pin"
     RESERVED = "reserved"
+    # ── Voltage-specific digital (board-level: Pi, Arduino, FPGA) ──
+    DIGITAL_3V3 = "digital_3v3"
+    DIGITAL_5V = "digital_5v"
+    DIGITAL_12V = "digital_12v"
+    DIGITAL_LVDS = "digital_lvds"
+    # ── Specific analog ──
+    ANALOG_VOLTAGE = "analog_voltage"
+    ANALOG_CURRENT_4_20MA = "analog_current_4_20ma"
+    # ── Protocol-specific serial ──
+    SERIAL_RS232 = "serial_rs232"
+    SERIAL_RS422 = "serial_rs422"
+    SERIAL_RS485 = "serial_rs485"
+    SERIAL_UART = "serial_uart"
+    # ── I2C ──
+    I2C_SCL = "i2c_scl"
+    I2C_SDA = "i2c_sda"
+    # ── SPI ──
+    SPI_CLK = "spi_clk"
+    SPI_MOSI = "spi_mosi"
+    SPI_MISO = "spi_miso"
+    SPI_CS = "spi_cs"
+    # ── CAN ──
+    CAN_HIGH = "can_high"
+    CAN_LOW = "can_low"
+    # ── Aerospace buses (pin-level) ──
+    MIL_STD_1553_A = "mil_std_1553_a"
+    MIL_STD_1553_B = "mil_std_1553_b"
+    ARINC_429 = "arinc_429"
+    ARINC_664 = "arinc_664"
+    SPACEWIRE_DATA = "spacewire_data"
+    SPACEWIRE_STROBE = "spacewire_strobe"
+    # ── Ethernet (pin-level) ──
+    ETHERNET_100BASE_T = "ethernet_100base_t"
+    ETHERNET_1000BASE_T = "ethernet_1000base_t"
+    # ── Media ──
+    VIDEO_ANALOG = "video_analog"
+    VIDEO_SDI = "video_sdi"
+    AUDIO_ANALOG = "audio_analog"
+    AUDIO_DIGITAL_AES = "audio_digital_aes"
+    # ── Fiber direction-specific ──
+    FIBER_TX = "fiber_tx"
+    FIBER_RX = "fiber_rx"
+    # ── Discrete command/status (semantic aliases) ──
+    DISCRETE_COMMAND = "discrete_command"
+    DISCRETE_STATUS = "discrete_status"
+    # ── Ordnance ──
+    PYRO_FIRE = "pyro_fire"
+    PYRO_ARM = "pyro_arm"
+    # ── Generic shield (alias) ──
+    SHIELD = "shield"
     CUSTOM = "custom"
 
 
@@ -362,6 +425,10 @@ class PinDirection(str, enum.Enum):
     OUTPUT = "output"
     BIDIRECTIONAL = "bidirectional"
     TRI_STATE = "tri_state"
+    # ── Logic family additions ──
+    OPEN_COLLECTOR = "open_collector"
+    OPEN_DRAIN = "open_drain"
+    PASSIVE = "passive"
     POWER_SOURCE = "power_source"
     POWER_SINK = "power_sink"
     POWER_RETURN = "power_return"
