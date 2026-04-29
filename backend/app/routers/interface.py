@@ -827,6 +827,7 @@ def get_connector(
     connector = db.query(Connector).filter(Connector.id == conn_pk).first()
     if not connector:
         raise HTTPException(404, "Connector not found")
+    _assert_member_for_entity(db, current_user, connector)
 
     pins = db.query(Pin).filter(Pin.connector_id == conn_pk).order_by(Pin.pin_number).all()
     pin_responses = []
@@ -859,6 +860,7 @@ def get_connector_pinout(
     connector = db.query(Connector).filter(Connector.id == conn_pk).first()
     if not connector:
         raise HTTPException(404, "Connector not found")
+    _assert_member_for_entity(db, current_user, connector)
 
     pins = db.query(Pin).filter(Pin.connector_id == conn_pk).order_by(Pin.pin_number).all()
 
@@ -911,6 +913,7 @@ def update_connector(
     connector = db.query(Connector).filter(Connector.id == conn_pk).first()
     if not connector:
         raise HTTPException(404, "Connector not found")
+    _assert_member_for_entity(db, current_user, connector)
 
     updates = data.model_dump(exclude_unset=True)
 
@@ -972,6 +975,7 @@ def delete_connector(
     connector = db.query(Connector).filter(Connector.id == conn_pk).first()
     if not connector:
         raise HTTPException(404, "Connector not found")
+    _assert_member_for_entity(db, current_user, connector)
 
     # ── Pre-flight impact count ──
     pin_ids_subq = db.query(Pin.id).filter(Pin.connector_id == conn_pk).subquery()
@@ -1101,6 +1105,7 @@ def batch_create_pins(
     connector = db.query(Connector).filter(Connector.id == conn_pk).first()
     if not connector:
         raise HTTPException(404, "Connector not found")
+    _assert_member_for_entity(db, current_user, connector)
 
     _validate_pin_numbers(data.pins)
 
@@ -1149,6 +1154,7 @@ def auto_generate_pins(
     connector = db.query(Connector).filter(Connector.id == conn_pk).first()
     if not connector:
         raise HTTPException(404, "Connector not found")
+    _assert_member_for_entity(db, current_user, connector)
 
     if not connector.total_contacts or connector.total_contacts <= 0:
         raise HTTPException(400, "Connector total_contacts must be > 0")
@@ -1198,6 +1204,7 @@ def update_pin(
     pin = db.query(Pin).filter(Pin.id == pin_pk).first()
     if not pin:
         raise HTTPException(404, "Pin not found")
+    _assert_member_for_entity(db, current_user, pin)
 
     updates = data.model_dump(exclude_unset=True)
 
@@ -1272,6 +1279,7 @@ def delete_pin(
     pin = db.query(Pin).filter(Pin.id == pin_pk).first()
     if not pin:
         raise HTTPException(404, "Pin not found")
+    _assert_member_for_entity(db, current_user, pin)
 
     # Refuse if connected
     wire_count = db.query(func.count(Wire.id)).filter(
