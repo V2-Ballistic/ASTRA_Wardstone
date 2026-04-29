@@ -182,6 +182,13 @@ def _assert_member_for_entity(db: Session, current_user: User, entity) -> None:
                 BusDefinition.id == entity.bus_def_id
             ).first()
             pid = row[0] if row else None
+        elif isinstance(entity, InterfaceRequirementLink):
+            # InterfaceRequirementLink has no project_id column — resolve
+            # via the linked Requirement.
+            row = db.query(Requirement.project_id).filter(
+                Requirement.id == entity.requirement_id
+            ).first()
+            pid = row[0] if row else None
 
     if pid is None:
         # Caller passed an unsupported entity type — fail loudly so this

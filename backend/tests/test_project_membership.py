@@ -28,9 +28,19 @@ from app.models import (
 )
 from app.models.project_member import ProjectMember
 from app.models.interface import (
+    # ORM classes
     BusDefinition, Connector, MessageDefinition, MessageField, Pin,
     PinBusAssignment, System, Unit, Wire, WireHarness,
     HarnessEndpoint, Connection, InterfaceRequirementLink,
+    # Enum classes — imported so the fixture is self-correcting against
+    # future enum changes. Hardcoded strings caused the original failure.
+    SystemType, UnitType,
+    ConnectorType, ConnectorGender,
+    SignalType, PinDirection,
+    BusProtocol, BusRole, PinBusRole,
+    MessageDirection, FieldDataType,
+    WireType,
+    InterfaceEntityType, InterfaceLinkType,
 )
 from app.services.auth import create_access_token, get_password_hash
 
@@ -61,7 +71,11 @@ def two_projects(db_session):
         username="alice", email="alice@example.com",
         hashed_password=get_password_hash("TestPass123"),
         full_name="Alice (member of A only)",
-        role="requirements_engineer", department="Eng",
+        # project_manager so she has requirements.delete + interfaces.* etc.
+        # via RBAC; the F-014 membership check is then what blocks her from
+        # touching project B specifically. requirements_engineer would get
+        # blocked by RBAC before the membership check ever fires.
+        role="project_manager", department="Eng",
         is_active=True,
     )
     bob_admin = User(
@@ -116,50 +130,66 @@ def two_projects(db_session):
     db_session.add_all([b_req, b_artifact, b_baseline])
     db_session.commit()
 
-    # Interface entities for B
+    # Interface entities for B — every enum-typed field uses an imported
+    # enum member, NOT a hardcoded string. The exact member chosen is the
+    # simplest sensible value for each enum (e.g. SUBSYSTEM for systems);
+    # we only need the rows to validate, not be domain-realistic.
     b_system = System(
-        system_id="SYS-001", name="B System", system_type="electrical",
+        system_id="SYS-001", name="B System",
+        system_type=SystemType.SUBSYSTEM,
         project_id=project_b.id, owner_id=carol.id,
     )
     db_session.add(b_system); db_session.commit(); db_session.refresh(b_system)
 
     b_unit = Unit(
         unit_id="UNT-001", name="B Unit", designation="LRU-1",
-        part_number="PN", manufacturer="MFG", unit_type="lru",
+        part_number="PN", manufacturer="MFG",
+        unit_type=UnitType.LRU,
         system_id=b_system.id, project_id=project_b.id,
     )
     db_session.add(b_unit); db_session.commit(); db_session.refresh(b_unit)
 
     b_conn = Connector(
-        designator="J1", connector_type="circular_plug", gender="male",
+        designator="J1",
+        connector_type=ConnectorType.CIRCULAR_PLASTIC,
+        gender=ConnectorGender.MALE_PIN,
         total_contacts=4, unit_id=b_unit.id, project_id=project_b.id,
     )
     db_session.add(b_conn); db_session.commit(); db_session.refresh(b_conn)
 
     b_pin = Pin(
-        pin_number="1", signal_name="POWER", signal_type="power",
-        direction="bidirectional", connector_id=b_conn.id,
+        pin_number="1", signal_name="POWER",
+        signal_type=SignalType.POWER_PRIMARY,
+        direction=PinDirection.BIDIRECTIONAL,
+        connector_id=b_conn.id,
     )
     db_session.add(b_pin); db_session.commit(); db_session.refresh(b_pin)
 
     b_bus = BusDefinition(
-        bus_id="BUS-001", name="B Bus", protocol="can_2_0b", bus_role="primary",
+        bus_def_id="BUS-001", name="B Bus",
+        protocol=BusProtocol.CAN_2B,
+        bus_role=BusRole.PRIMARY,
         unit_id=b_unit.id, project_id=project_b.id,
     )
     db_session.add(b_bus); db_session.commit(); db_session.refresh(b_bus)
 
-    b_pa = PinBusAssignment(pin_id=b_pin.id, bus_def_id=b_bus.id, pin_role="data_high")
+    b_pa = PinBusAssignment(
+        pin_id=b_pin.id, bus_def_id=b_bus.id,
+        pin_role=PinBusRole.DATA_POSITIVE,
+    )
     db_session.add(b_pa); db_session.commit(); db_session.refresh(b_pa)
 
     b_msg = MessageDefinition(
-        message_id="MSG-001", name="B Message", direction="transmit",
-        bus_def_id=b_bus.id, project_id=project_b.id,
+        msg_def_id="MSG-001", label="B Message",
+        direction=MessageDirection.TRANSMIT,
+        bus_def_id=b_bus.id, unit_id=b_unit.id, project_id=project_b.id,
     )
     db_session.add(b_msg); db_session.commit(); db_session.refresh(b_msg)
 
     b_field = MessageField(
-        field_name="payload", data_type="uint8", start_bit=0, length_bits=8,
-        message_id=b_msg.id,
+        field_name="payload",
+        data_type=FieldDataType.UINT8,
+        bit_offset=0, bit_length=8, message_id=b_msg.id,
     )
     db_session.add(b_field); db_session.commit(); db_session.refresh(b_field)
 
@@ -172,8 +202,10 @@ def two_projects(db_session):
     db_session.add(b_harness); db_session.commit(); db_session.refresh(b_harness)
 
     b_wire = Wire(
-        wire_number="W001", from_pin_id=b_pin.id, to_pin_id=b_pin.id,
-        wire_type="signal", harness_id=b_harness.id,
+        wire_number="W001", signal_name="POWER",
+        from_pin_id=b_pin.id, to_pin_id=b_pin.id,
+        wire_type=WireType.SIGNAL_SINGLE,
+        harness_id=b_harness.id,
     )
     db_session.add(b_wire); db_session.commit(); db_session.refresh(b_wire)
 
@@ -182,9 +214,14 @@ def two_projects(db_session):
     )
     db_session.add(b_ep); db_session.commit(); db_session.refresh(b_ep)
 
+    # InterfaceRequirementLink has NO project_id column — project scoping
+    # has to be resolved via the linked Requirement at runtime.
     b_link = InterfaceRequirementLink(
-        requirement_id=b_req.id, entity_type="harness", entity_id=b_harness.id,
-        link_type="satisfies", project_id=project_b.id, created_by_id=carol.id,
+        requirement_id=b_req.id,
+        entity_type=InterfaceEntityType.WIRE_HARNESS,
+        entity_id=b_harness.id,
+        link_type=InterfaceLinkType.SATISFIES,
+        created_by_id=carol.id,
     )
     db_session.add(b_link); db_session.commit(); db_session.refresh(b_link)
 
