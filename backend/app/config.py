@@ -1,16 +1,18 @@
 """
 ASTRA — Application Configuration (Security-Hardened)
 ======================================================
-File: backend/app/config.py   ← REPLACES existing
+File: backend/app/config.py
 
 Uses Pydantic SecretStr for credentials so they never appear in
 tracebacks, logs, or repr() output.
 
 Adds: ENCRYPTION_KEY, SSL paths, ALLOWED_HOSTS, lockout params,
 session timeout, rate limits, and a production startup guard that
-refuses to run with the default dev SECRET_KEY.
+refuses to run with the default dev SECRET_KEY *or* with an unset /
+known-weak ENCRYPTION_KEY.
 
-NIST 800-53: IA-5 (Authenticator Management), SC-12 (Crypto Key Mgmt)
+NIST 800-53: IA-5 (Authenticator Management), SC-12 (Crypto Key Mgmt),
+SC-28 (Protection of Information at Rest)
 """
 
 import sys
@@ -26,6 +28,14 @@ _WEAK_SECRETS = {
     "changeme",
     "secret",
     "",
+}
+
+# Known-weak encryption-key fallbacks that must never reach production
+_WEAK_ENCRYPTION_KEYS = {
+    "",
+    "dev-fallback-encryption-key",
+    "test-secret-key-not-for-production",
+    "<openssl rand -hex 32>",  # the .env placeholder shipped before remediation
 }
 
 
@@ -100,10 +110,15 @@ class Settings(BaseSettings):
         """
         Call at startup.  Refuses to start the application in production
         mode if critical secrets are still set to their dev defaults.
+
+        Checks:
+          - SECRET_KEY is not empty / known-weak / too short
+          - ENCRYPTION_KEY is not empty / known-weak (covers F-003 + F-067)
         """
         if not self.is_production:
             return
 
+        # ── SECRET_KEY ──
         secret = self.SECRET_KEY.get_secret_value()
         if secret in _WEAK_SECRETS:
             print(
@@ -118,6 +133,27 @@ class Settings(BaseSettings):
             print(
                 "\n"
                 "FATAL: SECRET_KEY is too short for production (need ≥ 32 chars).\n",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        # ── ENCRYPTION_KEY ──
+        enc = self.ENCRYPTION_KEY.get_secret_value()
+        if enc in _WEAK_ENCRYPTION_KEYS:
+            print(
+                "\n"
+                "FATAL: ENCRYPTION_KEY is unset or set to a known-weak placeholder.\n"
+                "Field-level encryption (PII, MFA secrets, integration tokens)\n"
+                "would silently use a publicly-known key. Generate a real key:\n"
+                "    export ENCRYPTION_KEY=$(openssl rand -hex 32)\n",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        if len(enc) < 32:
+            print(
+                "\n"
+                "FATAL: ENCRYPTION_KEY is too short for production (need ≥ 32 chars).\n",
                 file=sys.stderr,
             )
             sys.exit(1)

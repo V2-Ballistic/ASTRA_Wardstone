@@ -5,10 +5,17 @@ File: backend/app/services/mfa.py
 
 TOTP-based MFA using pyotp.  Secrets are stored Fernet-encrypted
 in the MFAConfig table.
+
+Key derivation aligned with ``services.encryption`` (PBKDF2-SHA256,
+480k iterations) — covers AUDIT_FINDINGS F-003. The raw key material
+comes from ``ENCRYPTION_KEY`` (preferred) or ``SECRET_KEY`` (fallback),
+salted distinctly with ``b"astra-mfa-v1"`` so MFA-secret encryption
+keys are independent of field-encryption keys derived from the same
+input.
 """
 
-import os
 import base64
+import os
 from io import BytesIO
 from datetime import datetime
 
@@ -17,11 +24,12 @@ from cryptography.fernet import Fernet
 from sqlalchemy.orm import Session
 
 from app.models.auth_models import MFAConfig
+from app.services.encryption import derive_key, _resolve_raw_key
 
-# ── Encryption key — derived from SECRET_KEY (must be 32 url-safe base64 bytes)
-_raw_key = os.getenv("SECRET_KEY", "test-secret-key-not-for-production")
-_fernet_key = base64.urlsafe_b64encode(_raw_key.encode()[:32].ljust(32, b"\0"))
-_fernet = Fernet(_fernet_key)
+# ── Encryption key — PBKDF2 of ENCRYPTION_KEY or SECRET_KEY,
+#   salted distinctly so MFA Fernet key ≠ field-encryption Fernet key.
+_MFA_SALT = b"astra-mfa-v1"
+_fernet = Fernet(derive_key(_resolve_raw_key(), salt=_MFA_SALT))
 
 
 def _encrypt(plaintext: str) -> str:
