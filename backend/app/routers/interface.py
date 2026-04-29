@@ -1505,6 +1505,7 @@ def get_bus(
     bd = db.query(BusDefinition).filter(BusDefinition.id == bus_pk).first()
     if not bd:
         raise HTTPException(404, "Bus definition not found")
+    _assert_member_for_entity(db, current_user, bd)
 
     messages = db.query(MessageDefinition).filter(
         MessageDefinition.bus_def_id == bus_pk
@@ -1552,6 +1553,7 @@ def update_bus(
     bd = db.query(BusDefinition).filter(BusDefinition.id == bus_pk).first()
     if not bd:
         raise HTTPException(404, "Bus definition not found")
+    _assert_member_for_entity(db, current_user, bd)
 
     updates = data.model_dump(exclude_unset=True)
     for field, value in updates.items():
@@ -1587,6 +1589,7 @@ def delete_bus(
     bd = db.query(BusDefinition).filter(BusDefinition.id == bus_pk).first()
     if not bd:
         raise HTTPException(404, "Bus definition not found")
+    _assert_member_for_entity(db, current_user, bd)
 
     msg_count = db.query(func.count(MessageDefinition.id)).filter(
         MessageDefinition.bus_def_id == bus_pk
@@ -1640,6 +1643,7 @@ def batch_assign_pins_to_bus(
     bd = db.query(BusDefinition).filter(BusDefinition.id == bus_pk).first()
     if not bd:
         raise HTTPException(404, "Bus definition not found")
+    _assert_member_for_entity(db, current_user, bd)
 
     created = []
     for a in assignments:
@@ -1699,6 +1703,7 @@ def remove_pin_assignment(
     pa = db.query(PinBusAssignment).filter(PinBusAssignment.id == pa_pk).first()
     if not pa:
         raise HTTPException(404, "Pin-bus assignment not found")
+    _assert_member_for_entity(db, current_user, pa)
     db.delete(pa)
     db.commit()
     return {"status": "deleted", "id": pa_pk}
@@ -1713,6 +1718,7 @@ def get_bus_utilization(
     bd = db.query(BusDefinition).filter(BusDefinition.id == bus_pk).first()
     if not bd:
         raise HTTPException(404, "Bus definition not found")
+    _assert_member_for_entity(db, current_user, bd)
 
     capacity_bps = bd.data_rate_actual_bps or 0
     word_bits = bd.word_size_bits or 16  # Default 1553 word size
