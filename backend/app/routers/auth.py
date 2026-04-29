@@ -10,7 +10,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import User
+from app.models import User, UserRole
 from app.schemas import UserCreate, UserResponse, Token
 from app.services.auth import (
     verify_password, get_password_hash, create_access_token, get_current_user,
@@ -33,6 +33,15 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 @router.post("/register", response_model=UserResponse, status_code=201)
 def register(user_data: UserCreate, request: Request,
              db: Session = Depends(get_db)):
+    """
+    Public self-registration.
+
+    AUDIT_FINDINGS F-015: any `role` field in the request body is IGNORED.
+    Self-registered users always receive UserRole.DEVELOPER. Elevated
+    roles (admin, project_manager, requirements_engineer, reviewer,
+    stakeholder) must be assigned by an existing admin via
+    POST /api/v1/admin/users — never via this endpoint.
+    """
     if db.query(User).filter(User.username == user_data.username).first():
         raise HTTPException(400, "Username already taken")
     if db.query(User).filter(User.email == user_data.email).first():
@@ -43,7 +52,7 @@ def register(user_data: UserCreate, request: Request,
         email=user_data.email,
         hashed_password=get_password_hash(user_data.password),
         full_name=user_data.full_name,
-        role=user_data.role,
+        role=UserRole.DEVELOPER,        # F-015: ignore any role in the body
         department=user_data.department,
     )
     db.add(user)

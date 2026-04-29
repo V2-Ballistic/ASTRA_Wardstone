@@ -23,6 +23,29 @@ class TestRegister:
         assert "id" in data, "Response must include id"
         assert "hashed_password" not in data, "Password hash must never be exposed"
 
+    def test_register_ignores_role_field(self, client):
+        """
+        AUDIT_FINDINGS F-015: any `role` in the request body MUST be
+        ignored. Self-registration always produces a developer; elevated
+        roles must come from POST /api/v1/admin/users.
+        """
+        from app.models import UserRole
+
+        resp = client.post("/api/v1/auth/register", json={
+            "username": "would_be_admin",
+            "email": "would_be_admin@example.com",
+            "password": "SecurePass1",
+            "full_name": "Sneaky Admin",
+            "role": "admin",         # <- attacker-supplied role
+            "department": "Eng",
+        })
+        assert resp.status_code == 201, resp.text
+        data = resp.json()
+        # Body said "admin", but the server forced developer.
+        assert data["role"] == UserRole.DEVELOPER.value, (
+            f"Expected role={UserRole.DEVELOPER.value!r}, got {data['role']!r}"
+        )
+
     def test_register_duplicate_username(self, client):
         payload = {
             "username": "dupeuser",
