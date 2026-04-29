@@ -11,6 +11,12 @@ services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
+    # F-066: override hba_file so 127.0.0.1 requires scram-sha-256.
+    # The mounted file at /etc/postgresql/pg_hba.conf is the source
+    # of truth; the default file in PGDATA is ignored.
+    command: >
+      postgres
+      -c hba_file=/etc/postgresql/pg_hba.conf
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -18,6 +24,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./database/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+      - ./database/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
     ports:
       # F-104: bound to loopback only — Postgres should never be
       # reachable from another host on the LAN with the dev password.

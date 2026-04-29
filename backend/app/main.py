@@ -15,6 +15,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.config import settings
 
@@ -150,6 +151,14 @@ app = FastAPI(
 )
 
 # ── Middleware ──
+# F-066: TrustedHostMiddleware enforces ALLOWED_HOSTS so a Host-header
+# attacker can't poison password-reset emails, cache keys, etc. In dev
+# (ALLOWED_HOSTS="*") this is effectively a no-op; in production
+# config.enforce_production_guards refuses "*" outright (also F-066).
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=settings.allowed_hosts_list or ["*"],
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
