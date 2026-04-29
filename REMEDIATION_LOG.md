@@ -13,7 +13,7 @@
 | F-003 + F-067 | Critical+High | ✅ Fixed | `backend/app/services/encryption.py` (full rewrite — drop literal fallback, expose `derive_key`, salt configurable via `ENCRYPTION_KEY_SALT`, `decrypt_field` re-raises by default with `ALLOW_PLAINTEXT_LEGACY=true` opt-in); `backend/app/services/mfa.py` (use `derive_key` with separate salt `b"astra-mfa-v1"`, drop byte-truncate-and-pad); `backend/app/config.py` (`enforce_production_guards` checks ENCRYPTION_KEY too, refuses empty / known-weak / <32-char in prod) | `38d6382` | `python -m ast` parse OK; runtime needs `pytest backend/tests` after Phase 2 unit tests added | Behaviour change: dev environments without ENCRYPTION_KEY *or* SECRET_KEY now raise RuntimeError on first encrypt — this is intentional per the plan ("loud crash that's easy to fix"). MFA secrets use a distinct salt so the MFA Fernet key != field-encryption Fernet key derived from the same input. |
 | F-004 + F-120 + F-062 | Critical+Low+Medium | ✅ Fixed | `backend/app/routers/seed_project.py` (prefix `/dev` → `/admin/seed-project`; route `/seed-project/{project_id}` → `/{project_id}`; `Depends(require_permission("projects.create"))`; SEED-MARKER sentinel idempotency replacing `count >= 20`); `backend/app/main.py` (move import + mount inside `if not is_prod:` block) | `ad5a5b9` | `python -m ast` parse OK; full path becomes `/api/v1/admin/seed-project/{project_id}` (was `/api/v1/dev/seed-project/{project_id}`) — frontend callers via `dev/seed-project/...` need the path update tracked in cross-cutting orphan list | Defence-in-depth: env gate + auth dep + sentinel idempotency. F-120 (router prefix collision with `dev_router`) handled in the same edit. F-062 (count threshold idempotency) replaced with sentinel. Frontend callers will need a follow-up to use the new path — no frontend caller for this endpoint currently exists per the audit's orphan list. |
 | F-005 | Critical | ✅ Fixed | `frontend/src/app/projects/[id]/audit/page.tsx:49` | `3a50373` | Manual: load /projects/X/audit and confirm filters + pagination return scoped data | One-character fix: `{ params }` → `{ params: p }`. |
-| F-006 | Critical | ⏸ Partial — history rewrite deferred | Moved `4_24_2026_SQL_ASTRA.sql` (binary 71,630 bytes pg_dump) to `C:/Users/Mason/Documents/ASTRA-backups/`; `.gitignore` adds `*.sql.dump`, `*.pgdump`, `[0-9]*_SQL_*.sql`, `*.bak`, `.claude/` patterns | `8f77963` | `git ls-files \| grep 4_24` returns empty after commit; future pg_dump output at repo root is now `.gitignore`d | History rewrite (`git filter-repo --path 4_24_2026_SQL_ASTRA.sql --invert-paths`) is **deferred** per safety-rail §9 — needs Mason's explicit approval before force-push to origin/main. The dump file remains at `../ASTRA-backups/4_24_2026_SQL_ASTRA.sql` for inspection: `pg_restore -l ../ASTRA-backups/4_24_2026_SQL_ASTRA.sql` to see what tables it contains; if real user data is present, rotate credentials and run the filter-repo. *.bak gitignore line also covers F-023 (stale .bak files — actual delete is a separate phase-2 cleanup commit). |
+| F-006 | Critical | ✅ Fully resolved (rotation + history rewrite) | (1) Stage 1 in `8f77963`: file moved to `../ASTRA-backups/`, `.gitignore` patterns added. (2) Stage 2 (this session): `.env` rotated; DB ALTER USER + TRUNCATE; stack restarted; mason login verified; `git filter-repo --path 4_24_2026_SQL_ASTRA.sql --invert-paths --force` then `reflog expire --all --expire=now` + `gc --prune=now --aggressive`; force-pushed both branches to origin. | `8f77963` (untrack); rewritten history: `main` `2b1e8f7→3d7732d`, `fix/phase-1-critical` `2ff174e→bbc8726`. All commits got new SHAs as filter-repo rewrites every commit. | `git log --all --oneline -- 4_24_2026_SQL_ASTRA.sql` returns 0 lines locally and on origin after force-push. `pg_restore -l ../ASTRA-backups/4_24_2026_SQL_ASTRA.sql` had previously confirmed 44 tables w/ data including `users`, `integration_configs`, `mfa_configs`, `electronic_signatures`, `refresh_tokens`. | Rotation details in the new "Secret rotation log" section below. Anyone with the prior commit SHAs in their local clone or in CI caches must re-clone (their old SHAs no longer exist on origin). |
 | F-014 (part 1) | Critical | ✅ Fixed | 7 routers — `dashboard.py`, `impact.py`, `baselines.py`, `projects.py`, `requirements.py`, `integrations.py`, `reports.py` — ~46 endpoints | `449d6ad` | `python -m ast` parse OK on all 7; runtime needs an integration test that creates two projects with disjoint members and asserts every endpoint returns 403 for the non-member (per plan §3.7 verification — test scaffold deferred) | Endpoints with body-only project_id (create_baseline, create_trace_link, integration create, batch quality check) call `_check_membership` inline because FastAPI deps cannot read the body synchronously. `list_projects` is now scoped (admin sees all, others see owned + member-of). `compare_baselines` rejects cross-project comparisons. F-058 (Medium) collapsed in. F-032 partially covered (history scoping done; durability deferred to Phase 2 §4.21). |
 | F-014 (part 2 — interface.py project_id-query endpoints) | Critical | ✅ Fixed | `backend/app/routers/interface.py` — `_require_project()` helper now requires `current_user` and calls `_check_membership`; covers 14 endpoints: list_systems, create_system, list_units, create_unit, search_pins, list_harnesses, search_wires, trace_signal, get_n2_matrix, get_block_diagram, get_interface_coverage, auto_grow, list_connections + payload-based variants. New `_assert_member_for_entity` helper added for use by F-014 part 3. | `d5e3bd2` | `python -m ast` parse OK | All endpoints in interface.py that take `project_id` in path/query/body now membership-checked. |
 | F-014 (part 3 — interface.py entity-keyed mutation endpoints) | Critical | ✅ Fixed | `backend/app/routers/interface.py` — `_assert_member_for_entity` extended to walk parent chains for Pin / MessageField / Wire / HarnessEndpoint / PinBusAssignment, then applied inline to every entity-keyed handler. Clusters: A=Systems+Units (`e0eeaa9`), B=Connectors+Pins (`a8cbbd1`), C=Buses+PinBusAssignment (`ff7e07c`), D=Messages+Fields (`260058e`), E=Harnesses+Wires (`ac5d2e9`), F=auto-req+req-links (`cd2b794`, also closes F-046 + F-052), G=Connections+HarnessEndpoints (`a26c5c1`). | `e0eeaa9`, `a8cbbd1`, `ff7e07c`, `260058e`, `ac5d2e9`, `cd2b794`, `a26c5c1` | `python -m ast` parse OK on each cluster commit; runtime test in `backend/tests/test_project_membership.py` (commit `45a2850`) — needs Docker container (or Py 3.12 venv) to actually execute, see notes below | All ~40 entity-keyed handlers now reject non-members with 403. Bulk endpoints (approve_auto_requirements, reject_auto_requirements, bulk_delete) report mixed-project payloads in a new `forbidden` count rather than 403'ing the whole batch. |
@@ -31,6 +31,7 @@
 
 | Date | Finding | Severity | Status |
 |---|---|---|---|
+| 2026-04-29 | After `docker compose down` + `up -d`, the postgres `astra` user's password reverts from the value set via `ALTER USER` to whatever was set on the prior boot — re-issuing the ALTER on the new container fixed it. Suspect: `database/init.sql` mounted at `/docker-entrypoint-initdb.d/01-init.sql` may be re-running on volume reattach, OR the postgres image is honouring `POSTGRES_PASSWORD` env-var on subsequent boots when it shouldn't. This means any password-rotation workflow that bounces the db container will silently lose the new password. | Medium | Newly observed during F-006 rotation. Workaround: always re-run `ALTER USER` *after* `docker compose up` finishes. Root-cause investigation deferred — not in original 121 findings. |
 
 ## Phase status
 
@@ -45,5 +46,50 @@
 
 | Finding | Reason | Action required from Mason |
 |---|---|---|
-| F-006 (history rewrite) | Safety-rail §9: `git filter-repo` rewrites history — requires team coordination before force-push. The file is removed from current state (commit on this branch) but remains in git history. | (1) `pg_restore -l ../ASTRA-backups/4_24_2026_SQL_ASTRA.sql` to inspect contents; (2) if it contains real user data, rotate any credentials it touches; (3) run `git filter-repo --path 4_24_2026_SQL_ASTRA.sql --invert-paths` and force-push **only after team buy-in**; (4) confirm origin/main is clean with `git log --all -- 4_24_2026_SQL_ASTRA.sql`. |
-| F-014 verification test (Docker run) | Local Python 3.14 cannot install pinned pydantic-core==2.27 / psycopg2-binary wheels; Docker daemon was offline this session | Start Docker Desktop, then run `docker exec astra-backend-1 pytest backend/tests/test_project_membership.py -v`. All 41 parametrized cases plus 4 supplementary tests must pass. If any fail, do not merge `fix/phase-1-critical` to `main`. |
+| F-014 verification test (Docker run) | Local Python 3.14 cannot install pinned pydantic-core==2.27 / psycopg2-binary wheels — must run inside `astra-backend-1` | `docker exec astra-backend-1 pytest backend/tests/test_project_membership.py -v`. All 41 parametrized cases plus 4 supplementary tests must pass. If any fail, do not merge `fix/phase-1-critical` to `main`. |
+
+## Secret rotation log (F-006 stage 2 — 2026-04-29)
+
+Treat the leaked dump as a full credential compromise. Rotated:
+
+| Secret | Old | New | Where it now lives |
+|---|---|---|---|
+| `SECRET_KEY` (JWT signing) | `replace-with-64-char-random-string-openssl-rand-hex-32` (placeholder, was in `_WEAK_SECRETS`) | new 64-hex-char value | `.env` only (gitignored) |
+| `ENCRYPTION_KEY` (Fernet field encryption) | `<openssl rand -hex 32>` literal placeholder | new 64-hex-char value | `.env` only |
+| `POSTGRES_PASSWORD` | `astra_dev_password_change_me` | new 48-hex-char value | `.env` + DB ALTER USER on `astra-db-1` |
+| `PGADMIN_DEFAULT_PASSWORD` | `pgadmin_change_me` | new 48-hex-char value | `.env` only (pgAdmin container is in a restart loop unrelated to the rotation — see below) |
+
+`.env` confirmed gitignored via `git check-ignore -v .env` and `git status` shows it untracked. **Never commit `.env`.**
+
+Hex (not base64) for all four — avoids URL-escaping inside `DATABASE_URL`.
+
+### Tables truncated (data-encrypted-under-old-key)
+
+```sql
+BEGIN;
+ALTER USER astra WITH PASSWORD '<new>';
+TRUNCATE integration_configs, mfa_configs, electronic_signatures,
+         refresh_tokens RESTART IDENTITY CASCADE;
+COMMIT;
+```
+
+Post-truncate row counts (verified 0 each):
+`integration_configs=0`, `mfa_configs=0`, `electronic_signatures=0`, `refresh_tokens=0`.
+
+Other tables (`users`, `audit_log`, `auth_sessions`, `account_lockouts`, `requirements`, etc.) intact — bcrypt password hashes are not Fernet-encrypted under `ENCRYPTION_KEY` so they survive the key rotation. `mason / password123` login confirmed working post-rotation (`POST /api/v1/auth/login` returns 200 + JWT).
+
+### User action items (NOT performed by Claude Code)
+
+These require coordination outside this remediation:
+
+1. **Reissue every Jira / Azure DevOps / DOORS API token** that was previously stored in `integration_configs.config_encrypted`. The encrypted column is gone but the upstream token is now considered exposed (the dump had the encrypted blob *and* leaked the encryption key). Rotate at the upstream provider and re-add via `POST /api/v1/integrations/`.
+2. **Every user with active MFA must re-enroll.** `mfa_configs` was truncated. Affected users will see MFA disabled on next login; have them re-run the enrollment flow.
+3. **Every active session is invalidated.** `refresh_tokens` was truncated, and all in-flight JWTs were signed with the old `SECRET_KEY` so verification will fail. Users must log in again.
+4. **Every electronic signature is gone.** `electronic_signatures` was truncated. Any in-flight 21 CFR Part 11 approval workflows that referenced a signature row will now fail integrity verification — those approvals must be re-collected. (Per F-008, the signatures didn't bind record state anyway — Phase 2 §4.12 fixes that.)
+5. **Decide on the local copy at `C:/Users/Mason/Documents/ASTRA-backups/4_24_2026_SQL_ASTRA.sql`.** It is no longer in git but the binary still exists on disk. If it's no longer needed, `rm` it; otherwise move it to encrypted storage.
+6. **Notify any collaborators with local clones** that they must `git fetch && git reset --hard origin/<branch>` (or re-clone) — every commit SHA on `main` and `fix/phase-1-critical` changed. Old SHAs are no longer reachable on origin.
+
+### Anomalies observed during rotation
+
+- **pgAdmin container is in a restart loop** (`Restarting (1)` for several minutes after the rotation). This is independent of the rotation — pgAdmin was already restart-looping before the rotation started (visible in the very first `docker ps`). Not blocking. Triage separately.
+- **Postgres password reverted on container recreation.** After `docker compose down` + `up -d`, the first `ALTER USER` did not survive the bounce — the password was back to the old value when backend tried to TCP-connect. Re-issuing `ALTER USER astra WITH PASSWORD '<new>'` once the new container was up restored the new password permanently. Suspect either an `init.sql` re-application or a postgres image quirk on volume reattach. Worth filing as a new finding (logged below).
