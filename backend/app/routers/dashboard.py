@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy import func, case
 from app.database import get_db
+from app.dependencies.project_access import project_member_required
 from app.models import (
     Requirement, Project, Verification, TraceLink,
     RequirementHistory, User, SourceArtifact,
@@ -17,6 +18,7 @@ def get_dashboard_stats(
     project_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    project: Project = Depends(project_member_required),
 ):
     """Aggregate dashboard statistics for a project."""
     # Fetch all requirements, excluding soft-deleted ones

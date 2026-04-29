@@ -14,6 +14,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.dependencies.project_access import (
+    entity_project_member_required,
+    project_member_required,
+    resolve_project_for_baseline,
+)
 from app.models import Baseline, BaselineRequirement, Requirement, Project, User
 from app.services.auth import get_current_user
 from app.services.audit_service import record_event
@@ -35,6 +40,18 @@ class BaselineCreate(BaseModel):
 
 # ── Create  ← AUDITED ──
 
+def _resolve_project_for_baseline_create(request, db: Session) -> int:
+    """Resolver: pull project_id from the JSON body for POST /baselines/."""
+    # FastAPI consumes the body before deps in some configurations; we
+    # cannot reliably await request.json() here. Instead, rely on the
+    # in-handler `Project not found` check below — the project_member
+    # dep is invoked redundantly inside the handler via the
+    # project_member_required path. Until POST /baselines/ accepts
+    # project_id as a query parameter, the membership enforcement here
+    # uses an inline check (see handler body).
+    raise NotImplementedError
+
+
 @router.post("/", status_code=201)
 def create_baseline(
     data: BaselineCreate,
@@ -42,9 +59,11 @@ def create_baseline(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("baselines.create")),
 ):
-    project = db.query(Project).filter(Project.id == data.project_id).first()
-    if not project:
-        raise HTTPException(404, "Project not found")
+    # Inline project-membership check (project_id lives in the body
+    # for this endpoint; the dependency factory cannot read the body
+    # synchronously). AUDIT_FINDINGS F-014.
+    from app.dependencies.project_access import _check_membership  # noqa: WPS437
+    project = _check_membership(db, data.project_id, current_user)
     if db.query(Baseline).filter(Baseline.project_id == data.project_id,
                                  Baseline.name == data.name).first():
         raise HTTPException(400, f"Baseline '{data.name}' already exists for this project")
@@ -98,7 +117,8 @@ def create_baseline(
 
 @router.get("/")
 def list_baselines(project_id: int, db: Session = Depends(get_db),
-                   current_user: User = Depends(get_current_user)):
+                   current_user: User = Depends(get_current_user),
+                   project: Project = Depends(project_member_required)):
     baselines = db.query(Baseline).filter(
         Baseline.project_id == project_id
     ).order_by(Baseline.created_at.desc()).all()
@@ -119,7 +139,10 @@ def list_baselines(project_id: int, db: Session = Depends(get_db),
 
 @router.get("/{baseline_id}")
 def get_baseline(baseline_id: int, db: Session = Depends(get_db),
-                 current_user: User = Depends(get_current_user)):
+                 current_user: User = Depends(get_current_user),
+                 project: Project = Depends(
+                     entity_project_member_required(resolve_project_for_baseline)
+                 )):
     baseline = db.query(Baseline).filter(Baseline.id == baseline_id).first()
     if not baseline:
         raise HTTPException(404, "Baseline not found")
@@ -154,6 +177,12 @@ def compare_baselines(baseline_a_id: int, baseline_b_id: int,
     b = db.query(Baseline).filter(Baseline.id == baseline_b_id).first()
     if not a or not b:
         raise HTTPException(404, "One or both baselines not found")
+    # Membership check on both baselines' projects (AUDIT_FINDINGS F-014).
+    # compare across projects is rejected — not a valid use case.
+    from app.dependencies.project_access import _check_membership  # noqa: WPS437
+    _check_membership(db, a.project_id, current_user)
+    if a.project_id != b.project_id:
+        raise HTTPException(400, "Baselines belong to different projects")
     snaps_a = db.query(BaselineRequirement).filter(BaselineRequirement.baseline_id == baseline_a_id).all()
     snaps_b = db.query(BaselineRequirement).filter(BaselineRequirement.baseline_id == baseline_b_id).all()
     map_a = {s.requirement_id: s for s in snaps_a}
@@ -193,7 +222,10 @@ def compare_baselines(baseline_a_id: int, baseline_b_id: int,
 @router.delete("/{baseline_id}", status_code=204)
 def delete_baseline(baseline_id: int, request: Request,
                     db: Session = Depends(get_db),
-                    current_user: User = Depends(require_permission("baselines.delete"))):
+                    current_user: User = Depends(require_permission("baselines.delete")),
+                    project: Project = Depends(
+                        entity_project_member_required(resolve_project_for_baseline)
+                    )):
     baseline = db.query(Baseline).filter(Baseline.id == baseline_id).first()
     if not baseline:
         raise HTTPException(404, "Baseline not found")

@@ -14,7 +14,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.dependencies.project_access import (
+    _check_membership,
+    project_member_required,
+)
 from app.models import Project, User, TraceLink, Requirement, SourceArtifact, Verification
+from app.models.project_member import ProjectMember
 from app.schemas import (
     ProjectCreate, ProjectResponse,
     TraceLinkCreate, TraceLinkResponse,
@@ -45,7 +50,38 @@ projects_router = APIRouter(prefix="/projects", tags=["Projects"])
 @projects_router.get("/", response_model=List[ProjectResponse])
 def list_projects(db: Session = Depends(get_db),
                   current_user: User = Depends(get_current_user)):
-    return db.query(Project).all()
+    """
+    List projects visible to the caller. AUDIT_FINDINGS F-014: previously
+    returned every project to every authenticated user. Now scoped to:
+      - ADMIN: all projects
+      - others: projects owned by the user OR projects where the user
+        appears in project_members.
+    """
+    from app.models import UserRole
+
+    role = current_user.role if isinstance(current_user.role, UserRole) else None
+    try:
+        role = UserRole(current_user.role) if not isinstance(current_user.role, UserRole) else current_user.role
+    except (ValueError, TypeError):
+        role = None
+
+    if role == UserRole.ADMIN:
+        return db.query(Project).all()
+
+    member_pids = [
+        row[0]
+        for row in db.query(ProjectMember.project_id).filter(
+            ProjectMember.user_id == current_user.id
+        ).all()
+    ]
+    return (
+        db.query(Project)
+        .filter(
+            (Project.owner_id == current_user.id)
+            | (Project.id.in_(member_pids))
+        )
+        .all()
+    )
 
 
 @projects_router.post("/", response_model=ProjectResponse, status_code=201)
@@ -67,10 +103,8 @@ def create_project(data: ProjectCreate, request: Request,
 
 @projects_router.get("/{project_id}", response_model=ProjectResponse)
 def get_project(project_id: int, db: Session = Depends(get_db),
-                current_user: User = Depends(get_current_user)):
-    project = db.query(Project).filter(Project.id == project_id).first()
-    if not project:
-        raise HTTPException(404, "Project not found")
+                current_user: User = Depends(get_current_user),
+                project: Project = Depends(project_member_required)):
     return project
 
 
@@ -88,6 +122,7 @@ def list_trace_links(
     link_type: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    project: Project = Depends(project_member_required),
 ):
     req_ids = [r.id for r in db.query(Requirement.id).filter(Requirement.project_id == project_id).all()]
     art_ids = [a.id for a in db.query(SourceArtifact.id).filter(SourceArtifact.project_id == project_id).all()]
@@ -110,16 +145,24 @@ def list_trace_links(
 def create_trace_link(data: TraceLinkCreate, request: Request,
                       db: Session = Depends(get_db),
                       current_user: User = Depends(require_permission("traceability.create"))):
-    link = TraceLink(**data.model_dump(), created_by_id=current_user.id)
-    db.add(link)
-    db.commit()
-    db.refresh(link)
-
-    # Determine project_id from source requirement (best-effort)
+    # AUDIT_FINDINGS F-014: source/target must belong to a project the
+    # caller is a member of. Resolve project_id from the source entity
+    # and assert membership before insert.
     pid = None
     if data.source_type == "requirement":
         r = db.query(Requirement).filter(Requirement.id == data.source_id).first()
         pid = r.project_id if r else None
+    elif data.source_type == "source_artifact":
+        a = db.query(SourceArtifact).filter(SourceArtifact.id == data.source_id).first()
+        pid = a.project_id if a else None
+    if pid is None:
+        raise HTTPException(400, "Could not resolve source entity's project")
+    _check_membership(db, pid, current_user)
+
+    link = TraceLink(**data.model_dump(), created_by_id=current_user.id)
+    db.add(link)
+    db.commit()
+    db.refresh(link)
 
     record_event(db, "trace_link.created", "trace_link", link.id, current_user.id,
                  {"source": f"{data.source_type}:{data.source_id}",
@@ -150,7 +193,8 @@ def delete_trace_link(link_id: int, request: Request,
 
 @traceability_router.get("/matrix")
 def get_traceability_matrix(project_id: int, db: Session = Depends(get_db),
-                            current_user: User = Depends(get_current_user)):
+                            current_user: User = Depends(get_current_user),
+                            project: Project = Depends(project_member_required)):
     reqs = db.query(Requirement).filter(
         Requirement.project_id == project_id, Requirement.status != "deleted"
     ).order_by(Requirement.req_id).all()
@@ -196,7 +240,8 @@ def get_traceability_matrix(project_id: int, db: Session = Depends(get_db),
 
 @traceability_router.get("/graph")
 def get_traceability_graph(project_id: int, db: Session = Depends(get_db),
-                           current_user: User = Depends(get_current_user)):
+                           current_user: User = Depends(get_current_user),
+                           project: Project = Depends(project_member_required)):
     reqs = db.query(Requirement).filter(
         Requirement.project_id == project_id, Requirement.status != "deleted"
     ).all()
@@ -228,7 +273,8 @@ def get_traceability_graph(project_id: int, db: Session = Depends(get_db),
 
 @traceability_router.get("/coverage")
 def get_coverage_stats(project_id: int, db: Session = Depends(get_db),
-                       current_user: User = Depends(get_current_user)):
+                       current_user: User = Depends(get_current_user),
+                       project: Project = Depends(project_member_required)):
     """
     Compute coverage statistics for a project.
 
@@ -365,17 +411,16 @@ artifacts_router = APIRouter(prefix="/artifacts", tags=["Source Artifacts"])
 
 @artifacts_router.get("/", response_model=List[SourceArtifactResponse])
 def list_artifacts(project_id: int, db: Session = Depends(get_db),
-                   current_user: User = Depends(get_current_user)):
+                   current_user: User = Depends(get_current_user),
+                   project: Project = Depends(project_member_required)):
     return db.query(SourceArtifact).filter(SourceArtifact.project_id == project_id).all()
 
 
 @artifacts_router.post("/", response_model=SourceArtifactResponse, status_code=201)
 def create_artifact(project_id: int, data: SourceArtifactCreate, request: Request,
                     db: Session = Depends(get_db),
-                    current_user: User = Depends(get_current_user)):
-    project = db.query(Project).filter(Project.id == project_id).first()
-    if not project:
-        raise HTTPException(404, "Project not found")
+                    current_user: User = Depends(get_current_user),
+                    project: Project = Depends(project_member_required)):
     count = db.query(SourceArtifact).filter(SourceArtifact.project_id == project_id).count()
     artifact_id = f"ART-{project.code}-{count + 1:03d}"
     artifact = SourceArtifact(artifact_id=artifact_id, **data.model_dump(), project_id=project_id)

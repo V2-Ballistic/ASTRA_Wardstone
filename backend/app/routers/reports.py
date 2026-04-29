@@ -21,7 +21,11 @@ from sqlalchemy.orm import Session
 import io
 
 from app.database import get_db
-from app.models import User
+from app.dependencies.project_access import (
+    _check_membership,
+    project_member_required,
+)
+from app.models import Project, User
 from app.services.auth import get_current_user
 from app.services.reports import REPORT_REGISTRY, ReportOutput
 
@@ -78,6 +82,7 @@ def report_traceability_matrix(
     format: str = Query("xlsx", pattern="^(xlsx|pdf|html)$"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    project: Project = Depends(project_member_required),
 ):
     gen = REPORT_REGISTRY["traceability-matrix"]()
     output = gen.generate(project_id, db, {"format": format})
@@ -97,6 +102,7 @@ def report_requirements_spec(
     format: str = Query("docx", pattern="^(docx|pdf)$"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    project: Project = Depends(project_member_required),
 ):
     gen = REPORT_REGISTRY["requirements-spec"]()
     output = gen.generate(project_id, db, {"format": format})
@@ -116,6 +122,7 @@ def report_quality(
     format: str = Query("xlsx", pattern="^(xlsx|pdf)$"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    project: Project = Depends(project_member_required),
 ):
     gen = REPORT_REGISTRY["quality"]()
     output = gen.generate(project_id, db, {"format": format})
@@ -136,6 +143,7 @@ def report_compliance(
     format: str = Query("xlsx", pattern="^(xlsx|pdf)$"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    project: Project = Depends(project_member_required),
 ):
     gen = REPORT_REGISTRY["compliance"]()
     try:
@@ -158,6 +166,7 @@ def report_status_dashboard(
     project_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    project: Project = Depends(project_member_required),
 ):
     gen = REPORT_REGISTRY["status-dashboard"]()
     output = gen.generate(project_id, db, {"format": "pdf"})
@@ -203,12 +212,22 @@ def get_report_history(
     project_id: Optional[int] = None,
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Return the log of recently generated reports."""
-    items = _report_history
-    if project_id is not None:
-        items = [h for h in items if h.get("project_id") == project_id]
+    """
+    Return the log of recently generated reports.
+
+    AUDIT_FINDINGS F-014 + F-032: project_id is now required (no more
+    cross-project leakage), and the caller must be a member of that
+    project. The in-memory _report_history persistence problem is
+    tracked separately as F-032 (Phase 2 §4.21).
+    """
+    if project_id is None:
+        raise HTTPException(400, "project_id query parameter is required")
+    _check_membership(db, project_id, current_user)
+
+    items = [h for h in _report_history if h.get("project_id") == project_id]
     return {
         "total": len(items),
         "items": items[skip : skip + limit],
@@ -219,6 +238,7 @@ def report_icd(
     project_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    project: Project = Depends(project_member_required),
 ):
     gen = REPORT_REGISTRY["icd"]()
     output = gen.generate(project_id, db, {"format": "xlsx"})

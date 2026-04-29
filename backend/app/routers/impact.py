@@ -22,7 +22,12 @@ from sqlalchemy.orm import Session
 from sqlalchemy import desc
 
 from app.database import get_db
-from app.models import Requirement, User
+from app.dependencies.project_access import (
+    entity_project_member_required,
+    project_member_required,
+    resolve_project_for_requirement,
+)
+from app.models import Project, Requirement, User
 from app.services.auth import get_current_user
 from app.services.ai.impact_analyzer import (
     analyze_impact,
@@ -59,6 +64,21 @@ router = APIRouter(prefix="/impact", tags=["Impact Analysis"])
 #  Run Impact Analysis
 # ══════════════════════════════════════
 
+def _resolve_req_project_from_query(request, db: Session) -> int:
+    """Resolver: pull requirement_id from the query string."""
+    raw = request.query_params.get("requirement_id")
+    if raw is None:
+        raise HTTPException(400, "Missing requirement_id query parameter")
+    try:
+        rid = int(raw)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "Invalid requirement_id")
+    req = db.query(Requirement.project_id).filter(Requirement.id == rid).first()
+    if not req:
+        raise HTTPException(404, "Requirement not found")
+    return req[0]
+
+
 @router.get("/analyze", response_model=ImpactReport)
 def run_impact_analysis(
     requirement_id: int = Query(..., description="Requirement being changed"),
@@ -66,6 +86,9 @@ def run_impact_analysis(
     max_depth: int = Query(10, ge=1, le=20, description="Max traversal depth"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    project: Project = Depends(
+        entity_project_member_required(_resolve_req_project_from_query)
+    ),
 ):
     """
     Analyze the impact of changing a requirement.
@@ -110,6 +133,9 @@ def get_dependencies(
     max_depth: int = Query(10, ge=1, le=20),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    project: Project = Depends(
+        entity_project_member_required(_resolve_req_project_from_query)
+    ),
 ):
     """
     Get the dependency chain for a requirement.
@@ -140,6 +166,9 @@ def what_if_preview(
     action: str = Query("modify", pattern="^(delete|modify)$"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    project: Project = Depends(
+        entity_project_member_required(_resolve_req_project_from_query)
+    ),
 ):
     """
     Preview impact BEFORE making a change.
@@ -171,6 +200,9 @@ def get_impact_history(
     limit: int = Query(10, ge=1, le=50),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    project: Project = Depends(
+        entity_project_member_required(_resolve_req_project_from_query)
+    ),
 ):
     """Get past impact reports for a requirement."""
     from app.models.impact import ImpactReport as ImpactReportModel
@@ -211,6 +243,7 @@ def get_project_risk(
     project_id: int = Query(..., description="Project to analyze"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    project: Project = Depends(project_member_required),
 ):
     """
     Quick project-level risk overview: which requirements are
