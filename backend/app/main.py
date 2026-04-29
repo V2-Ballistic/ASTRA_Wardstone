@@ -18,6 +18,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 
+logger = logging.getLogger("astra")
+
 if hasattr(settings, "enforce_production_guards"):
     settings.enforce_production_guards()
 
@@ -30,6 +32,7 @@ from app.routers.baselines import router as baselines_router
 from app.routers.seed_project import router as seed_project_router
 
 # ── Optional Routers (loaded if the module exists) ──
+# Failures here are LOGGED, not silently swallowed (AUDIT_FINDINGS F-121).
 _optional_routers: list = []
 for _mod, _attr in [
     ("app.routers.admin", "router"),
@@ -47,8 +50,8 @@ for _mod, _attr in [
     try:
         _m = __import__(_mod, fromlist=[_attr])
         _optional_routers.append(getattr(_m, _attr))
-    except (ImportError, AttributeError):
-        pass
+    except (ImportError, AttributeError) as exc:
+        logger.warning("Failed to load optional router %s: %s", _mod, exc)
 
 # ── Dev Router (non-production only) ──
 dev_router = None
@@ -56,8 +59,8 @@ is_prod = getattr(settings, "is_production", False) or settings.ENVIRONMENT == "
 if not is_prod:
     try:
         from app.routers.dev import router as dev_router
-    except ImportError:
-        pass
+    except ImportError as exc:
+        logger.warning("Dev router not loaded: %s", exc)
 
 # ── Import ALL models so SQLAlchemy metadata is populated ──
 from app.models import *  # noqa: F401,F403
@@ -75,8 +78,8 @@ for _model_path in [
 ]:
     try:
         __import__(_model_path)
-    except ImportError:
-        pass
+    except ImportError as exc:
+        logger.warning("Failed to import model module %s: %s", _model_path, exc)
 
 # ── Optional Middleware ──
 _middlewares: list = []
@@ -88,8 +91,8 @@ for _mw_path, _mw_cls in [
     try:
         _m = __import__(_mw_path, fromlist=[_mw_cls])
         _middlewares.append((_mw_cls, getattr(_m, _mw_cls)))
-    except (ImportError, AttributeError):
-        pass
+    except (ImportError, AttributeError) as exc:
+        logger.warning("Failed to load middleware %s.%s: %s", _mw_path, _mw_cls, exc)
 
 # ── Alembic version check ──
 def _check_alembic_head() -> None:
@@ -114,7 +117,6 @@ def _check_alembic_head() -> None:
     except Exception as exc:
         logger.info("Alembic check skipped: %s", exc)
 
-logger = logging.getLogger("astra")
 
 # ── Log AI status at startup ──
 from app.services.ai.llm_client import is_ai_available, AI_PROVIDER
