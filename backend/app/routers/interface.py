@@ -4003,6 +4003,7 @@ def get_connection(
     c = db.query(Connection).filter(Connection.id == conn_pk).first()
     if not c:
         raise HTTPException(404, "Connection not found")
+    _assert_member_for_entity(db, current_user, c)
 
     resp = ConnectionDetail.model_validate(c)
 
@@ -4137,6 +4138,7 @@ def update_harness_endpoint(
     ep = db.query(HarnessEndpoint).filter(HarnessEndpoint.id == ep_pk).first()
     if not ep:
         raise HTTPException(404, "Harness endpoint not found")
+    _assert_member_for_entity(db, current_user, ep)
     updates = data.model_dump(exclude_unset=True)
     for field, value in updates.items():
         setattr(ep, field, value)
@@ -4170,6 +4172,7 @@ def delete_harness_endpoint(
     ep = db.query(HarnessEndpoint).filter(HarnessEndpoint.id == ep_pk).first()
     if not ep:
         raise HTTPException(404, "Harness endpoint not found")
+    _assert_member_for_entity(db, current_user, ep)
 
     mating_connector_id = ep.mating_connector_id
     harness_id = ep.harness_id
