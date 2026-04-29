@@ -14,6 +14,16 @@ os.environ["ACCESS_TOKEN_EXPIRE_MINUTES"] = "60"
 os.environ["BACKEND_CORS_ORIGINS"] = "http://localhost:3000"
 os.environ["ENVIRONMENT"] = "test"
 
+# Rate-limit middleware reads these at app construction time and the
+# middleware is a singleton on the FastAPI app — buckets are shared
+# across tests in the same pytest session. Bump them to absurdly high
+# values so test sequences never get bucket-throttled. The real
+# rate-limiter behaviour is exercised separately and tracked under
+# F-064 (per-worker token bucket → Redis).
+os.environ["RATE_LIMIT_DEFAULT"] = "100000"
+os.environ["RATE_LIMIT_AUTH"] = "100000"
+os.environ["RATE_LIMIT_IMPORT"] = "100000"
+
 import pytest
 from sqlalchemy import create_engine, event, BigInteger
 from sqlalchemy.orm import sessionmaker
