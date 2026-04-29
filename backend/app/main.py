@@ -29,7 +29,6 @@ from app.routers.requirements import router as requirements_router
 from app.routers.projects import projects_router, traceability_router, artifacts_router
 from app.routers.dashboard import router as dashboard_router
 from app.routers.baselines import router as baselines_router
-from app.routers.seed_project import router as seed_project_router
 
 # ── Optional Routers (loaded if the module exists) ──
 # Failures here are LOGGED, not silently swallowed (AUDIT_FINDINGS F-121).
@@ -53,14 +52,24 @@ for _mod, _attr in [
     except (ImportError, AttributeError) as exc:
         logger.warning("Failed to load optional router %s: %s", _mod, exc)
 
-# ── Dev Router (non-production only) ──
+# ── Dev / Seed Routers (non-production only) ──
+# AUDIT_FINDINGS F-004: seed_project was previously loaded in core
+# routers without auth, allowing any authenticated (or unauthenticated)
+# caller to pollute production projects with the SMDS seed data. It is
+# now gated behind ENVIRONMENT != production (defence-in-depth alongside
+# the projects.create permission check inside the handler).
 dev_router = None
+seed_project_router = None
 is_prod = getattr(settings, "is_production", False) or settings.ENVIRONMENT == "production"
 if not is_prod:
     try:
         from app.routers.dev import router as dev_router
     except ImportError as exc:
         logger.warning("Dev router not loaded: %s", exc)
+    try:
+        from app.routers.seed_project import router as seed_project_router
+    except ImportError as exc:
+        logger.warning("Seed-project router not loaded: %s", exc)
 
 # ── Import ALL models so SQLAlchemy metadata is populated ──
 from app.models import *  # noqa: F401,F403
@@ -163,12 +172,13 @@ app.include_router(traceability_router, prefix=API_PREFIX)
 app.include_router(artifacts_router, prefix=API_PREFIX)
 app.include_router(dashboard_router, prefix=API_PREFIX)
 app.include_router(baselines_router, prefix=API_PREFIX)
-app.include_router(seed_project_router, prefix=API_PREFIX)
 
 for r in _optional_routers:
     app.include_router(r, prefix=API_PREFIX)
 if dev_router:
     app.include_router(dev_router, prefix=API_PREFIX)
+if seed_project_router:
+    app.include_router(seed_project_router, prefix=API_PREFIX)
 
 
 @app.get("/")
