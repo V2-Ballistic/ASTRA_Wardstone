@@ -1885,6 +1885,7 @@ def get_message(
     msg = db.query(MessageDefinition).filter(MessageDefinition.id == msg_pk).first()
     if not msg:
         raise HTTPException(404, "Message definition not found")
+    _assert_member_for_entity(db, current_user, msg)
 
     fields = db.query(MessageField).filter(
         MessageField.message_id == msg_pk
@@ -1910,6 +1911,7 @@ def update_message(
     msg = db.query(MessageDefinition).filter(MessageDefinition.id == msg_pk).first()
     if not msg:
         raise HTTPException(404, "Message definition not found")
+    _assert_member_for_entity(db, current_user, msg)
 
     updates = data.model_dump(exclude_unset=True)
     for field, value in updates.items():
@@ -1944,6 +1946,7 @@ def delete_message(
     msg = db.query(MessageDefinition).filter(MessageDefinition.id == msg_pk).first()
     if not msg:
         raise HTTPException(404, "Message definition not found")
+    _assert_member_for_entity(db, current_user, msg)
 
     fc = db.query(func.count(MessageField.id)).filter(MessageField.message_id == msg_pk).scalar()
     rl = db.query(func.count(InterfaceRequirementLink.id)).filter(
@@ -1984,6 +1987,7 @@ def batch_create_fields(
     msg = db.query(MessageDefinition).filter(MessageDefinition.id == msg_pk).first()
     if not msg:
         raise HTTPException(404, "Message definition not found")
+    _assert_member_for_entity(db, current_user, msg)
 
     # Get existing max field_order
     max_order = db.query(func.max(MessageField.field_order)).filter(
@@ -2021,6 +2025,7 @@ def update_field(
     field = db.query(MessageField).filter(MessageField.id == field_pk).first()
     if not field:
         raise HTTPException(404, "Message field not found")
+    _assert_member_for_entity(db, current_user, field)
 
     updates = data.model_dump(exclude_unset=True)
     for k, v in updates.items():
@@ -2039,6 +2044,7 @@ def delete_field(
     field = db.query(MessageField).filter(MessageField.id == field_pk).first()
     if not field:
         raise HTTPException(404, "Message field not found")
+    _assert_member_for_entity(db, current_user, field)
 
     # Mark linked auto-requirements for review
     db.query(InterfaceRequirementLink).filter(
@@ -2061,6 +2067,7 @@ def get_message_byte_map(
     msg = db.query(MessageDefinition).filter(MessageDefinition.id == msg_pk).first()
     if not msg:
         raise HTTPException(404, "Message definition not found")
+    _assert_member_for_entity(db, current_user, msg)
 
     bd = db.query(BusDefinition).filter(BusDefinition.id == msg.bus_def_id).first()
     word_bits = bd.word_size_bits if bd and bd.word_size_bits else 16
