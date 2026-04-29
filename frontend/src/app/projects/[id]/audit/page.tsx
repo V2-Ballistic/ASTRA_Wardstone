@@ -46,7 +46,7 @@ export default function AuditLogPage() {
       const p: any = { skip: page * limit, limit, project_id: projectId };
       if (entityType) p.entity_type = entityType;
       if (eventType) p.event_type = eventType;
-      const res = await api.get('/audit/log', { params });
+      const res = await api.get('/audit/log', { params: p });
       setEntries(res.data?.items || []);
       setTotal(res.data?.total || 0);
     } catch {}
