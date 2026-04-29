@@ -2944,11 +2944,23 @@ def approve_auto_requirements(
     """
     approved = 0
     trace_links_created = 0
+    forbidden = 0
 
     for req_id in data.requirement_ids:
         req = db.query(Requirement).filter(Requirement.id == req_id).first()
         if not req:
             continue
+
+        # AUDIT_FINDINGS F-014 + F-046: per-requirement project membership
+        # check. Skip silently with a forbidden counter so a mixed-project
+        # payload doesn't fail the whole batch (matches not-found semantics).
+        try:
+            _check_membership(db, req.project_id, current_user)
+        except HTTPException as exc:
+            if exc.status_code == 403:
+                forbidden += 1
+                continue
+            raise
 
         # 1. Update requirement status to draft
         old_status = _ev(req.status)
@@ -3046,6 +3058,7 @@ def approve_auto_requirements(
     return {
         "approved": approved,
         "trace_links_created": trace_links_created,
+        "forbidden": forbidden,
         "requirement_ids": data.requirement_ids,
     }
 
@@ -3063,11 +3076,23 @@ def reject_auto_requirements(
       2. Set each InterfaceRequirementLink status → 'rejected'
     """
     rejected = 0
+    forbidden = 0
 
     for req_id in data.requirement_ids:
         req = db.query(Requirement).filter(Requirement.id == req_id).first()
         if not req:
             continue
+
+        # AUDIT_FINDINGS F-014 + F-046: per-requirement project membership
+        # check. Skip silently with a forbidden counter — mixed-project
+        # payloads don't fail the whole batch.
+        try:
+            _check_membership(db, req.project_id, current_user)
+        except HTTPException as exc:
+            if exc.status_code == 403:
+                forbidden += 1
+                continue
+            raise
 
         old_status = _ev(req.status)
         req.status = "deleted"
@@ -3105,6 +3130,7 @@ def reject_auto_requirements(
 
     return {
         "rejected": rejected,
+        "forbidden": forbidden,
         "requirement_ids": data.requirement_ids,
     }
 
@@ -3422,10 +3448,12 @@ def create_req_link(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("interfaces.create")),
 ):
-    # Validate requirement exists
+    # Validate requirement exists + caller is a member of its project
+    # (AUDIT_FINDINGS F-014).
     req = db.query(Requirement).filter(Requirement.id == data.requirement_id).first()
     if not req:
         raise HTTPException(404, f"Requirement {data.requirement_id} not found")
+    _check_membership(db, req.project_id, current_user)
 
     link = InterfaceRequirementLink(
         created_by_id=current_user.id,
@@ -3449,8 +3477,29 @@ def list_req_links(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not entity_type and not entity_id and not requirement_id:
-        raise HTTPException(400, "Provide entity_type+entity_id or requirement_id")
+    """
+    AUDIT_FINDINGS F-014 + F-052: require entity_type+entity_id as a
+    pair, OR requirement_id alone — never just one of (entity_type,
+    entity_id) which previously allowed table scans across projects.
+    Each accepted variant resolves to a project_id via the loaded
+    requirement (or its links) and the caller must be a member.
+    """
+    has_entity_pair = bool(entity_type) and bool(entity_id)
+    has_loose_entity = bool(entity_type) ^ bool(entity_id)
+    if has_loose_entity:
+        raise HTTPException(
+            400, "entity_type and entity_id must be supplied together",
+        )
+    if not has_entity_pair and not requirement_id:
+        raise HTTPException(
+            400, "Provide entity_type+entity_id or requirement_id",
+        )
+
+    if requirement_id:
+        req = db.query(Requirement).filter(Requirement.id == requirement_id).first()
+        if not req:
+            raise HTTPException(404, f"Requirement {requirement_id} not found")
+        _check_membership(db, req.project_id, current_user)
 
     query = db.query(InterfaceRequirementLink)
     if entity_type:
@@ -3460,15 +3509,30 @@ def list_req_links(
     if requirement_id:
         query = query.filter(InterfaceRequirementLink.requirement_id == requirement_id)
 
-    links = query.order_by(InterfaceRequirementLink.created_at.desc()).all()
+    # If only the entity pair was supplied, scope by membership of the
+    # requirements they link to — prefilter to project_ids the caller
+    # is a member of, then load.
+    raw_links = query.order_by(InterfaceRequirementLink.created_at.desc()).all()
+
     results = []
-    for lk in links:
-        resp = InterfaceReqLinkResponse.model_validate(lk)
+    seen_unauthorized = False
+    for lk in raw_links:
+        # Lookup parent project via the requirement + filter cross-project
         req = db.query(Requirement).filter(Requirement.id == lk.requirement_id).first()
-        if req:
-            resp.requirement_req_id = req.req_id
-            resp.requirement_title = req.title
+        if not req:
+            continue
+        try:
+            _check_membership(db, req.project_id, current_user)
+        except HTTPException as exc:
+            if exc.status_code == 403:
+                seen_unauthorized = True
+                continue
+            raise
+        resp = InterfaceReqLinkResponse.model_validate(lk)
+        resp.requirement_req_id = req.req_id
+        resp.requirement_title = req.title
         results.append(resp)
+
     return results
 
 
@@ -3481,6 +3545,7 @@ def delete_req_link(
     link = db.query(InterfaceRequirementLink).filter(InterfaceRequirementLink.id == link_pk).first()
     if not link:
         raise HTTPException(404, "Requirement link not found")
+    _assert_member_for_entity(db, current_user, link)
     db.delete(link)
     db.commit()
     return {"status": "deleted", "id": link_pk}
