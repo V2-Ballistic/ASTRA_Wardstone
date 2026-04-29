@@ -16,7 +16,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import User, UserRole
+from app.dependencies.project_access import (
+    _check_membership,
+    project_member_required,
+)
+from app.models import Project, User, UserRole
 from app.models.integration import IntegrationConfig, SyncLog
 from app.services.auth import get_current_user
 from app.services.integrations import CONNECTOR_REGISTRY
@@ -144,6 +148,7 @@ def list_integrations(
     project_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    project: Project = Depends(project_member_required),
 ):
     configs = db.query(IntegrationConfig).filter(
         IntegrationConfig.project_id == project_id,
@@ -157,6 +162,10 @@ def create_integration(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_any_role(UserRole.ADMIN, UserRole.PROJECT_MANAGER)),
 ):
+    # AUDIT_FINDINGS F-014: scope role check to actual project membership
+    # so a global PM can't create integrations (with stored credentials)
+    # for projects they don't belong to.
+    _check_membership(db, data.project_id, current_user)
     encrypted = encrypt_field(json.dumps(data.config))
     ic = IntegrationConfig(
         project_id=data.project_id,
@@ -191,6 +200,7 @@ def get_integration(
     ic = db.query(IntegrationConfig).filter(IntegrationConfig.id == config_id).first()
     if not ic:
         raise HTTPException(404, "Integration config not found")
+    _check_membership(db, ic.project_id, current_user)
     return _config_to_dict(ic)
 
 
@@ -204,6 +214,7 @@ def update_integration(
     ic = db.query(IntegrationConfig).filter(IntegrationConfig.id == config_id).first()
     if not ic:
         raise HTTPException(404, "Integration config not found")
+    _check_membership(db, ic.project_id, current_user)
 
     update = data.model_dump(exclude_unset=True)
     if "config" in update and update["config"] is not None:
@@ -224,6 +235,7 @@ def delete_integration(
     ic = db.query(IntegrationConfig).filter(IntegrationConfig.id == config_id).first()
     if not ic:
         raise HTTPException(404, "Integration config not found")
+    _check_membership(db, ic.project_id, current_user)
     db.delete(ic)
     db.commit()
     return {"status": "deleted", "id": config_id}
@@ -242,6 +254,7 @@ def test_integration(
     ic = db.query(IntegrationConfig).filter(IntegrationConfig.id == config_id).first()
     if not ic:
         raise HTTPException(404, "Integration config not found")
+    _check_membership(db, ic.project_id, current_user)
 
     connector = _get_connector(ic)
     success = connector.test_connection()
@@ -257,6 +270,7 @@ def list_external_projects(
     ic = db.query(IntegrationConfig).filter(IntegrationConfig.id == config_id).first()
     if not ic:
         raise HTTPException(404, "Integration config not found")
+    _check_membership(db, ic.project_id, current_user)
     connector = _get_connector(ic)
     return connector.get_available_projects()
 
@@ -275,6 +289,7 @@ def trigger_sync(
     ic = db.query(IntegrationConfig).filter(IntegrationConfig.id == config_id).first()
     if not ic:
         raise HTTPException(404, "Integration config not found")
+    _check_membership(db, ic.project_id, current_user)
     if not ic.is_active:
         raise HTTPException(400, "Integration is inactive")
 
@@ -339,6 +354,11 @@ def get_sync_logs(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    ic = db.query(IntegrationConfig).filter(IntegrationConfig.id == config_id).first()
+    if not ic:
+        raise HTTPException(404, "Integration config not found")
+    _check_membership(db, ic.project_id, current_user)
+
     logs = (
         db.query(SyncLog)
         .filter(SyncLog.integration_config_id == config_id)

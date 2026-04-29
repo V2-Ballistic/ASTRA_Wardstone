@@ -19,6 +19,12 @@ from sqlalchemy import func
 from pydantic import BaseModel, Field
 
 from app.database import get_db
+from app.dependencies.project_access import (
+    _check_membership,
+    entity_project_member_required,
+    project_member_required,
+    resolve_project_for_requirement,
+)
 from app.models import (
     Requirement, RequirementHistory, Project, User,
     TraceLink, Verification, Comment,
@@ -120,6 +126,7 @@ def list_requirements(
     priority: Optional[str] = None, search: Optional[str] = None,
     skip: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db), current_user: User = Depends(get_current_user),
+    project: Project = Depends(project_member_required),
 ):
     query = db.query(Requirement).filter(Requirement.project_id == project_id)
     if status:
@@ -138,7 +145,10 @@ def list_requirements(
 
 @router.get("/{req_id}", response_model=RequirementDetail)
 def get_requirement(req_id: int, db: Session = Depends(get_db),
-                    current_user: User = Depends(get_current_user)):
+                    current_user: User = Depends(get_current_user),
+                    project: Project = Depends(
+                        entity_project_member_required(resolve_project_for_requirement)
+                    )):
     req = db.query(Requirement).filter(Requirement.id == req_id).first()
     if not req:
         raise HTTPException(404, "Requirement not found")
@@ -173,6 +183,9 @@ def list_requirement_verifications(
     req_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    project: Project = Depends(
+        entity_project_member_required(resolve_project_for_requirement)
+    ),
 ):
     """List all verifications for a specific requirement."""
     req = db.query(Requirement).filter(Requirement.id == req_id).first()
@@ -191,6 +204,9 @@ def create_verification(
     request: Request = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    project: Project = Depends(
+        entity_project_member_required(resolve_project_for_requirement)
+    ),
 ):
     """Create a verification record for a requirement."""
     req = db.query(Requirement).filter(Requirement.id == req_id).first()
@@ -250,10 +266,8 @@ def create_requirement(
     request: Request = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("requirements.create")),
+    project: Project = Depends(project_member_required),
 ):
-    project = db.query(Project).filter(Project.id == project_id).first()
-    if not project:
-        raise HTTPException(404, "Project not found")
 
     count = db.query(func.count(Requirement.id)).filter(
         Requirement.project_id == project_id,
@@ -307,6 +321,9 @@ def update_requirement(
     request: Request = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("requirements.update")),
+    project: Project = Depends(
+        entity_project_member_required(resolve_project_for_requirement)
+    ),
 ):
     req = db.query(Requirement).filter(Requirement.id == req_id).first()
     if not req:
@@ -387,10 +404,14 @@ def bulk_delete_requirements(
     operations leave the same paper trail as individual ones.
 
     Returns counts so the frontend can show a summary toast.
+
+    AUDIT_FINDINGS F-014: each requirement is membership-checked against
+    its parent project before deletion; mixed-project payloads are rejected.
     """
     deleted_reqs: List[dict] = []
     skipped_already_deleted: List[int] = []
     not_found: List[int] = []
+    forbidden: List[int] = []
 
     # Dedupe so the same id can't be counted twice in one call.
     unique_ids = list(dict.fromkeys(payload.requirement_ids))
@@ -400,6 +421,15 @@ def bulk_delete_requirements(
         if not req:
             not_found.append(req_id)
             continue
+        # Membership enforcement (F-014): skip silently with reporting,
+        # do NOT fail the whole batch — match the existing not_found semantics.
+        try:
+            _check_membership(db, req.project_id, current_user)
+        except HTTPException as exc:
+            if exc.status_code == 403:
+                forbidden.append(req_id)
+                continue
+            raise
         old_status = _ev(req.status)
         if old_status == "deleted":
             skipped_already_deleted.append(req_id)
@@ -432,6 +462,7 @@ def bulk_delete_requirements(
         "deleted": len(deleted_reqs),
         "skipped_already_deleted": len(skipped_already_deleted),
         "not_found": len(not_found),
+        "forbidden": len(forbidden),
         "total_requested": len(unique_ids),
         "deleted_ids": [d["id"] for d in deleted_reqs],
     }
@@ -440,7 +471,10 @@ def bulk_delete_requirements(
 @router.delete("/{req_id}", status_code=200)
 def delete_requirement(req_id: int, request: Request = None,
                        db: Session = Depends(get_db),
-                       current_user: User = Depends(require_permission("requirements.delete"))):
+                       current_user: User = Depends(require_permission("requirements.delete")),
+                       project: Project = Depends(
+                           entity_project_member_required(resolve_project_for_requirement)
+                       )):
     req = db.query(Requirement).filter(Requirement.id == req_id).first()
     if not req:
         raise HTTPException(404, "Requirement not found")
@@ -464,7 +498,10 @@ def delete_requirement(req_id: int, request: Request = None,
 @router.post("/{req_id}/restore", response_model=RequirementResponse)
 def restore_requirement(req_id: int, request: Request = None,
                         db: Session = Depends(get_db),
-                        current_user: User = Depends(require_permission("requirements.update"))):
+                        current_user: User = Depends(require_permission("requirements.update")),
+                        project: Project = Depends(
+                            entity_project_member_required(resolve_project_for_requirement)
+                        )):
     req = db.query(Requirement).filter(Requirement.id == req_id).first()
     if not req:
         raise HTTPException(404, "Requirement not found")
@@ -482,7 +519,10 @@ def restore_requirement(req_id: int, request: Request = None,
 @router.post("/{req_id}/clone", response_model=RequirementResponse, status_code=201)
 def clone_requirement(req_id: int, request: Request = None,
                       db: Session = Depends(get_db),
-                      current_user: User = Depends(require_permission("requirements.create"))):
+                      current_user: User = Depends(require_permission("requirements.create")),
+                      project: Project = Depends(
+                          entity_project_member_required(resolve_project_for_requirement)
+                      )):
     source = db.query(Requirement).filter(Requirement.id == req_id).first()
     if not source:
         raise HTTPException(404, "Source requirement not found")
@@ -518,7 +558,10 @@ def clone_requirement(req_id: int, request: Request = None,
 
 @router.get("/{req_id}/history")
 def get_requirement_history(req_id: int, db: Session = Depends(get_db),
-                            current_user: User = Depends(get_current_user)):
+                            current_user: User = Depends(get_current_user),
+                            project: Project = Depends(
+                                entity_project_member_required(resolve_project_for_requirement)
+                            )):
     req = db.query(Requirement).filter(Requirement.id == req_id).first()
     if not req:
         raise HTTPException(404, "Requirement not found")
@@ -552,7 +595,10 @@ class CommentCreate(BaseModel):
 
 @router.get("/{req_id}/comments")
 def get_requirement_comments(req_id: int, db: Session = Depends(get_db),
-                             current_user: User = Depends(get_current_user)):
+                             current_user: User = Depends(get_current_user),
+                             project: Project = Depends(
+                                 entity_project_member_required(resolve_project_for_requirement)
+                             )):
     req = db.query(Requirement).filter(Requirement.id == req_id).first()
     if not req:
         raise HTTPException(404, "Requirement not found")
@@ -574,7 +620,10 @@ def get_requirement_comments(req_id: int, db: Session = Depends(get_db),
 @router.post("/{req_id}/comments", status_code=201)
 def create_comment(req_id: int, data: CommentCreate, request: Request = None,
                    db: Session = Depends(get_db),
-                   current_user: User = Depends(get_current_user)):
+                   current_user: User = Depends(get_current_user),
+                   project: Project = Depends(
+                       entity_project_member_required(resolve_project_for_requirement)
+                   )):
     req = db.query(Requirement).filter(Requirement.id == req_id).first()
     if not req:
         raise HTTPException(404, "Requirement not found")
@@ -640,7 +689,11 @@ def quality_check_batch(
     """
     Run Tier 3 batch analysis: detect contradictions, redundancies,
     and gaps across a set of requirements.
+
+    AUDIT_FINDINGS F-014: caller must be a member of data.project_id.
     """
+    _check_membership(db, data.project_id, current_user)
+
     query = db.query(Requirement).filter(
         Requirement.project_id == data.project_id,
         Requirement.status != "deleted",
@@ -672,6 +725,9 @@ def get_ai_analysis(
     req_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    project: Project = Depends(
+        entity_project_member_required(resolve_project_for_requirement)
+    ),
 ):
     """Retrieve stored AI analysis results for a requirement."""
     req = db.query(Requirement).filter(Requirement.id == req_id).first()
@@ -697,6 +753,9 @@ def submit_ai_feedback(
     data: AIFeedbackCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    project: Project = Depends(
+        entity_project_member_required(resolve_project_for_requirement)
+    ),
 ):
     """Record user acceptance or rejection of an AI suggestion."""
     fb = record_feedback(

@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
 
 from app.database import get_db
+from app.dependencies.project_access import _check_membership
 from app.models import (
     User, Project, RequirementHistory, TraceLink,
 )
@@ -127,12 +128,77 @@ def _next_id(db: Session, model, project_id: int, prefix: str, id_field: str) ->
     return f"{prefix}-{next_num:03d}"
 
 
-def _require_project(db: Session, project_id: int) -> Project:
-    """Validate project exists."""
-    project = db.query(Project).filter(Project.id == project_id).first()
-    if not project:
-        raise HTTPException(404, f"Project {project_id} not found")
-    return project
+def _require_project(db: Session, project_id: int, current_user: User) -> Project:
+    """
+    Validate project exists AND the caller is a member (or owner / admin).
+
+    Raises 404 on missing project, 403 on non-member.
+    AUDIT_FINDINGS F-014: every interface endpoint that takes a project_id
+    in path/query/body funnels through this helper.
+    """
+    return _check_membership(db, project_id, current_user)
+
+
+def _assert_member_for_entity(db: Session, current_user: User, entity) -> None:
+    """
+    Inline membership check for endpoints keyed by entity primary key
+    (system_pk, unit_pk, conn_pk, etc.). Pulls project_id off the entity
+    and asserts the caller is a member. Raises 403 on non-member.
+
+    Use this at the top of every entity-keyed handler immediately after
+    the entity has been loaded (and a 404 has been raised if missing).
+
+    For entities that don't carry project_id directly (Pin, MessageField,
+    Wire, HarnessEndpoint, PinBusAssignment), this helper walks the
+    one-step parent chain to resolve project_id.
+    """
+    pid = getattr(entity, "project_id", None)
+
+    if pid is None:
+        # Walk the parent chain for entities that don't carry project_id
+        # on their own row.
+        if isinstance(entity, Pin):
+            row = db.query(Connector.project_id).filter(
+                Connector.id == entity.connector_id
+            ).first()
+            pid = row[0] if row else None
+        elif isinstance(entity, MessageField):
+            row = db.query(MessageDefinition.project_id).filter(
+                MessageDefinition.id == entity.message_id
+            ).first()
+            pid = row[0] if row else None
+        elif isinstance(entity, Wire):
+            row = db.query(WireHarness.project_id).filter(
+                WireHarness.id == entity.harness_id
+            ).first()
+            pid = row[0] if row else None
+        elif isinstance(entity, HarnessEndpoint):
+            row = db.query(WireHarness.project_id).filter(
+                WireHarness.id == entity.harness_id
+            ).first()
+            pid = row[0] if row else None
+        elif isinstance(entity, PinBusAssignment):
+            row = db.query(BusDefinition.project_id).filter(
+                BusDefinition.id == entity.bus_def_id
+            ).first()
+            pid = row[0] if row else None
+        elif isinstance(entity, InterfaceRequirementLink):
+            # InterfaceRequirementLink has no project_id column — resolve
+            # via the linked Requirement.
+            row = db.query(Requirement.project_id).filter(
+                Requirement.id == entity.requirement_id
+            ).first()
+            pid = row[0] if row else None
+
+    if pid is None:
+        # Caller passed an unsupported entity type — fail loudly so this
+        # gets noticed in dev rather than silently skipping the check.
+        raise HTTPException(
+            500,
+            f"_assert_member_for_entity: cannot resolve project_id for "
+            f"entity ({type(entity).__name__})",
+        )
+    _check_membership(db, pid, current_user)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -147,7 +213,7 @@ def list_systems(
     current_user: User = Depends(get_current_user),
 ):
     """List all systems for a project.  mode=flat (default) or tree."""
-    _require_project(db, project_id)
+    _require_project(db, project_id, current_user)
     query = db.query(System).filter(System.project_id == project_id)
 
     if mode == "tree":
@@ -176,7 +242,7 @@ def create_system(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("interfaces.create")),
 ):
-    _require_project(db, project_id)
+    _require_project(db, project_id, current_user)
     system_id = _next_id(db, System, project_id, "SYS", "system_id")
 
     system = System(
@@ -208,6 +274,7 @@ def get_system(
     system = db.query(System).filter(System.id == system_pk).first()
     if not system:
         raise HTTPException(404, "System not found")
+    _assert_member_for_entity(db, current_user, system)
 
     units = db.query(Unit).filter(Unit.system_id == system.id).order_by(Unit.designation).all()
     unit_summaries = []
@@ -242,6 +309,7 @@ def update_system(
     system = db.query(System).filter(System.id == system_pk).first()
     if not system:
         raise HTTPException(404, "System not found")
+    _assert_member_for_entity(db, current_user, system)
 
     updates = data.model_dump(exclude_unset=True)
     for field, value in updates.items():
@@ -275,6 +343,7 @@ def delete_system(
     system = db.query(System).filter(System.id == system_pk).first()
     if not system:
         raise HTTPException(404, "System not found")
+    _assert_member_for_entity(db, current_user, system)
 
     unit_count = db.query(func.count(Unit.id)).filter(Unit.system_id == system.id).scalar()
 
@@ -314,7 +383,7 @@ def list_units(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _require_project(db, project_id)
+    _require_project(db, project_id, current_user)
     query = db.query(Unit).filter(Unit.project_id == project_id)
 
     if system_id:
@@ -347,7 +416,7 @@ def create_unit(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("interfaces.create")),
 ):
-    _require_project(db, project_id)
+    _require_project(db, project_id, current_user)
 
     # Validate unique designation within project
     existing = db.query(Unit).filter(
@@ -392,6 +461,7 @@ def get_unit(
     unit = db.query(Unit).filter(Unit.id == unit_pk).first()
     if not unit:
         raise HTTPException(404, "Unit not found")
+    _assert_member_for_entity(db, current_user, unit)
 
     # Connectors with pins
     connectors = db.query(Connector).filter(Connector.unit_id == unit.id).order_by(Connector.designator).all()
@@ -485,6 +555,7 @@ def update_unit(
     unit = db.query(Unit).filter(Unit.id == unit_pk).first()
     if not unit:
         raise HTTPException(404, "Unit not found")
+    _assert_member_for_entity(db, current_user, unit)
 
     updates = data.model_dump(exclude_unset=True)
 
@@ -532,6 +603,7 @@ def delete_unit(
     unit = db.query(Unit).filter(Unit.id == unit_pk).first()
     if not unit:
         raise HTTPException(404, "Unit not found")
+    _assert_member_for_entity(db, current_user, unit)
 
     # Impact preview
     conn_count = db.query(func.count(Connector.id)).filter(Connector.unit_id == unit.id).scalar()
@@ -585,6 +657,7 @@ def get_unit_specifications(
     unit = db.query(Unit).filter(Unit.id == unit_pk).first()
     if not unit:
         raise HTTPException(404, "Unit not found")
+    _assert_member_for_entity(db, current_user, unit)
 
     specs = db.query(UnitEnvironmentalSpec).filter(
         UnitEnvironmentalSpec.unit_id == unit.id
@@ -761,6 +834,7 @@ def get_connector(
     connector = db.query(Connector).filter(Connector.id == conn_pk).first()
     if not connector:
         raise HTTPException(404, "Connector not found")
+    _assert_member_for_entity(db, current_user, connector)
 
     pins = db.query(Pin).filter(Pin.connector_id == conn_pk).order_by(Pin.pin_number).all()
     pin_responses = []
@@ -793,6 +867,7 @@ def get_connector_pinout(
     connector = db.query(Connector).filter(Connector.id == conn_pk).first()
     if not connector:
         raise HTTPException(404, "Connector not found")
+    _assert_member_for_entity(db, current_user, connector)
 
     pins = db.query(Pin).filter(Pin.connector_id == conn_pk).order_by(Pin.pin_number).all()
 
@@ -845,6 +920,7 @@ def update_connector(
     connector = db.query(Connector).filter(Connector.id == conn_pk).first()
     if not connector:
         raise HTTPException(404, "Connector not found")
+    _assert_member_for_entity(db, current_user, connector)
 
     updates = data.model_dump(exclude_unset=True)
 
@@ -906,6 +982,7 @@ def delete_connector(
     connector = db.query(Connector).filter(Connector.id == conn_pk).first()
     if not connector:
         raise HTTPException(404, "Connector not found")
+    _assert_member_for_entity(db, current_user, connector)
 
     # ── Pre-flight impact count ──
     pin_ids_subq = db.query(Pin.id).filter(Pin.connector_id == conn_pk).subquery()
@@ -1035,6 +1112,7 @@ def batch_create_pins(
     connector = db.query(Connector).filter(Connector.id == conn_pk).first()
     if not connector:
         raise HTTPException(404, "Connector not found")
+    _assert_member_for_entity(db, current_user, connector)
 
     _validate_pin_numbers(data.pins)
 
@@ -1083,6 +1161,7 @@ def auto_generate_pins(
     connector = db.query(Connector).filter(Connector.id == conn_pk).first()
     if not connector:
         raise HTTPException(404, "Connector not found")
+    _assert_member_for_entity(db, current_user, connector)
 
     if not connector.total_contacts or connector.total_contacts <= 0:
         raise HTTPException(400, "Connector total_contacts must be > 0")
@@ -1132,6 +1211,7 @@ def update_pin(
     pin = db.query(Pin).filter(Pin.id == pin_pk).first()
     if not pin:
         raise HTTPException(404, "Pin not found")
+    _assert_member_for_entity(db, current_user, pin)
 
     updates = data.model_dump(exclude_unset=True)
 
@@ -1206,6 +1286,7 @@ def delete_pin(
     pin = db.query(Pin).filter(Pin.id == pin_pk).first()
     if not pin:
         raise HTTPException(404, "Pin not found")
+    _assert_member_for_entity(db, current_user, pin)
 
     # Refuse if connected
     wire_count = db.query(func.count(Wire.id)).filter(
@@ -1244,7 +1325,7 @@ def search_pins(
     current_user: User = Depends(get_current_user),
 ):
     """Search pins across ALL units in a project by signal name."""
-    _require_project(db, project_id)
+    _require_project(db, project_id, current_user)
 
     t = f"%{signal_name}%"
     pins = (
@@ -1431,6 +1512,7 @@ def get_bus(
     bd = db.query(BusDefinition).filter(BusDefinition.id == bus_pk).first()
     if not bd:
         raise HTTPException(404, "Bus definition not found")
+    _assert_member_for_entity(db, current_user, bd)
 
     messages = db.query(MessageDefinition).filter(
         MessageDefinition.bus_def_id == bus_pk
@@ -1478,6 +1560,7 @@ def update_bus(
     bd = db.query(BusDefinition).filter(BusDefinition.id == bus_pk).first()
     if not bd:
         raise HTTPException(404, "Bus definition not found")
+    _assert_member_for_entity(db, current_user, bd)
 
     updates = data.model_dump(exclude_unset=True)
     for field, value in updates.items():
@@ -1513,6 +1596,7 @@ def delete_bus(
     bd = db.query(BusDefinition).filter(BusDefinition.id == bus_pk).first()
     if not bd:
         raise HTTPException(404, "Bus definition not found")
+    _assert_member_for_entity(db, current_user, bd)
 
     msg_count = db.query(func.count(MessageDefinition.id)).filter(
         MessageDefinition.bus_def_id == bus_pk
@@ -1566,6 +1650,7 @@ def batch_assign_pins_to_bus(
     bd = db.query(BusDefinition).filter(BusDefinition.id == bus_pk).first()
     if not bd:
         raise HTTPException(404, "Bus definition not found")
+    _assert_member_for_entity(db, current_user, bd)
 
     created = []
     for a in assignments:
@@ -1625,6 +1710,7 @@ def remove_pin_assignment(
     pa = db.query(PinBusAssignment).filter(PinBusAssignment.id == pa_pk).first()
     if not pa:
         raise HTTPException(404, "Pin-bus assignment not found")
+    _assert_member_for_entity(db, current_user, pa)
     db.delete(pa)
     db.commit()
     return {"status": "deleted", "id": pa_pk}
@@ -1639,6 +1725,7 @@ def get_bus_utilization(
     bd = db.query(BusDefinition).filter(BusDefinition.id == bus_pk).first()
     if not bd:
         raise HTTPException(404, "Bus definition not found")
+    _assert_member_for_entity(db, current_user, bd)
 
     capacity_bps = bd.data_rate_actual_bps or 0
     word_bits = bd.word_size_bits or 16  # Default 1553 word size
@@ -1805,6 +1892,7 @@ def get_message(
     msg = db.query(MessageDefinition).filter(MessageDefinition.id == msg_pk).first()
     if not msg:
         raise HTTPException(404, "Message definition not found")
+    _assert_member_for_entity(db, current_user, msg)
 
     fields = db.query(MessageField).filter(
         MessageField.message_id == msg_pk
@@ -1830,6 +1918,7 @@ def update_message(
     msg = db.query(MessageDefinition).filter(MessageDefinition.id == msg_pk).first()
     if not msg:
         raise HTTPException(404, "Message definition not found")
+    _assert_member_for_entity(db, current_user, msg)
 
     updates = data.model_dump(exclude_unset=True)
     for field, value in updates.items():
@@ -1864,6 +1953,7 @@ def delete_message(
     msg = db.query(MessageDefinition).filter(MessageDefinition.id == msg_pk).first()
     if not msg:
         raise HTTPException(404, "Message definition not found")
+    _assert_member_for_entity(db, current_user, msg)
 
     fc = db.query(func.count(MessageField.id)).filter(MessageField.message_id == msg_pk).scalar()
     rl = db.query(func.count(InterfaceRequirementLink.id)).filter(
@@ -1904,6 +1994,7 @@ def batch_create_fields(
     msg = db.query(MessageDefinition).filter(MessageDefinition.id == msg_pk).first()
     if not msg:
         raise HTTPException(404, "Message definition not found")
+    _assert_member_for_entity(db, current_user, msg)
 
     # Get existing max field_order
     max_order = db.query(func.max(MessageField.field_order)).filter(
@@ -1941,6 +2032,7 @@ def update_field(
     field = db.query(MessageField).filter(MessageField.id == field_pk).first()
     if not field:
         raise HTTPException(404, "Message field not found")
+    _assert_member_for_entity(db, current_user, field)
 
     updates = data.model_dump(exclude_unset=True)
     for k, v in updates.items():
@@ -1959,6 +2051,7 @@ def delete_field(
     field = db.query(MessageField).filter(MessageField.id == field_pk).first()
     if not field:
         raise HTTPException(404, "Message field not found")
+    _assert_member_for_entity(db, current_user, field)
 
     # Mark linked auto-requirements for review
     db.query(InterfaceRequirementLink).filter(
@@ -1981,6 +2074,7 @@ def get_message_byte_map(
     msg = db.query(MessageDefinition).filter(MessageDefinition.id == msg_pk).first()
     if not msg:
         raise HTTPException(404, "Message definition not found")
+    _assert_member_for_entity(db, current_user, msg)
 
     bd = db.query(BusDefinition).filter(BusDefinition.id == msg.bus_def_id).first()
     word_bits = bd.word_size_bits if bd and bd.word_size_bits else 16
@@ -2040,7 +2134,7 @@ def list_harnesses(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _require_project(db, project_id)
+    _require_project(db, project_id, current_user)
     query = db.query(WireHarness).filter(WireHarness.project_id == project_id)
     if from_unit_id:
         query = query.filter(WireHarness.from_unit_id == from_unit_id)
@@ -2124,6 +2218,7 @@ def get_harness(
     harness = db.query(WireHarness).filter(WireHarness.id == har_pk).first()
     if not harness:
         raise HTTPException(404, "Wire harness not found")
+    _assert_member_for_entity(db, current_user, harness)
 
     wires = db.query(Wire).filter(Wire.harness_id == har_pk).order_by(Wire.wire_number).all()
     wire_list = []
@@ -2150,6 +2245,7 @@ def update_harness(
     harness = db.query(WireHarness).filter(WireHarness.id == har_pk).first()
     if not harness:
         raise HTTPException(404, "Wire harness not found")
+    _assert_member_for_entity(db, current_user, harness)
 
     updates = data.model_dump(exclude_unset=True)
     for field, value in updates.items():
@@ -2180,6 +2276,7 @@ def delete_harness(
     harness = db.query(WireHarness).filter(WireHarness.id == har_pk).first()
     if not harness:
         raise HTTPException(404, "Wire harness not found")
+    _assert_member_for_entity(db, current_user, harness)
 
     wc = db.query(func.count(Wire.id)).filter(Wire.harness_id == har_pk).scalar()
     rl = db.query(func.count(InterfaceRequirementLink.id)).filter(
@@ -2241,6 +2338,7 @@ def batch_create_wires(
     harness = db.query(WireHarness).filter(WireHarness.id == har_pk).first()
     if not harness:
         raise HTTPException(404, "Wire harness not found")
+    _assert_member_for_entity(db, current_user, harness)
 
     # Build: set of pin_ids that belong to any endpoint's LRU connector on
     # this harness. For a 2-endpoint harness this equals the old from_pin_ids
@@ -2427,6 +2525,7 @@ def auto_wire_harness(
     harness = db.query(WireHarness).filter(WireHarness.id == har_pk).first()
     if not harness:
         raise HTTPException(404, "Wire harness not found")
+    _assert_member_for_entity(db, current_user, harness)
 
     # Load both endpoint connectors (for type/pin-count detection) and pins
     from_connector = db.query(Connector).filter(Connector.id == harness.from_connector_id).first()
@@ -2803,6 +2902,7 @@ def generate_harness_requirements(
     harness = db.query(WireHarness).filter(WireHarness.id == har_pk).first()
     if not harness:
         raise HTTPException(404, "Harness not found")
+    _assert_member_for_entity(db, current_user, harness)
 
     wires = db.query(Wire).filter(Wire.harness_id == har_pk).all()
     if not wires:
@@ -2851,11 +2951,23 @@ def approve_auto_requirements(
     """
     approved = 0
     trace_links_created = 0
+    forbidden = 0
 
     for req_id in data.requirement_ids:
         req = db.query(Requirement).filter(Requirement.id == req_id).first()
         if not req:
             continue
+
+        # AUDIT_FINDINGS F-014 + F-046: per-requirement project membership
+        # check. Skip silently with a forbidden counter so a mixed-project
+        # payload doesn't fail the whole batch (matches not-found semantics).
+        try:
+            _check_membership(db, req.project_id, current_user)
+        except HTTPException as exc:
+            if exc.status_code == 403:
+                forbidden += 1
+                continue
+            raise
 
         # 1. Update requirement status to draft
         old_status = _ev(req.status)
@@ -2953,6 +3065,7 @@ def approve_auto_requirements(
     return {
         "approved": approved,
         "trace_links_created": trace_links_created,
+        "forbidden": forbidden,
         "requirement_ids": data.requirement_ids,
     }
 
@@ -2970,11 +3083,23 @@ def reject_auto_requirements(
       2. Set each InterfaceRequirementLink status → 'rejected'
     """
     rejected = 0
+    forbidden = 0
 
     for req_id in data.requirement_ids:
         req = db.query(Requirement).filter(Requirement.id == req_id).first()
         if not req:
             continue
+
+        # AUDIT_FINDINGS F-014 + F-046: per-requirement project membership
+        # check. Skip silently with a forbidden counter — mixed-project
+        # payloads don't fail the whole batch.
+        try:
+            _check_membership(db, req.project_id, current_user)
+        except HTTPException as exc:
+            if exc.status_code == 403:
+                forbidden += 1
+                continue
+            raise
 
         old_status = _ev(req.status)
         req.status = "deleted"
@@ -3012,6 +3137,7 @@ def reject_auto_requirements(
 
     return {
         "rejected": rejected,
+        "forbidden": forbidden,
         "requirement_ids": data.requirement_ids,
     }
 
@@ -3025,6 +3151,7 @@ def update_wire(
     wire = db.query(Wire).filter(Wire.id == wire_pk).first()
     if not wire:
         raise HTTPException(404, "Wire not found")
+    _assert_member_for_entity(db, current_user, wire)
 
     updates = data.model_dump(exclude_unset=True)
     for field, value in updates.items():
@@ -3047,6 +3174,7 @@ def delete_wire(
     wire = db.query(Wire).filter(Wire.id == wire_pk).first()
     if not wire:
         raise HTTPException(404, "Wire not found")
+    _assert_member_for_entity(db, current_user, wire)
 
     rl = db.query(func.count(InterfaceRequirementLink.id)).filter(
         InterfaceRequirementLink.entity_type == "wire",
@@ -3083,7 +3211,7 @@ def search_wires(
     current_user: User = Depends(get_current_user),
 ):
     """Search wires by signal name with full path context."""
-    _require_project(db, project_id)
+    _require_project(db, project_id, current_user)
     t = f"%{signal_name}%"
     wires = (
         db.query(Wire)
@@ -3113,7 +3241,7 @@ def trace_signal(
     current_user: User = Depends(get_current_user),
 ):
     """Trace a signal end-to-end across the entire system."""
-    _require_project(db, project_id)
+    _require_project(db, project_id, current_user)
 
     # 1. Find all pins with this signal name
     pins = (
@@ -3193,7 +3321,7 @@ def get_n2_matrix(
     current_user: User = Depends(get_current_user),
 ):
     """Build N² interface matrix at system or unit level."""
-    _require_project(db, project_id)
+    _require_project(db, project_id, current_user)
 
     if level == "system":
         systems = db.query(System).filter(System.project_id == project_id).order_by(System.name).all()
@@ -3270,7 +3398,7 @@ def get_block_diagram(
     current_user: User = Depends(get_current_user),
 ):
     """System-level block diagram: nodes = systems, edges = interfaces."""
-    _require_project(db, project_id)
+    _require_project(db, project_id, current_user)
 
     systems = db.query(System).filter(System.project_id == project_id).order_by(System.name).all()
     nodes = []
@@ -3327,10 +3455,12 @@ def create_req_link(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("interfaces.create")),
 ):
-    # Validate requirement exists
+    # Validate requirement exists + caller is a member of its project
+    # (AUDIT_FINDINGS F-014).
     req = db.query(Requirement).filter(Requirement.id == data.requirement_id).first()
     if not req:
         raise HTTPException(404, f"Requirement {data.requirement_id} not found")
+    _check_membership(db, req.project_id, current_user)
 
     link = InterfaceRequirementLink(
         created_by_id=current_user.id,
@@ -3354,8 +3484,29 @@ def list_req_links(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not entity_type and not entity_id and not requirement_id:
-        raise HTTPException(400, "Provide entity_type+entity_id or requirement_id")
+    """
+    AUDIT_FINDINGS F-014 + F-052: require entity_type+entity_id as a
+    pair, OR requirement_id alone — never just one of (entity_type,
+    entity_id) which previously allowed table scans across projects.
+    Each accepted variant resolves to a project_id via the loaded
+    requirement (or its links) and the caller must be a member.
+    """
+    has_entity_pair = bool(entity_type) and bool(entity_id)
+    has_loose_entity = bool(entity_type) ^ bool(entity_id)
+    if has_loose_entity:
+        raise HTTPException(
+            400, "entity_type and entity_id must be supplied together",
+        )
+    if not has_entity_pair and not requirement_id:
+        raise HTTPException(
+            400, "Provide entity_type+entity_id or requirement_id",
+        )
+
+    if requirement_id:
+        req = db.query(Requirement).filter(Requirement.id == requirement_id).first()
+        if not req:
+            raise HTTPException(404, f"Requirement {requirement_id} not found")
+        _check_membership(db, req.project_id, current_user)
 
     query = db.query(InterfaceRequirementLink)
     if entity_type:
@@ -3365,15 +3516,30 @@ def list_req_links(
     if requirement_id:
         query = query.filter(InterfaceRequirementLink.requirement_id == requirement_id)
 
-    links = query.order_by(InterfaceRequirementLink.created_at.desc()).all()
+    # If only the entity pair was supplied, scope by membership of the
+    # requirements they link to — prefilter to project_ids the caller
+    # is a member of, then load.
+    raw_links = query.order_by(InterfaceRequirementLink.created_at.desc()).all()
+
     results = []
-    for lk in links:
-        resp = InterfaceReqLinkResponse.model_validate(lk)
+    seen_unauthorized = False
+    for lk in raw_links:
+        # Lookup parent project via the requirement + filter cross-project
         req = db.query(Requirement).filter(Requirement.id == lk.requirement_id).first()
-        if req:
-            resp.requirement_req_id = req.req_id
-            resp.requirement_title = req.title
+        if not req:
+            continue
+        try:
+            _check_membership(db, req.project_id, current_user)
+        except HTTPException as exc:
+            if exc.status_code == 403:
+                seen_unauthorized = True
+                continue
+            raise
+        resp = InterfaceReqLinkResponse.model_validate(lk)
+        resp.requirement_req_id = req.req_id
+        resp.requirement_title = req.title
         results.append(resp)
+
     return results
 
 
@@ -3386,6 +3552,7 @@ def delete_req_link(
     link = db.query(InterfaceRequirementLink).filter(InterfaceRequirementLink.id == link_pk).first()
     if not link:
         raise HTTPException(404, "Requirement link not found")
+    _assert_member_for_entity(db, current_user, link)
     db.delete(link)
     db.commit()
     return {"status": "deleted", "id": link_pk}
@@ -3402,7 +3569,7 @@ def get_interface_coverage(
     current_user: User = Depends(get_current_user),
 ):
     """Interface-to-requirement traceability coverage stats."""
-    _require_project(db, project_id)
+    _require_project(db, project_id, current_user)
 
     total_interfaces = db.query(func.count(Interface.id)).filter(
         Interface.project_id == project_id
@@ -3672,7 +3839,7 @@ def auto_grow(
     When `ambiguities` is empty, wires are created and Connection rollups
     are updated in a single atomic commit.
     """
-    _require_project(db, payload.project_id)
+    _require_project(db, payload.project_id, current_user)
     engine = AutoGrowEngine(db, payload.project_id, current_user)
 
     pairs = [_AGPair(
@@ -3774,7 +3941,7 @@ def list_connections(
     is filtered to connections where at least one endpoint LRU belongs to
     the given system. This drives the system-scoped Connections tab.
     """
-    _require_project(db, project_id)
+    _require_project(db, project_id, current_user)
 
     q = db.query(Connection).filter(Connection.project_id == project_id)
 
@@ -3843,6 +4010,7 @@ def get_connection(
     c = db.query(Connection).filter(Connection.id == conn_pk).first()
     if not c:
         raise HTTPException(404, "Connection not found")
+    _assert_member_for_entity(db, current_user, c)
 
     resp = ConnectionDetail.model_validate(c)
 
@@ -3903,6 +4071,7 @@ def list_harness_endpoints(
     harness = db.query(WireHarness).filter(WireHarness.id == har_pk).first()
     if not harness:
         raise HTTPException(404, "Wire harness not found")
+    _assert_member_for_entity(db, current_user, harness)
 
     endpoints = (db.query(HarnessEndpoint)
                  .filter(HarnessEndpoint.harness_id == har_pk)
@@ -3931,6 +4100,7 @@ def create_harness_endpoint(
     harness = db.query(WireHarness).filter(WireHarness.id == har_pk).first()
     if not harness:
         raise HTTPException(404, "Wire harness not found")
+    _assert_member_for_entity(db, current_user, harness)
 
     lru_conn = db.query(Connector).filter(Connector.id == data.lru_connector_id).first()
     if not lru_conn:
@@ -3975,6 +4145,7 @@ def update_harness_endpoint(
     ep = db.query(HarnessEndpoint).filter(HarnessEndpoint.id == ep_pk).first()
     if not ep:
         raise HTTPException(404, "Harness endpoint not found")
+    _assert_member_for_entity(db, current_user, ep)
     updates = data.model_dump(exclude_unset=True)
     for field, value in updates.items():
         setattr(ep, field, value)
@@ -4008,6 +4179,7 @@ def delete_harness_endpoint(
     ep = db.query(HarnessEndpoint).filter(HarnessEndpoint.id == ep_pk).first()
     if not ep:
         raise HTTPException(404, "Harness endpoint not found")
+    _assert_member_for_entity(db, current_user, ep)
 
     mating_connector_id = ep.mating_connector_id
     harness_id = ep.harness_id

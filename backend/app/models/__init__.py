@@ -14,6 +14,15 @@ from app.models.interface import (
     AutoRequirementLog, InterfaceChangeImpact,
 )
 
+# Workflow + e-signature models — re-exported here so consumers can write
+# `from app.models import ApprovalWorkflow` (covers AUDIT_FINDINGS F-138 and
+# unblocks the workflow router that now lives at app/routers/workflows.py).
+from app.models.workflow import (
+    ApprovalWorkflow, WorkflowStage, WorkflowInstance, StageAction,
+    ElectronicSignature,
+    WorkflowStatus, InstanceStatus, StageInstanceStatus, SignatureMeaning,
+)
+
 # ══════════════════════════════════════
 #  Enums
 # ══════════════════════════════════════

@@ -22,7 +22,6 @@ from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import func
 
 from app.database import get_db
 from app.models import (
@@ -30,9 +29,29 @@ from app.models import (
     Verification, RequirementHistory, Baseline, BaselineRequirement,
     Comment,
 )
+from app.services.auth import get_current_user
 from app.services.quality_checker import check_requirement_quality
 
-router = APIRouter(prefix="/dev", tags=["dev"])
+# Best-effort RBAC import — same fallback pattern other routers use today.
+# F-069 (Phase 3) will replace this with a hard dependency + critical-log
+# fallback. For now, even without RBAC the endpoint is gated by:
+#   (a) get_current_user (must be authenticated), AND
+#   (b) main.py only registers this router when ENVIRONMENT != production.
+try:
+    from app.services.rbac import require_permission
+except ImportError:
+    def require_permission(action):
+        return get_current_user
+
+# Renamed prefix per AUDIT_FINDINGS F-120 — was "/dev" which collided with
+# dev_router's environment-gating semantics. Full path is now
+# /api/v1/admin/seed-project/{project_id}.
+router = APIRouter(prefix="/admin/seed-project", tags=["admin", "dev"])
+
+# Sentinel req_id used as the seed-completion marker. Presence of a
+# requirement with this req_id means the project has already been
+# fully seeded by this endpoint.
+_SEED_MARKER_REQ_ID = "SEED-MARKER"
 
 
 # ══════════════════════════════════════════════════════════
@@ -443,13 +462,21 @@ SEED_VERIFICATIONS = [
 #  Endpoint
 # ══════════════════════════════════════════════════════════
 
-@router.post("/seed-project/{project_id}")
-def seed_project_data(project_id: int, db: Session = Depends(get_db)):
+@router.post("/{project_id}")
+def seed_project_data(
+    project_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("projects.create")),
+):
     """
     Populate an existing project with a full set of realistic aerospace/defense
     requirements, trace links, verifications, source artifacts, and baselines.
 
-    Idempotent: if the project already has 20+ requirements, returns early.
+    Idempotent: if a SEED-MARKER requirement is already present in the
+    target project, returns early without writing anything (covers
+    AUDIT_FINDINGS F-062). Authentication + projects.create permission
+    is required (covers F-004); router is also only mounted when
+    ENVIRONMENT != production (see main.py).
     """
     # ── Validate project ──
     project = db.query(Project).filter(Project.id == project_id).first()
@@ -461,17 +488,22 @@ def seed_project_data(project_id: int, db: Session = Depends(get_db)):
     if not owner:
         owner = db.query(User).filter(User.role == "admin").first()
     if not owner:
-        raise HTTPException(400, "No admin user found. Run /dev/seed first.")
+        raise HTTPException(400, "No admin user found. Run /api/v1/dev/seed first.")
 
-    # ── Idempotency check ──
-    existing_count = db.query(func.count(Requirement.id)).filter(
-        Requirement.project_id == project_id
-    ).scalar()
-    if existing_count >= 20:
+    # ── Idempotency check (sentinel marker) ──
+    existing_marker = (
+        db.query(Requirement.id)
+        .filter(
+            Requirement.project_id == project_id,
+            Requirement.req_id == _SEED_MARKER_REQ_ID,
+        )
+        .first()
+    )
+    if existing_marker:
         return {
             "status": "already_seeded",
             "project_id": project_id,
-            "existing_requirements": existing_count,
+            "marker_req_id": _SEED_MARKER_REQ_ID,
         }
 
     # ══════════════════════════════════════
@@ -761,6 +793,29 @@ def seed_project_data(project_id: int, db: Session = Depends(get_db)):
                 content=content,
             )
             db.add(comment)
+
+    # ══════════════════════════════════════
+    #  Step 7: Insert SEED-MARKER (idempotency sentinel)
+    # ══════════════════════════════════════
+    marker = Requirement(
+        req_id=_SEED_MARKER_REQ_ID,
+        title="ASTRA seed-data marker (do not delete)",
+        statement=(
+            "This requirement is a seed-completion marker inserted by "
+            "POST /api/v1/admin/seed-project/{project_id}. Its presence "
+            "tells the seeder to refuse re-runs on the same project."
+        ),
+        rationale="Seed idempotency sentinel — see AUDIT_FINDINGS F-062.",
+        req_type="functional",
+        priority="low",
+        status="draft",
+        level="L5",
+        project_id=project_id,
+        owner_id=owner.id,
+        created_by_id=owner.id,
+        quality_score=0.0,
+    )
+    db.add(marker)
 
     # ══════════════════════════════════════
     #  Commit everything

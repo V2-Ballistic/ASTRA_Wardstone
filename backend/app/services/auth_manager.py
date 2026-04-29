@@ -51,7 +51,7 @@ def create_access_token(
     to_encode.update({"exp": expire})
     if partial:
         to_encode["mfa_pending"] = True
-    return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    return jwt.encode(to_encode, settings.SECRET_KEY.get_secret_value(), algorithm=settings.ALGORITHM)
 
 
 def create_refresh_token(db: Session, user_id: int) -> str:
