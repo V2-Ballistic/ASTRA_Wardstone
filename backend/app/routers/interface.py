@@ -2211,6 +2211,7 @@ def get_harness(
     harness = db.query(WireHarness).filter(WireHarness.id == har_pk).first()
     if not harness:
         raise HTTPException(404, "Wire harness not found")
+    _assert_member_for_entity(db, current_user, harness)
 
     wires = db.query(Wire).filter(Wire.harness_id == har_pk).order_by(Wire.wire_number).all()
     wire_list = []
@@ -2237,6 +2238,7 @@ def update_harness(
     harness = db.query(WireHarness).filter(WireHarness.id == har_pk).first()
     if not harness:
         raise HTTPException(404, "Wire harness not found")
+    _assert_member_for_entity(db, current_user, harness)
 
     updates = data.model_dump(exclude_unset=True)
     for field, value in updates.items():
@@ -2267,6 +2269,7 @@ def delete_harness(
     harness = db.query(WireHarness).filter(WireHarness.id == har_pk).first()
     if not harness:
         raise HTTPException(404, "Wire harness not found")
+    _assert_member_for_entity(db, current_user, harness)
 
     wc = db.query(func.count(Wire.id)).filter(Wire.harness_id == har_pk).scalar()
     rl = db.query(func.count(InterfaceRequirementLink.id)).filter(
@@ -2328,6 +2331,7 @@ def batch_create_wires(
     harness = db.query(WireHarness).filter(WireHarness.id == har_pk).first()
     if not harness:
         raise HTTPException(404, "Wire harness not found")
+    _assert_member_for_entity(db, current_user, harness)
 
     # Build: set of pin_ids that belong to any endpoint's LRU connector on
     # this harness. For a 2-endpoint harness this equals the old from_pin_ids
@@ -2514,6 +2518,7 @@ def auto_wire_harness(
     harness = db.query(WireHarness).filter(WireHarness.id == har_pk).first()
     if not harness:
         raise HTTPException(404, "Wire harness not found")
+    _assert_member_for_entity(db, current_user, harness)
 
     # Load both endpoint connectors (for type/pin-count detection) and pins
     from_connector = db.query(Connector).filter(Connector.id == harness.from_connector_id).first()
@@ -2890,6 +2895,7 @@ def generate_harness_requirements(
     harness = db.query(WireHarness).filter(WireHarness.id == har_pk).first()
     if not harness:
         raise HTTPException(404, "Harness not found")
+    _assert_member_for_entity(db, current_user, harness)
 
     wires = db.query(Wire).filter(Wire.harness_id == har_pk).all()
     if not wires:
@@ -3112,6 +3118,7 @@ def update_wire(
     wire = db.query(Wire).filter(Wire.id == wire_pk).first()
     if not wire:
         raise HTTPException(404, "Wire not found")
+    _assert_member_for_entity(db, current_user, wire)
 
     updates = data.model_dump(exclude_unset=True)
     for field, value in updates.items():
@@ -3134,6 +3141,7 @@ def delete_wire(
     wire = db.query(Wire).filter(Wire.id == wire_pk).first()
     if not wire:
         raise HTTPException(404, "Wire not found")
+    _assert_member_for_entity(db, current_user, wire)
 
     rl = db.query(func.count(InterfaceRequirementLink.id)).filter(
         InterfaceRequirementLink.entity_type == "wire",
@@ -3990,6 +3998,7 @@ def list_harness_endpoints(
     harness = db.query(WireHarness).filter(WireHarness.id == har_pk).first()
     if not harness:
         raise HTTPException(404, "Wire harness not found")
+    _assert_member_for_entity(db, current_user, harness)
 
     endpoints = (db.query(HarnessEndpoint)
                  .filter(HarnessEndpoint.harness_id == har_pk)
@@ -4018,6 +4027,7 @@ def create_harness_endpoint(
     harness = db.query(WireHarness).filter(WireHarness.id == har_pk).first()
     if not harness:
         raise HTTPException(404, "Wire harness not found")
+    _assert_member_for_entity(db, current_user, harness)
 
     lru_conn = db.query(Connector).filter(Connector.id == data.lru_connector_id).first()
     if not lru_conn:
