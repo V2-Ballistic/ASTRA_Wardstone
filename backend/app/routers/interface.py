@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
 
 from app.database import get_db
+from app.dependencies.project_access import _check_membership
 from app.models import (
     User, Project, RequirementHistory, TraceLink,
 )
@@ -127,12 +128,40 @@ def _next_id(db: Session, model, project_id: int, prefix: str, id_field: str) ->
     return f"{prefix}-{next_num:03d}"
 
 
-def _require_project(db: Session, project_id: int) -> Project:
-    """Validate project exists."""
-    project = db.query(Project).filter(Project.id == project_id).first()
-    if not project:
-        raise HTTPException(404, f"Project {project_id} not found")
-    return project
+def _require_project(db: Session, project_id: int, current_user: User) -> Project:
+    """
+    Validate project exists AND the caller is a member (or owner / admin).
+
+    Raises 404 on missing project, 403 on non-member.
+    AUDIT_FINDINGS F-014: every interface endpoint that takes a project_id
+    in path/query/body funnels through this helper.
+    """
+    return _check_membership(db, project_id, current_user)
+
+
+def _assert_member_for_entity(db: Session, current_user: User, entity) -> None:
+    """
+    Inline membership check for endpoints keyed by entity primary key
+    (system_pk, unit_pk, conn_pk, etc.). Pulls project_id off the entity
+    and asserts the caller is a member. Raises 403 on non-member.
+
+    Use this at the top of every entity-keyed handler immediately after
+    the entity has been loaded (and a 404 has been raised if missing).
+
+    For entities that don't carry project_id directly (Pin, MessageField,
+    Wire, HarnessEndpoint), resolve it via the parent join first and
+    pass the parent.
+    """
+    pid = getattr(entity, "project_id", None)
+    if pid is None:
+        # Caller passed the wrong object — fail loudly so this gets
+        # noticed in dev rather than silently skipping the membership check.
+        raise HTTPException(
+            500,
+            f"_assert_member_for_entity: entity has no project_id "
+            f"({type(entity).__name__})",
+        )
+    _check_membership(db, pid, current_user)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -147,7 +176,7 @@ def list_systems(
     current_user: User = Depends(get_current_user),
 ):
     """List all systems for a project.  mode=flat (default) or tree."""
-    _require_project(db, project_id)
+    _require_project(db, project_id, current_user)
     query = db.query(System).filter(System.project_id == project_id)
 
     if mode == "tree":
@@ -176,7 +205,7 @@ def create_system(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("interfaces.create")),
 ):
-    _require_project(db, project_id)
+    _require_project(db, project_id, current_user)
     system_id = _next_id(db, System, project_id, "SYS", "system_id")
 
     system = System(
@@ -314,7 +343,7 @@ def list_units(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _require_project(db, project_id)
+    _require_project(db, project_id, current_user)
     query = db.query(Unit).filter(Unit.project_id == project_id)
 
     if system_id:
@@ -347,7 +376,7 @@ def create_unit(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("interfaces.create")),
 ):
-    _require_project(db, project_id)
+    _require_project(db, project_id, current_user)
 
     # Validate unique designation within project
     existing = db.query(Unit).filter(
@@ -1244,7 +1273,7 @@ def search_pins(
     current_user: User = Depends(get_current_user),
 ):
     """Search pins across ALL units in a project by signal name."""
-    _require_project(db, project_id)
+    _require_project(db, project_id, current_user)
 
     t = f"%{signal_name}%"
     pins = (
@@ -2040,7 +2069,7 @@ def list_harnesses(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _require_project(db, project_id)
+    _require_project(db, project_id, current_user)
     query = db.query(WireHarness).filter(WireHarness.project_id == project_id)
     if from_unit_id:
         query = query.filter(WireHarness.from_unit_id == from_unit_id)
@@ -3083,7 +3112,7 @@ def search_wires(
     current_user: User = Depends(get_current_user),
 ):
     """Search wires by signal name with full path context."""
-    _require_project(db, project_id)
+    _require_project(db, project_id, current_user)
     t = f"%{signal_name}%"
     wires = (
         db.query(Wire)
@@ -3113,7 +3142,7 @@ def trace_signal(
     current_user: User = Depends(get_current_user),
 ):
     """Trace a signal end-to-end across the entire system."""
-    _require_project(db, project_id)
+    _require_project(db, project_id, current_user)
 
     # 1. Find all pins with this signal name
     pins = (
@@ -3193,7 +3222,7 @@ def get_n2_matrix(
     current_user: User = Depends(get_current_user),
 ):
     """Build N² interface matrix at system or unit level."""
-    _require_project(db, project_id)
+    _require_project(db, project_id, current_user)
 
     if level == "system":
         systems = db.query(System).filter(System.project_id == project_id).order_by(System.name).all()
@@ -3270,7 +3299,7 @@ def get_block_diagram(
     current_user: User = Depends(get_current_user),
 ):
     """System-level block diagram: nodes = systems, edges = interfaces."""
-    _require_project(db, project_id)
+    _require_project(db, project_id, current_user)
 
     systems = db.query(System).filter(System.project_id == project_id).order_by(System.name).all()
     nodes = []
@@ -3402,7 +3431,7 @@ def get_interface_coverage(
     current_user: User = Depends(get_current_user),
 ):
     """Interface-to-requirement traceability coverage stats."""
-    _require_project(db, project_id)
+    _require_project(db, project_id, current_user)
 
     total_interfaces = db.query(func.count(Interface.id)).filter(
         Interface.project_id == project_id
@@ -3672,7 +3701,7 @@ def auto_grow(
     When `ambiguities` is empty, wires are created and Connection rollups
     are updated in a single atomic commit.
     """
-    _require_project(db, payload.project_id)
+    _require_project(db, payload.project_id, current_user)
     engine = AutoGrowEngine(db, payload.project_id, current_user)
 
     pairs = [_AGPair(
@@ -3774,7 +3803,7 @@ def list_connections(
     is filtered to connections where at least one endpoint LRU belongs to
     the given system. This drives the system-scoped Connections tab.
     """
-    _require_project(db, project_id)
+    _require_project(db, project_id, current_user)
 
     q = db.query(Connection).filter(Connection.project_id == project_id)
 
