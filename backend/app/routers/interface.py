@@ -149,17 +149,47 @@ def _assert_member_for_entity(db: Session, current_user: User, entity) -> None:
     the entity has been loaded (and a 404 has been raised if missing).
 
     For entities that don't carry project_id directly (Pin, MessageField,
-    Wire, HarnessEndpoint), resolve it via the parent join first and
-    pass the parent.
+    Wire, HarnessEndpoint, PinBusAssignment), this helper walks the
+    one-step parent chain to resolve project_id.
     """
     pid = getattr(entity, "project_id", None)
+
     if pid is None:
-        # Caller passed the wrong object — fail loudly so this gets
-        # noticed in dev rather than silently skipping the membership check.
+        # Walk the parent chain for entities that don't carry project_id
+        # on their own row.
+        if isinstance(entity, Pin):
+            row = db.query(Connector.project_id).filter(
+                Connector.id == entity.connector_id
+            ).first()
+            pid = row[0] if row else None
+        elif isinstance(entity, MessageField):
+            row = db.query(MessageDefinition.project_id).filter(
+                MessageDefinition.id == entity.message_id
+            ).first()
+            pid = row[0] if row else None
+        elif isinstance(entity, Wire):
+            row = db.query(WireHarness.project_id).filter(
+                WireHarness.id == entity.harness_id
+            ).first()
+            pid = row[0] if row else None
+        elif isinstance(entity, HarnessEndpoint):
+            row = db.query(WireHarness.project_id).filter(
+                WireHarness.id == entity.harness_id
+            ).first()
+            pid = row[0] if row else None
+        elif isinstance(entity, PinBusAssignment):
+            row = db.query(BusDefinition.project_id).filter(
+                BusDefinition.id == entity.bus_def_id
+            ).first()
+            pid = row[0] if row else None
+
+    if pid is None:
+        # Caller passed an unsupported entity type — fail loudly so this
+        # gets noticed in dev rather than silently skipping the check.
         raise HTTPException(
             500,
-            f"_assert_member_for_entity: entity has no project_id "
-            f"({type(entity).__name__})",
+            f"_assert_member_for_entity: cannot resolve project_id for "
+            f"entity ({type(entity).__name__})",
         )
     _check_membership(db, pid, current_user)
 
@@ -237,6 +267,7 @@ def get_system(
     system = db.query(System).filter(System.id == system_pk).first()
     if not system:
         raise HTTPException(404, "System not found")
+    _assert_member_for_entity(db, current_user, system)
 
     units = db.query(Unit).filter(Unit.system_id == system.id).order_by(Unit.designation).all()
     unit_summaries = []
@@ -271,6 +302,7 @@ def update_system(
     system = db.query(System).filter(System.id == system_pk).first()
     if not system:
         raise HTTPException(404, "System not found")
+    _assert_member_for_entity(db, current_user, system)
 
     updates = data.model_dump(exclude_unset=True)
     for field, value in updates.items():
@@ -304,6 +336,7 @@ def delete_system(
     system = db.query(System).filter(System.id == system_pk).first()
     if not system:
         raise HTTPException(404, "System not found")
+    _assert_member_for_entity(db, current_user, system)
 
     unit_count = db.query(func.count(Unit.id)).filter(Unit.system_id == system.id).scalar()
 
@@ -421,6 +454,7 @@ def get_unit(
     unit = db.query(Unit).filter(Unit.id == unit_pk).first()
     if not unit:
         raise HTTPException(404, "Unit not found")
+    _assert_member_for_entity(db, current_user, unit)
 
     # Connectors with pins
     connectors = db.query(Connector).filter(Connector.unit_id == unit.id).order_by(Connector.designator).all()
@@ -514,6 +548,7 @@ def update_unit(
     unit = db.query(Unit).filter(Unit.id == unit_pk).first()
     if not unit:
         raise HTTPException(404, "Unit not found")
+    _assert_member_for_entity(db, current_user, unit)
 
     updates = data.model_dump(exclude_unset=True)
 
@@ -561,6 +596,7 @@ def delete_unit(
     unit = db.query(Unit).filter(Unit.id == unit_pk).first()
     if not unit:
         raise HTTPException(404, "Unit not found")
+    _assert_member_for_entity(db, current_user, unit)
 
     # Impact preview
     conn_count = db.query(func.count(Connector.id)).filter(Connector.unit_id == unit.id).scalar()
@@ -614,6 +650,7 @@ def get_unit_specifications(
     unit = db.query(Unit).filter(Unit.id == unit_pk).first()
     if not unit:
         raise HTTPException(404, "Unit not found")
+    _assert_member_for_entity(db, current_user, unit)
 
     specs = db.query(UnitEnvironmentalSpec).filter(
         UnitEnvironmentalSpec.unit_id == unit.id
