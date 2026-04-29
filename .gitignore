@@ -12,3 +12,14 @@ frontend/out/
 .DS_Store
 Thumbs.db
 uploads/
+
+# Database dumps — never commit pg_dump output (AUDIT_FINDINGS F-006).
+*.sql.dump
+*.pgdump
+[0-9]*_SQL_*.sql
+
+# Stale backup files (AUDIT_FINDINGS F-023).
+*.bak
+
+# Claude Code harness state — local session metadata.
+.claude/
