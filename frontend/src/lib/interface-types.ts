@@ -366,7 +366,17 @@ export interface Connector {
   connector_manufacturer?: string;
   backshell_type?: string;
   notes?: string;
-  unit_id: number;
+  /**
+   * Nullable post-Phase-1: `owner_type='harness'` connectors (mating
+   * connectors owned by a wire harness endpoint) leave this null.
+   * LRU-side connectors always have unit_id set.
+   */
+  unit_id?: number | null;
+  /**
+   * Discriminator added in Phase 1. Values: 'unit' (LRU-side, default) or
+   * 'harness' (owned by a wire_harness endpoint as a mating connector).
+   */
+  owner_type?: 'unit' | 'harness';
   project_id?: number;
   created_at: string;
   pin_count: number;
@@ -418,6 +428,21 @@ export interface Pin {
   notes?: string;
   connector_id: number;
   created_at: string;
+  /**
+   * FK to the peer Unit this pin is intended to connect to across the
+   * mating connector. Nullable — spare pins, chassis grounds, or pins
+   * that connect to something external (test equipment, a different
+   * project, etc.) leave this null.
+   *
+   * When set, enables the `by_peer_lru` auto-wire strategy, which pairs
+   * pins whose mating_unit_ids cross-reference each other and whose
+   * signal_name/direction are conjugate (input↔output, or both bidi).
+   */
+  mating_unit_id?: number | null;
+  /** Denormalized for display — the designation of the mating Unit. */
+  mating_unit_designation?: string | null;
+  /** Denormalized for display — the name of the mating Unit. */
+  mating_unit_name?: string | null;
   bus_assignment?: PinBusAssignment;
 }
 
@@ -587,18 +612,180 @@ export interface WireHarness {
   drawing_revision?: string;
   approved_by?: string;
   approval_date?: string;
-  from_unit_id: number;
-  from_connector_id: number;
-  to_unit_id: number;
-  to_connector_id: number;
+  /**
+   * Legacy 2-endpoint fields — populated by the backend for backward
+   * compatibility during the Phase 1 → Phase 3 transition. New code should
+   * iterate `endpoints` instead of reading these.
+   */
+  from_unit_id?: number | null;
+  from_connector_id?: number | null;
+  to_unit_id?: number | null;
+  to_connector_id?: number | null;
   project_id?: number;
   created_at: string;
   updated_at: string;
+  /**
+   * Phase 1 — new Harness Overview fields, matching the migration's
+   * wire_harnesses column additions. All optional, all editable.
+   */
+  shielding_class?: string;
+  sleeve_type?: string;
+  operating_temp_min_c?: number;
+  operating_temp_max_c?: number;
+  min_bend_radius_mm?: number;
+  weight_g_per_m?: number;
+  drain_wire_spec?: string;
+  service_loop_m?: number;
+  mil_spec?: string;
   wire_count: number;
   from_unit_designation?: string;
   from_connector_designator?: string;
   to_unit_designation?: string;
   to_connector_designator?: string;
+  /**
+   * Phase 1 — list of endpoints. Each entry is a mating connector owned by
+   * this harness, plugged into one LRU connector. Multi-endpoint harnesses
+   * (>2 entries) are built up by the auto-grow engine.
+   */
+  endpoints?: HarnessEndpoint[];
+}
+
+/**
+ * One harness endpoint: a mating connector owned by the harness, plugged
+ * into an LRU-side connector. The mating connector has its own Pin rows
+ * cloned from the LRU side at endpoint-creation time.
+ */
+export interface HarnessEndpoint {
+  id: number;
+  harness_id: number;
+  mating_connector_id: number;
+  lru_connector_id?: number | null;
+  label?: string;
+  tail_length_m?: number;
+  notes?: string;
+  created_at: string;
+  updated_at: string;
+  // Denormalized display fields populated by the router
+  mating_connector_designator?: string;
+  mating_connector_type?: string;
+  lru_connector_designator?: string;
+  lru_unit_id?: number | null;
+  lru_unit_designation?: string;
+  lru_unit_name?: string;
+  wire_count?: number;
+}
+
+/**
+ * A Connection is the logical "these two LRUs have wires between them"
+ * view. One row per unordered unit pair. Auto-maintained by the
+ * wire-create/delete path.
+ *
+ * Canonical ordering: `lru_a_id` is always numerically less than `lru_b_id`.
+ * Both "UPS connected to RPI" and "RPI connected to UPS" resolve to the
+ * same row — the UI just renders whichever direction feels natural.
+ */
+export interface Connection {
+  id: number;
+  project_id: number;
+  lru_a_id: number;
+  lru_b_id: number;
+  created_at: string;
+  updated_at: string;
+  // Denormalized
+  lru_a_designation?: string;
+  lru_a_name?: string;
+  lru_b_designation?: string;
+  lru_b_name?: string;
+  wire_count: number;
+  harness_ids: number[];
+  harness_names: string[];
+}
+
+export interface ConnectionDetail extends Connection {
+  wires: Wire[];
+}
+
+// ── Auto-grow engine ──
+
+/** One proposed wire in an auto-grow batch. */
+export interface AutoGrowPair {
+  from_lru_pin_id: number;
+  to_lru_pin_id: number;
+  signal_name?: string;
+  wire_type?: string;
+  wire_gauge?: string;
+}
+
+/** User's decision on one ambiguous merge case. */
+export interface AmbiguityDecision {
+  pair_index: number;
+  /**
+   * One of:
+   *   'merge_into_a'  — add the pair's wire to harness A, and fold harness B
+   *                     (and its wires/endpoints) into A
+   *   'merge_into_b'  — inverse
+   *   'new_harness'   — don't merge, create a third harness just for this wire
+   *   'cancel'        — skip this pair, don't create a wire for it
+   */
+  action: 'merge_into_a' | 'merge_into_b' | 'new_harness' | 'cancel';
+  new_harness_name?: string;
+}
+
+export interface AutoGrowRequest {
+  project_id: number;
+  pairs: AutoGrowPair[];
+  decisions?: AmbiguityDecision[];
+}
+
+/** One ambiguous pair the engine surfaced back to the UI. */
+export interface AutoGrowAmbiguity {
+  pair_index: number;
+  from_lru_pin_id: number;
+  to_lru_pin_id: number;
+  from_lru_unit_id: number;
+  from_lru_unit_designation: string;
+  to_lru_unit_id: number;
+  to_lru_unit_designation: string;
+  harness_a_id: number;
+  harness_a_name: string;
+  harness_a_wire_count: number;
+  harness_a_endpoint_count: number;
+  harness_b_id: number;
+  harness_b_name: string;
+  harness_b_wire_count: number;
+  harness_b_endpoint_count: number;
+  /** LRU designations spanned by harness A — displayed in the modal so
+   *  the user sees "A spans {DG3, DG4}" without extra round-trips. */
+  harness_a_lru_designations: string[];
+  harness_b_lru_designations: string[];
+  /** Which actions the user may pick. 'new_harness' only appears when
+   *  BOTH LRU connectors on this pair are un-claimed. The modal hides or
+   *  disables options not in this list. 'cancel' is always present. */
+  valid_actions: Array<'merge_into_a' | 'merge_into_b' | 'new_harness' | 'cancel'>;
+  /** When 'new_harness' is not in valid_actions, this explains why — the
+   *  modal can show the option greyed out with this as the tooltip. */
+  new_harness_disallowed_reason?: string | null;
+}
+
+export interface AutoGrowSkipped {
+  pair_index: number;
+  from_lru_pin_id: number;
+  to_lru_pin_id: number;
+  /** Human-readable explanation: bad pin id, same LRU, pin already wired,
+   *  etc. UI can show these as a "Skipped 2 of 8 pairs" detail. */
+  reason: string;
+}
+
+export interface AutoGrowResult {
+  wires_created: number;
+  harnesses_created: number;
+  endpoints_added: number;
+  ambiguities: AutoGrowAmbiguity[];
+  connections_touched: number[];
+  new_wire_ids: number[];
+  new_harness_ids: number[];
+  /** Phase 2b — pairs that couldn't be processed, with reasons. */
+  skipped?: AutoGrowSkipped[];
 }
 
 export interface WireHarnessDetail extends WireHarness {
@@ -634,6 +821,18 @@ export interface Wire {
   heat_shrink_size?: string;
   notes?: string;
   created_at: string;
+  /**
+   * Phase 1 additions — the wire's pin endpoints on the harness's own
+   * mating connectors. Null until the wire is assigned to a harness with
+   * proper endpoints. Kept in sync with the LRU pin refs by the auto-grow
+   * engine: same pin_number on the matching mating connector.
+   *
+   * Queries that traverse the LRU side should keep using from_pin_id /
+   * to_pin_id. Queries for BOM or harness drawings use the mating refs.
+   */
+  from_mating_pin_id?: number | null;
+  to_mating_pin_id?: number | null;
+  // Computed joins (LRU side)
   from_pin_number?: string;
   from_signal_name?: string;
   from_connector_designator?: string;
@@ -642,6 +841,9 @@ export interface Wire {
   to_signal_name?: string;
   to_connector_designator?: string;
   to_unit_designation?: string;
+  // Computed joins (mating side)
+  from_mating_connector_designator?: string;
+  to_mating_connector_designator?: string;
 }
 
 // ── 10. Interface ──

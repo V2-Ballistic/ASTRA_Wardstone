@@ -65,6 +65,8 @@ class RequirementStatus(str, enum.Enum):
     VALIDATED = "validated"
     DEFERRED = "deferred"
     DELETED = "deleted"
+    PENDING_REVIEW = "pending_review"
+    AUTO_GENERATED = "auto_generated"
 
 
 class ArtifactType(str, enum.Enum):

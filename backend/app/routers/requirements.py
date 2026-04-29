@@ -369,6 +369,74 @@ def update_requirement(
 #  Delete / Restore / Clone
 # ══════════════════════════════════════
 
+class BulkDeleteRequest(BaseModel):
+    requirement_ids: List[int] = Field(..., min_length=1, max_length=500)
+
+
+@router.post("/bulk-delete", status_code=200)
+def bulk_delete_requirements(
+    payload: BulkDeleteRequest,
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("requirements.delete")),
+):
+    """Soft-delete multiple requirements in one call.
+
+    Sets status='deleted' on each requirement, records history, and emits
+    one audit event per requirement. Matches single-delete behavior so bulk
+    operations leave the same paper trail as individual ones.
+
+    Returns counts so the frontend can show a summary toast.
+    """
+    deleted_reqs: List[dict] = []
+    skipped_already_deleted: List[int] = []
+    not_found: List[int] = []
+
+    # Dedupe so the same id can't be counted twice in one call.
+    unique_ids = list(dict.fromkeys(payload.requirement_ids))
+
+    for req_id in unique_ids:
+        req = db.query(Requirement).filter(Requirement.id == req_id).first()
+        if not req:
+            not_found.append(req_id)
+            continue
+        old_status = _ev(req.status)
+        if old_status == "deleted":
+            skipped_already_deleted.append(req_id)
+            continue
+
+        _record_history(
+            db, req.id, req.version, "status", old_status, "deleted",
+            current_user.id,
+            f"Requirement {req.req_id} soft-deleted (bulk, {len(unique_ids)} reqs in batch)",
+        )
+        req.status = "deleted"
+        req.version += 1
+        deleted_reqs.append({"id": req.id, "req_id": req.req_id, "project_id": req.project_id})
+
+    db.commit()
+
+    # Emit one audit event per deleted req; safe in try/except so a logging
+    # failure doesn't roll back the delete.
+    try:
+        for d in deleted_reqs:
+            _audit(
+                db, "requirement.deleted", "requirement", d["id"], current_user.id,
+                {"req_id": d["req_id"], "bulk": True, "batch_size": len(unique_ids)},
+                project_id=d["project_id"], request=request,
+            )
+    except Exception:
+        pass
+
+    return {
+        "deleted": len(deleted_reqs),
+        "skipped_already_deleted": len(skipped_already_deleted),
+        "not_found": len(not_found),
+        "total_requested": len(unique_ids),
+        "deleted_ids": [d["id"] for d in deleted_reqs],
+    }
+
+
 @router.delete("/{req_id}", status_code=200)
 def delete_requirement(req_id: int, request: Request = None,
                        db: Session = Depends(get_db),

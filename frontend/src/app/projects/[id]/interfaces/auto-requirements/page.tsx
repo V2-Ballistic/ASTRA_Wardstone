@@ -33,7 +33,7 @@ import {
   Loader2, RefreshCw, ArrowLeft, Check, X, AlertTriangle,
   CheckSquare, Square, ChevronRight, ChevronDown,
   Cable, Zap, Radio, Shield, Thermometer, Cpu, Sparkles,
-  Eye, Edit3, Save, CheckCircle,
+  Eye, Edit3, Save, CheckCircle, Trash2,
 } from 'lucide-react';
 import clsx from 'clsx';
 import api, { projectsAPI, requirementsAPI } from '@/lib/api';
@@ -191,6 +191,9 @@ export default function AutoRequirementsPage() {
   const [selected, setSelected]     = useState<Set<number>>(new Set());
   const [bulkLoading, setBulkLoading] = useState(false);
 
+  // Delete confirmation modal
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
   // Expanded groups
   const [expanded, setExpanded]     = useState<Set<string>>(new Set());
 
@@ -244,11 +247,24 @@ export default function AutoRequirementsPage() {
         auto_req_template: req.req_type === 'environmental' ? 'environmental_spec' : 'interface',
       } as InterfaceRequirementLink);
 
-      // Fetch all links in parallel (rather than sequentially) — much faster.
-      // Each call is wrapped so one failure doesn't nuke the whole batch.
-      const linkResults = await Promise.allSettled(
-        autoReqCandidates.map((req: any) => interfaceAPI.listReqLinks({ requirement_id: req.id }))
-      );
+      // Fetch all links in chunks of 5 with a small delay between chunks.
+      // The backend rate-limiter 429s under too many parallel requests, and
+      // we've seen ~90 reqs on larger projects. 5 × ~18 batches × 100ms ≈ 1.8s
+      // instead of a 429 storm that surfaces as fake CORS errors in the browser.
+      const CHUNK_SIZE = 5;
+      const CHUNK_DELAY_MS = 100;
+      const linkResults: PromiseSettledResult<any>[] = [];
+
+      for (let i = 0; i < autoReqCandidates.length; i += CHUNK_SIZE) {
+        const chunk = autoReqCandidates.slice(i, i + CHUNK_SIZE);
+        const chunkResults = await Promise.allSettled(
+          chunk.map((req: any) => interfaceAPI.listReqLinks({ requirement_id: req.id }))
+        );
+        linkResults.push(...chunkResults);
+        if (i + CHUNK_SIZE < autoReqCandidates.length) {
+          await new Promise(r => setTimeout(r, CHUNK_DELAY_MS));
+        }
+      }
 
       const items: AutoReq[] = autoReqCandidates.map((req: any, i: number) => {
         const r = linkResults[i];
@@ -271,7 +287,16 @@ export default function AutoRequirementsPage() {
   useEffect(() => { fetchData(); }, [fetchData]);
 
   // ── Filtered / Grouped ──
+  // Workflow rule: once a req is approved (link.status='approved') or rejected
+  // (link.status='rejected'), it's done with this dashboard — approved ones live
+  // on the Requirements page, rejected ones are soft-deleted. Only show pending.
   const filtered = useMemo(() => autoReqs.filter(ar => {
+    // Hard workflow filter: hide everything that isn't pending review
+    if (ar.link.status !== 'pending_review') return false;
+    // Hide soft-deleted requirements too
+    if (ar.req.status === 'deleted') return false;
+    // User-chosen filter within the pending set (kept for forward compat if
+    // you ever reintroduce approved/rejected into this page).
     if (filterStatus !== 'all' && ar.link.status !== filterStatus) return false;
     if (filterSource && ar.link.auto_req_template !== filterSource) return false;
     if (filterLevel && ar.req.level !== filterLevel) return false;
@@ -353,6 +378,30 @@ export default function AutoRequirementsPage() {
       setSelected(new Set());
       fetchData();
     } catch (e: any) { flash(e?.response?.data?.detail || 'Bulk reject failed'); }
+    setBulkLoading(false);
+  };
+
+  // ── Bulk delete (hard action; requires confirmation) ──
+  // Unlike reject (which is a workflow state), delete is for cleaning up
+  // stale/duplicate auto-generated requirements from the dashboard.
+  const bulkDelete = async () => {
+    if (selected.size === 0) return;
+    setBulkLoading(true);
+    setConfirmDelete(false);
+    try {
+      const res = await api.post('/requirements/bulk-delete', {
+        requirement_ids: [...selected],
+      });
+      const { deleted, skipped_already_deleted, not_found } = res.data || {};
+      const parts = [`${deleted} deleted`];
+      if (skipped_already_deleted) parts.push(`${skipped_already_deleted} already deleted`);
+      if (not_found) parts.push(`${not_found} not found`);
+      flash(parts.join(', '));
+      setSelected(new Set());
+      fetchData();
+    } catch (e: any) {
+      flash(e?.response?.data?.detail || 'Bulk delete failed');
+    }
     setBulkLoading(false);
   };
 
@@ -476,6 +525,12 @@ export default function AutoRequirementsPage() {
                 {bulkLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <X className="h-3 w-3" />}
                 Reject ({selected.size})
               </button>
+              <button onClick={() => setConfirmDelete(true)} disabled={bulkLoading}
+                className="flex items-center gap-1 rounded-lg bg-rose-500/15 px-3 py-1.5 text-[10px] font-bold text-rose-300 hover:bg-rose-500/25 disabled:opacity-40"
+                title="Permanently delete the selected requirements (soft delete — audit trail preserved)">
+                {bulkLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
+                Delete ({selected.size})
+              </button>
               <button onClick={selectNone}
                 className="rounded-lg px-2 py-1.5 text-[10px] text-slate-500 hover:text-slate-300">
                 Clear
@@ -595,6 +650,46 @@ export default function AutoRequirementsPage() {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Delete confirmation modal */}
+      {confirmDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+             onClick={() => setConfirmDelete(false)}>
+          <div className="w-full max-w-md rounded-xl border border-rose-500/30 bg-astra-surface p-5 shadow-2xl"
+               onClick={e => e.stopPropagation()}>
+            <div className="flex items-start gap-3">
+              <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-rose-500/15">
+                <Trash2 className="h-5 w-5 text-rose-400" />
+              </div>
+              <div className="flex-1">
+                <h3 className="text-sm font-bold text-slate-100">Delete {selected.size} requirement{selected.size !== 1 ? 's' : ''}?</h3>
+                <p className="mt-1 text-xs text-slate-400">
+                  The selected requirement{selected.size !== 1 ? 's' : ''} will be soft-deleted.
+                  Audit history is preserved, but they will no longer appear in the review dashboard,
+                  reports, or traceability views.
+                </p>
+                <p className="mt-2 text-[11px] text-slate-500">
+                  This cannot be undone from the UI. (An admin can restore via the DB if needed.)
+                </p>
+              </div>
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                onClick={() => setConfirmDelete(false)}
+                className="rounded-lg border border-astra-border px-4 py-1.5 text-xs font-semibold text-slate-300 hover:bg-astra-surface-alt">
+                Cancel
+              </button>
+              <button
+                onClick={bulkDelete}
+                disabled={bulkLoading}
+                className="flex items-center gap-1.5 rounded-lg bg-rose-500/20 px-4 py-1.5 text-xs font-bold text-rose-300 hover:bg-rose-500/30 disabled:opacity-40">
+                {bulkLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                Delete {selected.size}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

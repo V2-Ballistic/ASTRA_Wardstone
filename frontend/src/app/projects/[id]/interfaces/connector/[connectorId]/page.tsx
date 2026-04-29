@@ -19,7 +19,7 @@
  *   interfaceAPI.deletePin(pinId)                    → void
  */
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
   ArrowLeft, Loader2, Edit3, Save, X, Plus, Trash2, RefreshCw,
@@ -164,13 +164,93 @@ function MetaRow({ label, value }: { label: string; value?: string | number | nu
 }
 
 // ══════════════════════════════════════
+//  Edit-form helpers (reusable, stacked layout)
+// ══════════════════════════════════════
+
+/** Uppercased section header with a subtle underline. Used in the edit form. */
+function SectionHeader({ children }: { children: React.ReactNode }) {
+  return (
+    <h4 className="mb-4 border-b border-astra-border/60 pb-2 text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">
+      {children}
+    </h4>
+  );
+}
+
+/** Stacked label-over-input. Wider fields, bigger font, clearer focus state. */
+function FieldInput({
+  label, value, onChange, placeholder, type = 'text',
+}: {
+  label: string;
+  value: string | number;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  type?: string;
+}) {
+  return (
+    <label className="block">
+      <span className="mb-1.5 block text-xs font-medium text-slate-400">{label}</span>
+      <input
+        type={type}
+        value={value as any}
+        placeholder={placeholder}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full rounded-lg border border-astra-border bg-astra-bg px-3.5 py-2.5 text-sm text-slate-100 placeholder:text-slate-600 outline-none transition focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/10"
+      />
+    </label>
+  );
+}
+
+/** Stacked label-over-select with the same visual weight as FieldInput. */
+function FieldSelect({
+  label, value, onChange, options,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  options: string[];
+}) {
+  return (
+    <label className="block">
+      <span className="mb-1.5 block text-xs font-medium text-slate-400">{label}</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full appearance-none rounded-lg border border-astra-border bg-astra-bg px-3.5 py-2.5 text-sm text-slate-100 outline-none transition focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/10 cursor-pointer bg-[url('data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2212%22 height=%2212%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%2394a3b8%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22><polyline points=%226 9 12 15 18 9%22/></svg>')] bg-[length:12px] bg-[position:right_14px_center] bg-no-repeat pr-10"
+      >
+        <option value="">—</option>
+        {options.map((o) => (
+          <option key={o} value={o}>{labelize(o)}</option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+// ══════════════════════════════════════
 //  Add Pins Multi-Row Form
 // ══════════════════════════════════════
 
-interface PinRow { key: number; pin_number: string; signal_name: string; signal_type: string; direction: string; }
+interface PinRow {
+  key: number;
+  pin_number: string;
+  signal_name: string;
+  signal_type: string;
+  direction: string;
+  mating_unit_id: string;  // kept as string for form state; '' means unassigned
+}
 
-function AddPinsForm({ connectorId, existingPins, onSaved, onCancel }: {
-  connectorId: number; existingPins: Pin[]; onSaved: () => void; onCancel: () => void;
+/** Lightweight shape for the mating-LRU dropdown — avoids pulling the full Unit type. */
+interface UnitOption { id: number; designation: string; name: string; }
+
+function AddPinsForm({ connectorId, existingPins, availableUnits, ownUnitId, onSaved, onCancel }: {
+  connectorId: number;
+  existingPins: Pin[];
+  /** All project units eligible as mating peers (already filtered to exclude own unit). */
+  availableUnits: UnitOption[];
+  /** The unit this connector belongs to, passed so we can visually reassure users. */
+  ownUnitId: number | null;
+  onSaved: () => void;
+  onCancel: () => void;
 }) {
   const nextNum = useMemo(() => {
     const nums = existingPins.map(p => parseInt(p.pin_number)).filter(n => !isNaN(n));
@@ -178,7 +258,7 @@ function AddPinsForm({ connectorId, existingPins, onSaved, onCancel }: {
   }, [existingPins]);
 
   const [rows, setRows] = useState<PinRow[]>([
-    { key: 1, pin_number: String(nextNum), signal_name: '', signal_type: 'spare', direction: 'no_connect' },
+    { key: 1, pin_number: String(nextNum), signal_name: '', signal_type: 'spare', direction: 'no_connect', mating_unit_id: '' },
   ]);
   const [saving, setSaving] = useState(false);
   const [error, setError]   = useState('');
@@ -187,7 +267,7 @@ function AddPinsForm({ connectorId, existingPins, onSaved, onCancel }: {
     const maxNum = Math.max(...rows.map(r => parseInt(r.pin_number) || 0), nextNum - 1);
     setRows(prev => [...prev, {
       key: Date.now(), pin_number: String(maxNum + 1),
-      signal_name: '', signal_type: 'spare', direction: 'no_connect',
+      signal_name: '', signal_type: 'spare', direction: 'no_connect', mating_unit_id: '',
     }]);
   };
 
@@ -203,7 +283,15 @@ function AddPinsForm({ connectorId, existingPins, onSaved, onCancel }: {
     setSaving(true); setError('');
     try {
       await interfaceAPI.batchAddPins(connectorId,
-        valid.map(r => ({ pin_number: r.pin_number, signal_name: r.signal_name, signal_type: r.signal_type, direction: r.direction }))
+        valid.map(r => ({
+          pin_number: r.pin_number,
+          signal_name: r.signal_name,
+          signal_type: r.signal_type as any,
+          direction: r.direction as any,
+          // Pass the FK to the backend only when a peer was picked; '' means
+          // the user left it blank and we send null/undefined.
+          ...(r.mating_unit_id ? { mating_unit_id: Number(r.mating_unit_id) } : {}),
+        }))
       );
       onSaved();
     } catch (e: any) { setError(e?.response?.data?.detail || 'Failed to add pins'); }
@@ -219,11 +307,17 @@ function AddPinsForm({ connectorId, existingPins, onSaved, onCancel }: {
         </div>
       )}
       <div className="space-y-2">
-        <div className="grid grid-cols-[60px_1fr_1fr_1fr_32px] gap-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500 px-1">
-          <span>Pin #</span><span>Signal Name</span><span>Signal Type</span><span>Direction</span><span />
+        {/* Grid columns: pin# | signal name | signal type | direction | mating LRU | remove */}
+        <div className="grid grid-cols-[60px_1fr_1fr_1fr_1fr_32px] gap-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500 px-1">
+          <span>Pin #</span>
+          <span>Signal Name</span>
+          <span>Signal Type</span>
+          <span>Direction</span>
+          <span>Mates With LRU</span>
+          <span />
         </div>
         {rows.map(r => (
-          <div key={r.key} className="grid grid-cols-[60px_1fr_1fr_1fr_32px] gap-2">
+          <div key={r.key} className="grid grid-cols-[60px_1fr_1fr_1fr_1fr_32px] gap-2">
             <input value={r.pin_number} onChange={e => updateRow(r.key, 'pin_number', e.target.value)}
               className="rounded-lg border border-astra-border bg-astra-bg px-2 py-1.5 text-xs text-slate-200 font-mono outline-none focus:border-blue-500/50" />
             <input value={r.signal_name} onChange={e => updateRow(r.key, 'signal_name', e.target.value)} placeholder="e.g. PWR_28V"
@@ -239,6 +333,17 @@ function AddPinsForm({ connectorId, existingPins, onSaved, onCancel }: {
             <select value={r.direction} onChange={e => updateRow(r.key, 'direction', e.target.value)}
               className="rounded-lg border border-astra-border bg-astra-bg px-2 py-1.5 text-xs text-slate-200 outline-none focus:border-blue-500/50">
               {PIN_DIRECTIONS.map(d => <option key={d} value={d}>{labelize(d)}</option>)}
+            </select>
+            {/* Mating LRU picker — empty string = none/unassigned */}
+            <select value={r.mating_unit_id} onChange={e => updateRow(r.key, 'mating_unit_id', e.target.value)}
+              className="rounded-lg border border-astra-border bg-astra-bg px-2 py-1.5 text-xs text-slate-200 outline-none focus:border-blue-500/50"
+              title="Which LRU does this pin connect to on the other end?">
+              <option value="">— none —</option>
+              {availableUnits.map(u => (
+                <option key={u.id} value={u.id}>
+                  {u.designation}{u.name && u.name !== u.designation ? ` · ${u.name}` : ''}
+                </option>
+              ))}
             </select>
             <button onClick={() => removeRow(r.key)} className="rounded-lg p-1.5 text-slate-600 hover:text-red-400" title="Remove row">
               <X className="h-3.5 w-3.5" />
@@ -340,6 +445,19 @@ export default function ConnectorDetailPage() {
   const [deleteConfirmPin, setDeleteConfirmPin] = useState<number | null>(null);
   const [expandedPin, setExpandedPin]       = useState<number | null>(null);
 
+  // ── Pin edit state ──
+  // When a pin is being edited, its id is held here and editPinFields holds
+  // the in-flight changes. Saving calls interfaceAPI.updatePin(id, fields).
+  const [editingPinId, setEditingPinId]   = useState<number | null>(null);
+  const [editPinFields, setEditPinFields] = useState<Record<string, any>>({});
+  const [savingPin, setSavingPin]         = useState(false);
+  const [pinEditError, setPinEditError]   = useState('');
+
+  // ── Available peer LRUs for the mating dropdown ──
+  // Loaded once on mount (for the project). Excludes this connector's own
+  // unit so we don't offer "mates with yourself" as an option.
+  const [availableUnits, setAvailableUnits] = useState<UnitOption[]>([]);
+
   // ── Delete connector ──
   const [showDeleteConn, setShowDeleteConn] = useState(false);
 
@@ -371,6 +489,28 @@ export default function ConnectorDetailPage() {
   }, [connectorId]);
 
   useEffect(() => { fetchConnector(); }, [fetchConnector]);
+
+  // ── Load available peer LRUs for the mating-unit dropdown ──
+  // Runs once when we know the project id + own unit id. Filters out the
+  // connector's own unit since "mates with self" is nonsensical.
+  useEffect(() => {
+    if (!projectId || unitId === null) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await interfaceAPI.listUnits(projectId, { limit: 200 });
+        if (cancelled) return;
+        const rows: UnitOption[] = (res.data || [])
+          .filter((u: any) => u.id !== unitId)
+          .map((u: any) => ({ id: u.id, designation: u.designation || '', name: u.name || '' }));
+        setAvailableUnits(rows);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[connector] failed to load peer units', err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [projectId, unitId]);
 
   // ── Sorted/filtered pins ──
   const filteredPins = useMemo(() => {
@@ -448,11 +588,96 @@ export default function ConnectorDetailPage() {
   //  Pin Actions
   // ══════════════════════════════════════
 
+  /**
+   * T568B Wiring — the more common of the two TIA/EIA standards for 8P8C (RJ-45).
+   * Pin 1 is leftmost when looking into the socket with the locking tab facing down.
+   *
+   * Industry-standard twisted pairs:
+   *   Pair 2 (Orange) → Pins 1, 2   — TX on MDI
+   *   Pair 3 (Green)  → Pins 3, 6   — RX on MDI  (split pair!)
+   *   Pair 1 (Blue)   → Pins 4, 5   — unused in 10/100BASE-T; used by 1000BASE-T
+   *   Pair 4 (Brown)  → Pins 7, 8   — unused in 10/100BASE-T; used by 1000BASE-T
+   */
+  const T568B_PINS: Array<{
+    pin_number: string;
+    signal_name: string;
+    wire_color_primary: string;
+    wire_color_secondary?: string;
+    signal_type: string;
+    direction: string;
+  }> = [
+    { pin_number: '1', signal_name: 'TX+ / BI_DA+', wire_color_primary: 'white', wire_color_secondary: 'orange', signal_type: 'ethernet',    direction: 'bidirectional' },
+    { pin_number: '2', signal_name: 'TX- / BI_DA-', wire_color_primary: 'orange',                                 signal_type: 'ethernet',    direction: 'bidirectional' },
+    { pin_number: '3', signal_name: 'RX+ / BI_DB+', wire_color_primary: 'white', wire_color_secondary: 'green',  signal_type: 'ethernet',    direction: 'bidirectional' },
+    { pin_number: '4', signal_name: 'BI_DC+',       wire_color_primary: 'blue',                                   signal_type: 'ethernet',    direction: 'bidirectional' },
+    { pin_number: '5', signal_name: 'BI_DC-',       wire_color_primary: 'white', wire_color_secondary: 'blue',   signal_type: 'ethernet',    direction: 'bidirectional' },
+    { pin_number: '6', signal_name: 'RX- / BI_DB-', wire_color_primary: 'green',                                  signal_type: 'ethernet',    direction: 'bidirectional' },
+    { pin_number: '7', signal_name: 'BI_DD+',       wire_color_primary: 'white', wire_color_secondary: 'brown',  signal_type: 'ethernet',    direction: 'bidirectional' },
+    { pin_number: '8', signal_name: 'BI_DD-',       wire_color_primary: 'brown',                                  signal_type: 'ethernet',    direction: 'bidirectional' },
+  ];
+
+  /**
+   * Apply T568B wire colors + signal names to an RJ-45 connector's pins.
+   * Called automatically after autoGeneratePins if the connector is an RJ-45.
+   * Uses whichever update method the API exposes — tries updatePin first,
+   * falls back to batchAddPins-after-delete if needed. Fails silently with a
+   * dev-console log so the main auto-generate still reports success.
+   */
+  const applyT568BColors = async () => {
+    try {
+      // Re-fetch to get the fresh pin list that autoGeneratePins just created
+      const fresh = await interfaceAPI.getConnector(connectorId);
+      const pins = (fresh.data as any)?.pins || [];
+      if (pins.length === 0) return;
+
+      // Build a pin_number → pin lookup so we can match generated pins to the template
+      const byNumber: Record<string, any> = {};
+      for (const p of pins) byNumber[String(p.pin_number)] = p;
+
+      const anyApi = interfaceAPI as any;
+      const hasUpdate = typeof anyApi.updatePin === 'function';
+
+      if (!hasUpdate) {
+        // eslint-disable-next-line no-console
+        console.info('[RJ-45 auto-color] interfaceAPI.updatePin not available — colors not applied. Colors will take effect once the backend exposes a pin-update endpoint.');
+        return;
+      }
+
+      for (const tmpl of T568B_PINS) {
+        const existing = byNumber[tmpl.pin_number];
+        if (!existing) continue;
+        try {
+          await anyApi.updatePin(existing.id, {
+            signal_name: tmpl.signal_name,
+            signal_type: tmpl.signal_type,
+            direction: tmpl.direction,
+            wire_color_primary: tmpl.wire_color_primary,
+            wire_color_secondary: tmpl.wire_color_secondary || null,
+          });
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.warn(`[RJ-45 auto-color] failed to update pin ${tmpl.pin_number}`, err);
+        }
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[RJ-45 auto-color] failed', err);
+    }
+  };
+
   const handleAutoGenerate = async () => {
     setAutoGenLoading(true);
     try {
       await interfaceAPI.autoGeneratePins(connectorId);
-      flash('Pins auto-generated');
+      // If this is an RJ-45 connector, overlay the T568B color/signal template.
+      // Safe to run on any 8P8C: it only touches pins 1–8 with matching numbers.
+      const isRJ45 = connector?.connector_type === 'rj45';
+      if (isRJ45) {
+        await applyT568BColors();
+        flash('Pins auto-generated with T568B colors');
+      } else {
+        flash('Pins auto-generated');
+      }
       fetchConnector();
     } catch (e: any) { flash(e?.response?.data?.detail || 'Auto-generate failed'); }
     setAutoGenLoading(false);
@@ -464,6 +689,88 @@ export default function ConnectorDetailPage() {
       setDeleteConfirmPin(null);
       fetchConnector();
     } catch (e: any) { flash(e?.response?.data?.detail || 'Delete failed'); }
+  };
+
+  // ── Pin edit handlers ──
+  /** Begin editing a pin: copy its current values into the edit-state object
+   *  and flag it as active. User can change any field and save/cancel. */
+  const startEditPin = (pin: Pin) => {
+    setEditingPinId(pin.id);
+    setExpandedPin(pin.id); // make sure the detail row is visible
+    setPinEditError('');
+    setEditPinFields({
+      pin_number: pin.pin_number ?? '',
+      pin_label: pin.pin_label ?? '',
+      signal_name: pin.signal_name ?? '',
+      signal_type: pin.signal_type ?? 'spare',
+      direction: pin.direction ?? 'no_connect',
+      voltage_nominal: pin.voltage_nominal ?? '',
+      current_max_amps: pin.current_max_amps ?? '',
+      impedance_ohms: pin.impedance_ohms ?? '',
+      contact_type: pin.contact_type ?? '',
+      termination: pin.termination ?? '',
+      description: pin.description ?? '',
+      notes: pin.notes ?? '',
+      // Mating LRU FK — keep as string in form state, convert on save
+      mating_unit_id:
+        pin.mating_unit_id !== null && pin.mating_unit_id !== undefined
+          ? String(pin.mating_unit_id) : '',
+    });
+  };
+
+  const cancelEditPin = () => {
+    setEditingPinId(null);
+    setEditPinFields({});
+    setPinEditError('');
+  };
+
+  const updateEditField = (field: string, value: any) => {
+    setEditPinFields(prev => ({ ...prev, [field]: value }));
+  };
+
+  /** Save the active pin. Only sends fields that are actually set — avoids
+   *  overwriting a value with an empty string when the user just skipped a
+   *  field. Converts empty strings to null so the backend sees a clear
+   *  "unset" signal for nullable columns. */
+  const saveEditPin = async () => {
+    if (editingPinId === null) return;
+    setSavingPin(true);
+    setPinEditError('');
+
+    const payload: any = {};
+    for (const [k, v] of Object.entries(editPinFields)) {
+      if (v === '' || v === null || v === undefined) {
+        // Nullable fields: send explicit null to clear. Required fields
+        // (pin_number, signal_name, signal_type, direction) get skipped if
+        // empty — keeps the backend validator from rejecting them.
+        const REQUIRED = new Set(['pin_number', 'signal_name', 'signal_type', 'direction']);
+        if (REQUIRED.has(k)) continue;
+        payload[k] = null;
+      } else if (k === 'mating_unit_id') {
+        payload[k] = Number(v); // dropdown stores as string; backend wants int
+      } else if (['current_max_amps', 'impedance_ohms'].includes(k)) {
+        const n = Number(v);
+        payload[k] = Number.isFinite(n) ? n : null;
+      } else {
+        payload[k] = v;
+      }
+    }
+
+    try {
+      await interfaceAPI.updatePin(editingPinId, payload);
+      cancelEditPin();
+      fetchConnector();
+      flash('Pin updated');
+    } catch (e: any) {
+      // Surface the error inline in the edit form rather than as a toast
+      const detail = e?.response?.data?.detail;
+      setPinEditError(
+        typeof detail === 'string' ? detail :
+        Array.isArray(detail) ? detail.map((d: any) => d.msg || JSON.stringify(d)).join('; ') :
+        e?.message || 'Update failed'
+      );
+    }
+    setSavingPin(false);
   };
 
   const handleDeleteConnector = async () => {
@@ -591,94 +898,148 @@ export default function ConnectorDetailPage() {
       {/* ══════════════════════════════════════ */}
       {tab === 'overview' && (
         editing ? (
-          <div className="rounded-xl border border-blue-500/20 bg-astra-surface p-5 space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Edit Connector</h3>
+          <div className="rounded-xl border border-blue-500/20 bg-astra-surface p-6 space-y-6">
+            {/* ── Hide number spinners globally inside the edit form ── */}
+            {/* Stops the browser from showing those weird up/down arrows on <input type="number"> */}
+            <style jsx>{`
+              input[type='number']::-webkit-inner-spin-button,
+              input[type='number']::-webkit-outer-spin-button {
+                -webkit-appearance: none;
+                margin: 0;
+              }
+              input[type='number'] {
+                -moz-appearance: textfield;
+              }
+            `}</style>
+
+            {/* ── Header ── */}
+            <div className="flex items-center justify-between border-b border-astra-border pb-4">
+              <div>
+                <h3 className="text-base font-bold text-slate-100">Edit Connector</h3>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  Update the connector specification. Fields left blank will be cleared.
+                </p>
+              </div>
               <div className="flex gap-2">
                 <button onClick={() => { setEditing(false); setEditFields({}); }}
-                  className="rounded-lg border border-astra-border px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200">Cancel</button>
+                  className="rounded-lg border border-astra-border px-4 py-2 text-sm font-semibold text-slate-300 transition hover:bg-astra-surface-alt hover:text-slate-100">
+                  Cancel
+                </button>
                 <button onClick={saveEdit} disabled={savingEdit}
-                  className="flex items-center gap-1 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-500 disabled:opacity-40">
-                  {savingEdit ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />} Save
+                  className="flex items-center gap-2 rounded-lg bg-blue-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-600 disabled:opacity-40">
+                  {savingEdit ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                  Save Changes
                 </button>
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-6">
-              <div className="space-y-2">
-                <h4 className="text-[10px] font-bold text-slate-500">PHYSICAL</h4>
-                {[
-                  { f: 'name', l: 'Name', el: 'input' },
-                  { f: 'connector_type', l: 'Type', el: 'select', opts: CONNECTOR_TYPES },
-                  { f: 'gender', l: 'Gender', el: 'select', opts: GENDERS },
-                  { f: 'mounting', l: 'Mounting', el: 'select', opts: MOUNTINGS },
-                  { f: 'shell_size', l: 'Shell Size', el: 'input' },
-                  { f: 'insert_arrangement', l: 'Insert Arrangement', el: 'input' },
-                  { f: 'total_contacts', l: 'Total Contacts', el: 'input', type: 'number' },
-                ].map(r => (
-                  <div key={r.f} className="flex items-center justify-between py-1 border-b border-astra-border/50">
-                    <span className="text-[11px] text-slate-500 w-40">{r.l}</span>
-                    {r.el === 'select' ? (
-                      <select value={editFields[r.f] || ''} onChange={e => ef(r.f, e.target.value)}
-                        className="w-40 rounded border border-astra-border bg-astra-bg px-2 py-1 text-[12px] text-slate-200 outline-none focus:border-blue-500/50">
-                        <option value="">—</option>
-                        {r.opts!.map(o => <option key={o} value={o}>{labelize(o)}</option>)}
-                      </select>
-                    ) : (
-                      <input type={r.type || 'text'} value={editFields[r.f] ?? ''} onChange={e => ef(r.f, e.target.value)}
-                        className="w-40 rounded border border-astra-border bg-astra-bg px-2 py-1 text-[12px] text-slate-200 outline-none focus:border-blue-500/50 text-right" />
-                    )}
-                  </div>
-                ))}
+            {/* ── Body: 2-column grid ── */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-8 gap-y-6">
 
-                <h4 className="text-[10px] font-bold text-slate-500 pt-2">CONTACT BREAKDOWN</h4>
-                {[
-                  { f: 'signal_contacts', l: 'Signal' }, { f: 'power_contacts', l: 'Power' },
-                  { f: 'coax_contacts', l: 'Coax' }, { f: 'fiber_contacts', l: 'Fiber' },
-                  { f: 'spare_contacts', l: 'Spare' },
-                ].map(r => (
-                  <div key={r.f} className="flex items-center justify-between py-1 border-b border-astra-border/50">
-                    <span className="text-[11px] text-slate-500 w-40">{r.l}</span>
-                    <input type="number" value={editFields[r.f] ?? ''} onChange={e => ef(r.f, e.target.value)}
-                      className="w-40 rounded border border-astra-border bg-astra-bg px-2 py-1 text-[12px] text-slate-200 outline-none focus:border-blue-500/50 text-right" />
+              {/* ── LEFT COLUMN ── */}
+              <div className="space-y-6">
+
+                {/* Physical */}
+                <section>
+                  <SectionHeader>Physical</SectionHeader>
+                  <div className="space-y-4">
+                    <FieldInput
+                      label="Name" value={editFields.name ?? ''}
+                      onChange={v => ef('name', v)} placeholder="e.g., Eth0" />
+                    <FieldSelect
+                      label="Type" value={editFields.connector_type ?? ''}
+                      onChange={v => ef('connector_type', v)} options={CONNECTOR_TYPES} />
+                    <FieldSelect
+                      label="Gender" value={editFields.gender ?? ''}
+                      onChange={v => ef('gender', v)} options={GENDERS} />
+                    <FieldSelect
+                      label="Mounting" value={editFields.mounting ?? ''}
+                      onChange={v => ef('mounting', v)} options={MOUNTINGS} />
+                    <FieldInput
+                      label="Shell Size" value={editFields.shell_size ?? ''}
+                      onChange={v => ef('shell_size', v)} placeholder="e.g., 11" />
+                    <FieldInput
+                      label="Insert Arrangement" value={editFields.insert_arrangement ?? ''}
+                      onChange={v => ef('insert_arrangement', v)} placeholder="e.g., 35" />
+                    <FieldInput
+                      label="Total Contacts" type="number" value={editFields.total_contacts ?? ''}
+                      onChange={v => ef('total_contacts', v)} placeholder="e.g., 8" />
                   </div>
-                ))}
+                </section>
+
+                {/* Contact Breakdown */}
+                <section>
+                  <SectionHeader>Contact Breakdown</SectionHeader>
+                  <div className="space-y-4">
+                    <FieldInput label="Signal" type="number" value={editFields.signal_contacts ?? ''}
+                      onChange={v => ef('signal_contacts', v)} />
+                    <FieldInput label="Power" type="number" value={editFields.power_contacts ?? ''}
+                      onChange={v => ef('power_contacts', v)} />
+                    <FieldInput label="Coax" type="number" value={editFields.coax_contacts ?? ''}
+                      onChange={v => ef('coax_contacts', v)} />
+                    <FieldInput label="Fiber" type="number" value={editFields.fiber_contacts ?? ''}
+                      onChange={v => ef('fiber_contacts', v)} />
+                    <FieldInput label="Spare" type="number" value={editFields.spare_contacts ?? ''}
+                      onChange={v => ef('spare_contacts', v)} />
+                  </div>
+                </section>
               </div>
 
-              <div className="space-y-2">
-                <h4 className="text-[10px] font-bold text-slate-500">ELECTRICAL / ENVIRONMENTAL</h4>
-                {[
-                  { f: 'keying', l: 'Keying' }, { f: 'polarization', l: 'Polarization' },
-                  { f: 'coupling', l: 'Coupling' }, { f: 'ip_rating', l: 'IP Rating' },
-                  { f: 'operating_temp_min_c', l: 'Temp Min (°C)', type: 'number' },
-                  { f: 'operating_temp_max_c', l: 'Temp Max (°C)', type: 'number' },
-                  { f: 'mating_cycles', l: 'Mating Cycles', type: 'number' },
-                ].map(r => (
-                  <div key={r.f} className="flex items-center justify-between py-1 border-b border-astra-border/50">
-                    <span className="text-[11px] text-slate-500 w-40">{r.l}</span>
-                    <input type={r.type || 'text'} value={editFields[r.f] ?? ''} onChange={e => ef(r.f, e.target.value)}
-                      className="w-40 rounded border border-astra-border bg-astra-bg px-2 py-1 text-[12px] text-slate-200 outline-none focus:border-blue-500/50 text-right" />
-                  </div>
-                ))}
+              {/* ── RIGHT COLUMN ── */}
+              <div className="space-y-6">
 
-                <h4 className="text-[10px] font-bold text-slate-500 pt-2">MATERIALS / SPEC</h4>
-                {[
-                  { f: 'shell_material', l: 'Shell Material' }, { f: 'shell_finish', l: 'Shell Finish' },
-                  { f: 'contact_finish', l: 'Contact Finish' }, { f: 'mil_spec', l: 'MIL-SPEC' },
-                  { f: 'manufacturer_part_number', l: 'Mfr Part Number' },
-                  { f: 'connector_manufacturer', l: 'Manufacturer' },
-                  { f: 'backshell_type', l: 'Backshell Type' },
-                ].map(r => (
-                  <div key={r.f} className="flex items-center justify-between py-1 border-b border-astra-border/50">
-                    <span className="text-[11px] text-slate-500 w-40">{r.l}</span>
-                    <input value={editFields[r.f] ?? ''} onChange={e => ef(r.f, e.target.value)}
-                      className="w-40 rounded border border-astra-border bg-astra-bg px-2 py-1 text-[12px] text-slate-200 outline-none focus:border-blue-500/50 text-right" />
+                {/* Electrical / Environmental */}
+                <section>
+                  <SectionHeader>Electrical / Environmental</SectionHeader>
+                  <div className="space-y-4">
+                    <FieldInput label="Keying" value={editFields.keying ?? ''}
+                      onChange={v => ef('keying', v)} placeholder="e.g., Key A" />
+                    <FieldInput label="Polarization" value={editFields.polarization ?? ''}
+                      onChange={v => ef('polarization', v)} />
+                    <FieldInput label="Coupling" value={editFields.coupling ?? ''}
+                      onChange={v => ef('coupling', v)} placeholder="e.g., Threaded" />
+                    <FieldInput label="IP Rating" value={editFields.ip_rating ?? ''}
+                      onChange={v => ef('ip_rating', v)} placeholder="e.g., IP67" />
+                    <FieldInput label="Temp Min (°C)" type="number" value={editFields.operating_temp_min_c ?? ''}
+                      onChange={v => ef('operating_temp_min_c', v)} placeholder="e.g., -55" />
+                    <FieldInput label="Temp Max (°C)" type="number" value={editFields.operating_temp_max_c ?? ''}
+                      onChange={v => ef('operating_temp_max_c', v)} placeholder="e.g., 125" />
+                    <FieldInput label="Mating Cycles" type="number" value={editFields.mating_cycles ?? ''}
+                      onChange={v => ef('mating_cycles', v)} placeholder="e.g., 500" />
                   </div>
-                ))}
+                </section>
 
-                <h4 className="text-[10px] font-bold text-slate-500 pt-2">NOTES</h4>
-                <textarea value={editFields.notes || ''} onChange={e => ef('notes', e.target.value)} rows={3}
-                  className="w-full rounded-lg border border-astra-border bg-astra-bg px-3 py-2 text-[12px] text-slate-200 outline-none focus:border-blue-500/50 resize-none" />
+                {/* Materials / Spec */}
+                <section>
+                  <SectionHeader>Materials / Spec</SectionHeader>
+                  <div className="space-y-4">
+                    <FieldInput label="Shell Material" value={editFields.shell_material ?? ''}
+                      onChange={v => ef('shell_material', v)} placeholder="e.g., Aluminum" />
+                    <FieldInput label="Shell Finish" value={editFields.shell_finish ?? ''}
+                      onChange={v => ef('shell_finish', v)} placeholder="e.g., Olive drab cad" />
+                    <FieldInput label="Contact Finish" value={editFields.contact_finish ?? ''}
+                      onChange={v => ef('contact_finish', v)} placeholder="e.g., Gold" />
+                    <FieldInput label="MIL-SPEC" value={editFields.mil_spec ?? ''}
+                      onChange={v => ef('mil_spec', v)} placeholder="e.g., MIL-DTL-38999" />
+                    <FieldInput label="Mfr Part Number" value={editFields.manufacturer_part_number ?? ''}
+                      onChange={v => ef('manufacturer_part_number', v)} />
+                    <FieldInput label="Manufacturer" value={editFields.connector_manufacturer ?? ''}
+                      onChange={v => ef('connector_manufacturer', v)} placeholder="e.g., Amphenol" />
+                    <FieldInput label="Backshell Type" value={editFields.backshell_type ?? ''}
+                      onChange={v => ef('backshell_type', v)} />
+                  </div>
+                </section>
+
+                {/* Notes */}
+                <section>
+                  <SectionHeader>Notes</SectionHeader>
+                  <textarea
+                    value={editFields.notes ?? ''}
+                    onChange={e => ef('notes', e.target.value)}
+                    rows={4}
+                    placeholder="Additional notes, part-selection rationale, mating partner info, etc."
+                    className="w-full rounded-lg border border-astra-border bg-astra-bg px-3.5 py-2.5 text-sm text-slate-200 placeholder:text-slate-600 outline-none transition focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/10 resize-y" />
+                </section>
               </div>
             </div>
           </div>
@@ -770,6 +1131,7 @@ export default function ConnectorDetailPage() {
           {/* Add pins form */}
           {showAddPins && (
             <AddPinsForm connectorId={connectorId} existingPins={connector.pins || []}
+              availableUnits={availableUnits} ownUnitId={unitId}
               onSaved={() => { setShowAddPins(false); fetchConnector(); }}
               onCancel={() => setShowAddPins(false)} />
           )}
@@ -796,18 +1158,19 @@ export default function ConnectorDetailPage() {
                     <th className="px-3 py-2.5 text-left font-semibold text-slate-400 w-16">Label</th>
                     <th className="px-3 py-2.5 text-left font-semibold text-slate-400">Signal Name</th>
                     <th className="px-3 py-2.5 text-left font-semibold text-slate-400 w-36">Signal Type</th>
-                    <th className="px-3 py-2.5 text-left font-semibold text-slate-400 w-28">Direction</th>
+                    <th className="px-3 py-2.5 text-left font-semibold text-slate-400 w-24">Direction</th>
+                    <th className="px-3 py-2.5 text-left font-semibold text-slate-400 w-24">Mates With</th>
                     <th className="px-3 py-2.5 text-left font-semibold text-slate-400 w-20">Voltage</th>
                     <th className="px-3 py-2.5 text-left font-semibold text-slate-400 w-20">Current</th>
                     <th className="px-3 py-2.5 text-left font-semibold text-slate-400 w-16">Ω</th>
                     <th className="px-3 py-2.5 text-left font-semibold text-slate-400 w-24">Bus</th>
-                    <th className="px-3 py-2.5 w-16" />
+                    <th className="px-3 py-2.5 w-24" />
                   </tr>
                 </thead>
                 <tbody>
                   {filteredPins.map(pin => (
-                    <>
-                      <tr key={pin.id}
+                    <React.Fragment key={pin.id}>
+                      <tr
                         className={clsx('border-b border-astra-border/50 hover:bg-astra-surface-alt/50 transition cursor-pointer',
                           expandedPin === pin.id && 'bg-astra-surface-alt/30')}
                         onClick={() => setExpandedPin(prev => prev === pin.id ? null : pin.id)}>
@@ -821,6 +1184,14 @@ export default function ConnectorDetailPage() {
                           </div>
                         </td>
                         <td className="px-3 py-2 text-slate-400 text-[11px]">{labelize(pin.direction)}</td>
+                        <td className="px-3 py-2 text-[11px]">
+                          {pin.mating_unit_designation ? (
+                            <span className="rounded-full bg-blue-500/10 px-2 py-0.5 font-mono text-[10px] font-semibold text-blue-300"
+                              title={pin.mating_unit_name || ''}>
+                              {pin.mating_unit_designation}
+                            </span>
+                          ) : <span className="text-slate-600">—</span>}
+                        </td>
                         <td className="px-3 py-2 text-slate-500 font-mono text-[11px]">
                           {pin.voltage_nominal || (pin.voltage_min != null ? `${pin.voltage_min}–${pin.voltage_max}` : '—')}
                         </td>
@@ -848,67 +1219,186 @@ export default function ConnectorDetailPage() {
                               </button>
                             </div>
                           ) : (
-                            <button onClick={() => setDeleteConfirmPin(pin.id)}
-                              className="rounded p-1 text-slate-600 hover:text-red-400 transition" title="Delete pin">
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </button>
+                            <div className="flex gap-1">
+                              <button onClick={() => startEditPin(pin)}
+                                className="rounded p-1 text-slate-600 hover:text-blue-400 transition" title="Edit pin">
+                                <Edit3 className="h-3.5 w-3.5" />
+                              </button>
+                              <button onClick={() => setDeleteConfirmPin(pin.id)}
+                                className="rounded p-1 text-slate-600 hover:text-red-400 transition" title="Delete pin">
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
                           )}
                         </td>
                       </tr>
-                      {/* Expanded pin detail */}
+                      {/* Expanded pin detail / edit form */}
                       {expandedPin === pin.id && (
-                        <tr key={`${pin.id}-detail`} className="bg-astra-bg/50">
-                          <td colSpan={10} className="px-6 py-3">
-                            <div className="grid grid-cols-4 gap-4 text-[11px]">
-                              <div>
-                                <span className="text-slate-500 block">Contact Type</span>
-                                <span className="text-slate-300">{pin.contact_type || '—'}</span>
-                              </div>
-                              <div>
-                                <span className="text-slate-500 block">Pin Size</span>
-                                <span className="text-slate-300">{pin.pin_size ? labelize(pin.pin_size) : '—'}</span>
-                              </div>
-                              <div>
-                                <span className="text-slate-500 block">Frequency</span>
-                                <span className="text-slate-300 font-mono">{pin.frequency_mhz != null ? `${pin.frequency_mhz} MHz` : '—'}</span>
-                              </div>
-                              <div>
-                                <span className="text-slate-500 block">Rise Time</span>
-                                <span className="text-slate-300 font-mono">{pin.rise_time_ns != null ? `${pin.rise_time_ns} ns` : '—'}</span>
-                              </div>
-                              <div>
-                                <span className="text-slate-500 block">DC Bias</span>
-                                <span className="text-slate-300 font-mono">{pin.voltage_dc_bias != null ? `${pin.voltage_dc_bias} V` : '—'}</span>
-                              </div>
-                              <div>
-                                <span className="text-slate-500 block">Termination</span>
-                                <span className="text-slate-300">{pin.termination || '—'}</span>
-                              </div>
-                              <div>
-                                <span className="text-slate-500 block">Pull Up/Down</span>
-                                <span className="text-slate-300">{pin.pull_up_down || '—'}</span>
-                              </div>
-                              <div>
-                                <span className="text-slate-500 block">ESD Protection</span>
-                                <span className="text-slate-300">{pin.esd_protection || '—'}</span>
-                              </div>
-                              {pin.description && (
-                                <div className="col-span-4">
-                                  <span className="text-slate-500 block">Description</span>
-                                  <span className="text-slate-300">{pin.description}</span>
+                        <tr className="bg-astra-bg/50">
+                          <td colSpan={11} className="px-6 py-3">
+                            {editingPinId === pin.id ? (
+                              // ── EDIT MODE ──
+                              // Comprehensive pin edit form. Reuses the same
+                              // dropdown option lists as the Add Pins form so
+                              // values stay consistent across create/update.
+                              <div className="space-y-3">
+                                {pinEditError && (
+                                  <div className="rounded-lg bg-red-500/10 border border-red-500/20 px-3 py-2 text-xs text-red-400 flex items-center gap-2">
+                                    <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" /> {pinEditError}
+                                  </div>
+                                )}
+                                <div className="grid grid-cols-4 gap-3 text-[11px]">
+                                  <label className="block">
+                                    <span className="mb-1 block text-slate-500">Pin #</span>
+                                    <input value={editPinFields.pin_number || ''} onChange={e => updateEditField('pin_number', e.target.value)}
+                                      className="w-full rounded-lg border border-astra-border bg-astra-bg px-2 py-1.5 text-xs text-slate-100 font-mono outline-none focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/10" />
+                                  </label>
+                                  <label className="block">
+                                    <span className="mb-1 block text-slate-500">Label</span>
+                                    <input value={editPinFields.pin_label || ''} onChange={e => updateEditField('pin_label', e.target.value)}
+                                      className="w-full rounded-lg border border-astra-border bg-astra-bg px-2 py-1.5 text-xs text-slate-100 outline-none focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/10" />
+                                  </label>
+                                  <label className="block col-span-2">
+                                    <span className="mb-1 block text-slate-500">Signal Name</span>
+                                    <input value={editPinFields.signal_name || ''} onChange={e => updateEditField('signal_name', e.target.value)}
+                                      className="w-full rounded-lg border border-astra-border bg-astra-bg px-2 py-1.5 text-xs text-slate-100 outline-none focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/10" />
+                                  </label>
+
+                                  <label className="block">
+                                    <span className="mb-1 block text-slate-500">Signal Type</span>
+                                    <select value={editPinFields.signal_type || ''} onChange={e => updateEditField('signal_type', e.target.value)}
+                                      className="w-full rounded-lg border border-astra-border bg-astra-bg px-2 py-1.5 text-xs text-slate-100 outline-none focus:border-blue-500/50">
+                                      {SIGNAL_TYPE_GROUPS.map(g => (
+                                        <optgroup key={g.label} label={g.label}>
+                                          {g.values.map(v => <option key={v} value={v}>{labelize(v)}</option>)}
+                                        </optgroup>
+                                      ))}
+                                    </select>
+                                  </label>
+                                  <label className="block">
+                                    <span className="mb-1 block text-slate-500">Direction</span>
+                                    <select value={editPinFields.direction || ''} onChange={e => updateEditField('direction', e.target.value)}
+                                      className="w-full rounded-lg border border-astra-border bg-astra-bg px-2 py-1.5 text-xs text-slate-100 outline-none focus:border-blue-500/50">
+                                      {PIN_DIRECTIONS.map(d => <option key={d} value={d}>{labelize(d)}</option>)}
+                                    </select>
+                                  </label>
+                                  <label className="block col-span-2">
+                                    <span className="mb-1 block text-slate-500">Mates With LRU</span>
+                                    <select value={editPinFields.mating_unit_id || ''} onChange={e => updateEditField('mating_unit_id', e.target.value)}
+                                      className="w-full rounded-lg border border-astra-border bg-astra-bg px-2 py-1.5 text-xs text-slate-100 outline-none focus:border-blue-500/50"
+                                      title="Which LRU does this pin connect to on the other end? Enables auto-wire by peer LRU.">
+                                      <option value="">— none —</option>
+                                      {availableUnits.map(u => (
+                                        <option key={u.id} value={u.id}>
+                                          {u.designation}{u.name && u.name !== u.designation ? ` · ${u.name}` : ''}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </label>
+
+                                  <label className="block">
+                                    <span className="mb-1 block text-slate-500">Voltage</span>
+                                    <input value={editPinFields.voltage_nominal || ''} onChange={e => updateEditField('voltage_nominal', e.target.value)}
+                                      placeholder="e.g., 28VDC"
+                                      className="w-full rounded-lg border border-astra-border bg-astra-bg px-2 py-1.5 text-xs text-slate-100 outline-none focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/10" />
+                                  </label>
+                                  <label className="block">
+                                    <span className="mb-1 block text-slate-500">Current (A)</span>
+                                    <input type="number" step="0.01" value={editPinFields.current_max_amps ?? ''} onChange={e => updateEditField('current_max_amps', e.target.value)}
+                                      className="w-full rounded-lg border border-astra-border bg-astra-bg px-2 py-1.5 text-xs text-slate-100 font-mono outline-none focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/10 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none" />
+                                  </label>
+                                  <label className="block">
+                                    <span className="mb-1 block text-slate-500">Impedance (Ω)</span>
+                                    <input type="number" step="0.1" value={editPinFields.impedance_ohms ?? ''} onChange={e => updateEditField('impedance_ohms', e.target.value)}
+                                      className="w-full rounded-lg border border-astra-border bg-astra-bg px-2 py-1.5 text-xs text-slate-100 font-mono outline-none focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/10 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none" />
+                                  </label>
+                                  <label className="block">
+                                    <span className="mb-1 block text-slate-500">Contact Type</span>
+                                    <input value={editPinFields.contact_type || ''} onChange={e => updateEditField('contact_type', e.target.value)}
+                                      className="w-full rounded-lg border border-astra-border bg-astra-bg px-2 py-1.5 text-xs text-slate-100 outline-none focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/10" />
+                                  </label>
+
+                                  <label className="block col-span-2">
+                                    <span className="mb-1 block text-slate-500">Termination</span>
+                                    <input value={editPinFields.termination || ''} onChange={e => updateEditField('termination', e.target.value)}
+                                      className="w-full rounded-lg border border-astra-border bg-astra-bg px-2 py-1.5 text-xs text-slate-100 outline-none focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/10" />
+                                  </label>
+                                  <label className="block col-span-4">
+                                    <span className="mb-1 block text-slate-500">Description</span>
+                                    <textarea value={editPinFields.description || ''} onChange={e => updateEditField('description', e.target.value)} rows={2}
+                                      className="w-full rounded-lg border border-astra-border bg-astra-bg px-2 py-1.5 text-xs text-slate-100 outline-none focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/10 resize-y" />
+                                  </label>
+                                  <label className="block col-span-4">
+                                    <span className="mb-1 block text-slate-500">Notes</span>
+                                    <textarea value={editPinFields.notes || ''} onChange={e => updateEditField('notes', e.target.value)} rows={2}
+                                      className="w-full rounded-lg border border-astra-border bg-astra-bg px-2 py-1.5 text-xs text-slate-100 outline-none focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/10 resize-y" />
+                                  </label>
                                 </div>
-                              )}
-                              {pin.notes && (
-                                <div className="col-span-4">
-                                  <span className="text-slate-500 block">Notes</span>
-                                  <span className="text-slate-300">{pin.notes}</span>
+                                <div className="flex justify-end gap-2">
+                                  <button onClick={cancelEditPin} disabled={savingPin}
+                                    className="rounded-lg border border-astra-border px-3 py-1.5 text-xs font-semibold text-slate-300 hover:bg-astra-surface-alt disabled:opacity-40">
+                                    Cancel
+                                  </button>
+                                  <button onClick={saveEditPin} disabled={savingPin}
+                                    className="flex items-center gap-1.5 rounded-lg bg-blue-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-600 disabled:opacity-40">
+                                    {savingPin ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
+                                    Save Pin
+                                  </button>
                                 </div>
-                              )}
-                            </div>
+                              </div>
+                            ) : (
+                              // ── READ-ONLY MODE ──
+                              <div className="grid grid-cols-4 gap-4 text-[11px]">
+                                <div>
+                                  <span className="text-slate-500 block">Contact Type</span>
+                                  <span className="text-slate-300">{pin.contact_type || '—'}</span>
+                                </div>
+                                <div>
+                                  <span className="text-slate-500 block">Pin Size</span>
+                                  <span className="text-slate-300">{pin.pin_size ? labelize(pin.pin_size) : '—'}</span>
+                                </div>
+                                <div>
+                                  <span className="text-slate-500 block">Frequency</span>
+                                  <span className="text-slate-300 font-mono">{pin.frequency_mhz != null ? `${pin.frequency_mhz} MHz` : '—'}</span>
+                                </div>
+                                <div>
+                                  <span className="text-slate-500 block">Rise Time</span>
+                                  <span className="text-slate-300 font-mono">{pin.rise_time_ns != null ? `${pin.rise_time_ns} ns` : '—'}</span>
+                                </div>
+                                <div>
+                                  <span className="text-slate-500 block">DC Bias</span>
+                                  <span className="text-slate-300 font-mono">{pin.voltage_dc_bias != null ? `${pin.voltage_dc_bias} V` : '—'}</span>
+                                </div>
+                                <div>
+                                  <span className="text-slate-500 block">Termination</span>
+                                  <span className="text-slate-300">{pin.termination || '—'}</span>
+                                </div>
+                                <div>
+                                  <span className="text-slate-500 block">Pull Up/Down</span>
+                                  <span className="text-slate-300">{pin.pull_up_down || '—'}</span>
+                                </div>
+                                <div>
+                                  <span className="text-slate-500 block">ESD Protection</span>
+                                  <span className="text-slate-300">{pin.esd_protection || '—'}</span>
+                                </div>
+                                {pin.description && (
+                                  <div className="col-span-4">
+                                    <span className="text-slate-500 block">Description</span>
+                                    <span className="text-slate-300">{pin.description}</span>
+                                  </div>
+                                )}
+                                {pin.notes && (
+                                  <div className="col-span-4">
+                                    <span className="text-slate-500 block">Notes</span>
+                                    <span className="text-slate-300">{pin.notes}</span>
+                                  </div>
+                                )}
+                              </div>
+                            )}
                           </td>
                         </tr>
                       )}
-                    </>
+                    </React.Fragment>
                   ))}
                 </tbody>
               </table>

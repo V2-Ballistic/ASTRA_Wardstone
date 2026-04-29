@@ -170,7 +170,6 @@ function HistoryEntry({ entry }: { entry: any }) {
   };
   const label = labels[entry.field_changed] || entry.field_changed;
   const isCreation = entry.field_changed === 'created';
-  const trunc = (s: string, n = 150) => (!s ? '—' : s.length > n ? s.substring(0, n) + '…' : s);
 
   return (
     <div className="flex gap-3 border-b border-astra-border py-3 last:border-0">
@@ -178,32 +177,22 @@ function HistoryEntry({ entry }: { entry: any }) {
         {isCreation ? <CheckCircle className="h-3.5 w-3.5 text-emerald-400" /> : <Edit3 className="h-3.5 w-3.5 text-blue-400" />}
       </div>
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 mb-0.5">
-          <span className="text-xs font-semibold text-slate-200">{entry.changed_by || 'System'}</span>
-          <span className="rounded-full bg-astra-surface-alt px-1.5 py-0.5 text-[10px] font-mono text-slate-500">v{entry.version}</span>
-          <span className="text-[10px] text-slate-600">{entry.changed_at ? new Date(entry.changed_at).toLocaleString() : ''}</span>
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-semibold text-slate-200">{entry.changed_by}</span>
+          <span className="text-[10px] text-slate-500">v{entry.version}</span>
         </div>
         {isCreation ? (
-          <div className="text-xs text-slate-400">{entry.change_description || (entry.new_value + ' created')}</div>
+          <div className="mt-0.5 text-xs text-slate-400">{entry.change_description}</div>
         ) : (
-          <div className="mt-1 space-y-1">
-            <div className="text-[11px] font-semibold text-slate-400">{label}</div>
-            {entry.old_value && <div className="text-[11px] text-red-400/70 line-through break-words">{trunc(String(entry.old_value))}</div>}
-            <div className="text-[11px] text-emerald-400 break-words">{trunc(String(entry.new_value))}</div>
+          <div className="mt-1">
+            <span className="text-[11px] font-semibold text-slate-400">{label}: </span>
+            {entry.old_value && <span className="text-[11px] text-red-400/70 line-through mr-1">{String(entry.old_value).substring(0, 80)}</span>}
+            <span className="text-[11px] text-emerald-400">{String(entry.new_value).substring(0, 80)}</span>
           </div>
         )}
       </div>
-    </div>
-  );
-}
-
-// History timestamp display (moved into component above)
-function _HistoryTimestamp({ entry }: { entry: any }) {
-  // Placeholder — timestamp now rendered inline above
-  return null;
-}
-// Keep original closing pattern:
-//        {entry.changed_at ? new Date(entry.changed_at).toLocaleString() : ''}
+      <div className="shrink-0 text-[10px] text-slate-500 whitespace-nowrap">
+        {entry.changed_at ? new Date(entry.changed_at).toLocaleString() : ''}
       </div>
     </div>
   );

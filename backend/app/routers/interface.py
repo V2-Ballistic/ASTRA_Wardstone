@@ -30,6 +30,7 @@ from app.models.interface import (
     WireHarness, Wire, Interface,
     UnitEnvironmentalSpec, InterfaceRequirementLink,
     AutoRequirementLog, InterfaceChangeImpact,
+    HarnessEndpoint, Connection,
 )
 from app.models import Requirement
 from app.schemas.interface import (
@@ -52,6 +53,13 @@ from app.schemas.interface import (
     # Harnesses + Wires
     WireHarnessCreate, WireHarnessUpdate, WireHarnessResponse, WireHarnessDetail,
     WireCreate, WireUpdate, WireBatchCreate, WireResponse,
+    # Phase 1/2: multi-endpoint harness + connections + auto-grow
+    HarnessEndpointCreate, HarnessEndpointUpdate, HarnessEndpointResponse,
+    ConnectionResponse, ConnectionDetail,
+    AutoGrowPair as AutoGrowPairSchema,
+    AmbiguityDecision as AmbiguityDecisionSchema,
+    AutoGrowRequest, AutoGrowAmbiguity as AutoGrowAmbiguitySchema,
+    AutoGrowResult as AutoGrowResultSchema,
     # Interfaces
     InterfaceCreate, InterfaceUpdate, InterfaceResponse,
     # Requirement links
@@ -398,6 +406,7 @@ def get_unit(
             assignment = db.query(PinBusAssignment).filter(PinBusAssignment.pin_id == p.id).first()
             if assignment:
                 pr.bus_assignment = PinBusAssignmentResponse.model_validate(assignment)
+            _populate_pin_mating(db, pr, p)
             pin_responses.append(pr)
         total_pin_count += len(pin_responses)
 
@@ -726,7 +735,11 @@ def create_connector(
         # Refresh pins and return ConnectorWithPins
         for p in created_pins:
             db.refresh(p)
-        pin_responses = [PinResponse.model_validate(p) for p in created_pins]
+        pin_responses = []
+        for p in created_pins:
+            pr = PinResponse.model_validate(p)
+            _populate_pin_mating(db, pr, p)
+            pin_responses.append(pr)
         resp = ConnectorWithPins.model_validate(connector)
         resp.pins = pin_responses
         resp.pin_count = len(pin_responses)
@@ -756,6 +769,7 @@ def get_connector(
         assignment = db.query(PinBusAssignment).filter(PinBusAssignment.pin_id == p.id).first()
         if assignment:
             pr.bus_assignment = PinBusAssignmentResponse.model_validate(assignment)
+        _populate_pin_mating(db, pr, p)
         pin_responses.append(pr)
 
     assigned_count = db.query(func.count(PinBusAssignment.id)).join(Pin).filter(
@@ -787,6 +801,7 @@ def get_connector_pinout(
     pin_list = []
     for p in pins:
         pr = PinResponse.model_validate(p)
+        _populate_pin_mating(db, pr, p)
         pin_list.append(pr)
 
         sig_type = _ev(p.signal_type)
@@ -871,39 +886,137 @@ def delete_connector(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("interfaces.delete")),
 ):
+    """Delete a connector and all dependent data.
+
+    Foreign-key chain (in deletion order to satisfy Postgres FK constraints):
+      1. requirement_history / verifications (not touched here — those cascade
+         from the req tables on their own)
+      2. interface_requirement_links where entity_type in ('connector','pin')
+         and entity_id matches this connector or its pins
+      3. wires where from_pin_id or to_pin_id is a pin of this connector
+      4. wire_harnesses where from_connector_id or to_connector_id = conn_pk
+         (including their remaining wires and req links)
+      5. pin_bus_assignments for this connector's pins
+      6. pins for this connector
+      7. the connector itself
+
+    Without force=True: refuses if there are connected wires OR harness
+    endpoint references, and reports counts so the user can decide.
+    """
     connector = db.query(Connector).filter(Connector.id == conn_pk).first()
     if not connector:
         raise HTTPException(404, "Connector not found")
 
-    # Check for wires connected to pins on this connector
+    # ── Pre-flight impact count ──
+    pin_ids_subq = db.query(Pin.id).filter(Pin.connector_id == conn_pk).subquery()
+
     wire_count = (
         db.query(func.count(Wire.id))
-        .join(Pin, (Wire.from_pin_id == Pin.id) | (Wire.to_pin_id == Pin.id))
-        .filter(Pin.connector_id == conn_pk)
+        .filter((Wire.from_pin_id.in_(pin_ids_subq)) | (Wire.to_pin_id.in_(pin_ids_subq)))
         .scalar()
-    )
+    ) or 0
 
-    if wire_count > 0 and not force:
+    harness_endpoint_count = (
+        db.query(func.count(WireHarness.id))
+        .filter(
+            (WireHarness.from_connector_id == conn_pk) |
+            (WireHarness.to_connector_id == conn_pk)
+        )
+        .scalar()
+    ) or 0
+
+    if (wire_count > 0 or harness_endpoint_count > 0) and not force:
         raise HTTPException(
             409,
-            f"Connector has {wire_count} wire(s) connected. Use force=true to cascade delete pins.",
+            (
+                f"Connector is still wired into the system: "
+                f"{wire_count} wire(s), {harness_endpoint_count} harness endpoint(s). "
+                f"Use force=true to cascade-delete wires, harnesses that used this "
+                f"connector as an endpoint, and all associated requirement links."
+            ),
         )
 
-    _audit(db, "connector.deleted", "connector", connector.id, current_user.id,
-           {"designator": connector.designator, "force": force},
-           project_id=connector.project_id, request=request)
+    _audit(
+        db, "connector.deleted", "connector", connector.id, current_user.id,
+        {
+            "designator": connector.designator,
+            "force": force,
+            "wires_removed": wire_count,
+            "harnesses_removed": harness_endpoint_count,
+        },
+        project_id=connector.project_id, request=request,
+    )
 
-    # Delete pins (cascades via relationship, but explicit for clarity)
+    # ── 1. Requirement links pointing at the connector itself ──
+    db.query(InterfaceRequirementLink).filter(
+        InterfaceRequirementLink.entity_type == "connector",
+        InterfaceRequirementLink.entity_id == conn_pk,
+    ).delete(synchronize_session="fetch")
+
+    # ── 2. Requirement links pointing at any pin of this connector ──
+    db.query(InterfaceRequirementLink).filter(
+        InterfaceRequirementLink.entity_type == "pin",
+        InterfaceRequirementLink.entity_id.in_(
+            db.query(Pin.id).filter(Pin.connector_id == conn_pk)
+        ),
+    ).delete(synchronize_session="fetch")
+
+    # ── 3. Wires touching this connector's pins (standalone wires that may
+    #       exist outside of a wire_harness row, or wires that survived their
+    #       harness being deleted) ──
+    db.query(Wire).filter(
+        (Wire.from_pin_id.in_(db.query(Pin.id).filter(Pin.connector_id == conn_pk))) |
+        (Wire.to_pin_id.in_(db.query(Pin.id).filter(Pin.connector_id == conn_pk)))
+    ).delete(synchronize_session="fetch")
+
+    # ── 4. Harnesses that used this connector as an endpoint. These are
+    #       meaningless without one of their endpoints, so we cascade-delete
+    #       them entirely (their remaining wires + req links). ──
+    dependent_harness_ids = [
+        r[0] for r in db.query(WireHarness.id).filter(
+            (WireHarness.from_connector_id == conn_pk) |
+            (WireHarness.to_connector_id == conn_pk)
+        ).all()
+    ]
+
+    if dependent_harness_ids:
+        # Req links pointing at any of those harnesses
+        db.query(InterfaceRequirementLink).filter(
+            InterfaceRequirementLink.entity_type == "wire_harness",
+            InterfaceRequirementLink.entity_id.in_(dependent_harness_ids),
+        ).delete(synchronize_session="fetch")
+
+        # Any wires still tied to those harnesses (step 3 caught pins on this
+        # connector, but a harness can have wires to OTHER connectors too)
+        db.query(Wire).filter(
+            Wire.harness_id.in_(dependent_harness_ids)
+        ).delete(synchronize_session="fetch")
+
+        # The harnesses themselves
+        db.query(WireHarness).filter(
+            WireHarness.id.in_(dependent_harness_ids)
+        ).delete(synchronize_session="fetch")
+
+    # ── 5. Pin bus assignments ──
     db.query(PinBusAssignment).filter(
         PinBusAssignment.pin_id.in_(
             db.query(Pin.id).filter(Pin.connector_id == conn_pk)
         )
     ).delete(synchronize_session="fetch")
-    db.query(Pin).filter(Pin.connector_id == conn_pk).delete()
+
+    # ── 6. Pins ──
+    db.query(Pin).filter(Pin.connector_id == conn_pk).delete(synchronize_session="fetch")
+
+    # ── 7. The connector ──
     db.delete(connector)
     db.commit()
 
-    return {"status": "deleted", "id": conn_pk, "wires_orphaned": wire_count if force else 0}
+    return {
+        "status": "deleted",
+        "id": conn_pk,
+        "wires_removed": wire_count,
+        "harnesses_removed": harness_endpoint_count,
+    }
 
 
 # ══════════════════════════════════════════════════════════════
@@ -951,7 +1064,12 @@ def batch_create_pins(
            {"count": len(created)},
            project_id=connector.project_id, request=request)
 
-    return [PinResponse.model_validate(p) for p in created]
+    responses = []
+    for p in created:
+        pr = PinResponse.model_validate(p)
+        _populate_pin_mating(db, pr, p)
+        responses.append(pr)
+    return responses
 
 
 @router.post("/connectors/{conn_pk}/pins/auto-generate", response_model=List[PinResponse], status_code=201)
@@ -995,7 +1113,12 @@ def auto_generate_pins(
            {"count": len(created)},
            project_id=connector.project_id, request=request)
 
-    return [PinResponse.model_validate(p) for p in created]
+    responses = []
+    for p in created:
+        pr = PinResponse.model_validate(p)
+        _populate_pin_mating(db, pr, p)
+        responses.append(pr)
+    return responses
 
 
 @router.patch("/pins/{pin_pk}", response_model=PinResponse)
@@ -1033,6 +1156,28 @@ def update_pin(
         if dup:
             raise HTTPException(409, f"Pin number '{updates['pin_number']}' already exists on this connector")
 
+    # Validate mating_unit_id: must be a real unit in the same project as
+    # this pin's connector. Passing null clears the mating, which is allowed.
+    if "mating_unit_id" in updates and updates["mating_unit_id"] is not None:
+        target_unit = db.query(Unit).filter(Unit.id == updates["mating_unit_id"]).first()
+        if not target_unit:
+            raise HTTPException(404, f"Mating unit id {updates['mating_unit_id']} not found")
+        # Cross-project check — pin's connector belongs to a unit, that unit
+        # belongs to a project. Mating must be same project.
+        connector = db.query(Connector).filter(Connector.id == pin.connector_id).first()
+        if connector and target_unit.project_id != connector.project_id:
+            raise HTTPException(
+                400,
+                "Mating unit must belong to the same project as this pin's connector",
+            )
+        # Prevent trivially-wrong self-reference — a pin shouldn't mate to
+        # the unit its own connector belongs to.
+        if connector and target_unit.id == connector.unit_id:
+            raise HTTPException(
+                400,
+                "Mating unit cannot be the same as this pin's own LRU",
+            )
+
     for field, value in updates.items():
         setattr(pin, field, value)
     db.commit()
@@ -1047,6 +1192,7 @@ def update_pin(
     assignment = db.query(PinBusAssignment).filter(PinBusAssignment.pin_id == pin.id).first()
     if assignment:
         resp.bus_assignment = PinBusAssignmentResponse.model_validate(assignment)
+    _populate_pin_mating(db, resp, pin)
     return resp
 
 
@@ -2071,26 +2217,54 @@ def batch_create_wires(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("interfaces.create")),
 ):
+    """Manually add wires to an existing harness.
+
+    Phase 2b change: validation is now multi-endpoint aware. Previously
+    we only allowed pins belonging to harness.from_connector or
+    harness.to_connector (the legacy 2-endpoint model). Now we allow pins
+    belonging to ANY of the harness's endpoints — so adding wires to a
+    3+ endpoint harness works.
+
+    If a pin's connector isn't on this harness at all, we don't silently
+    extend the harness here. Instead we return a clean 400 directing the
+    caller to /interfaces/auto-grow, which has the proper ambiguity and
+    extend-harness logic. Rationale: this endpoint is for "I've already
+    decided which harness the wire goes on" cases; auto-grow is for "let
+    the engine figure out harness assignment." Keeping them distinct
+    prevents accidental harness restructuring from innocent-looking
+    single-wire creates.
+
+    Also populates each wire's from_mating_pin_id / to_mating_pin_id by
+    looking up the matching pin on the appropriate harness endpoint's
+    mating connector.
+    """
     harness = db.query(WireHarness).filter(WireHarness.id == har_pk).first()
     if not harness:
         raise HTTPException(404, "Wire harness not found")
 
-    from_pin_ids = set(
-        r[0] for r in db.query(Pin.id).join(Connector).filter(
-            Connector.id == harness.from_connector_id
-        ).all()
-    )
-    to_pin_ids = set(
-        r[0] for r in db.query(Pin.id).join(Connector).filter(
-            Connector.id == harness.to_connector_id
-        ).all()
-    )
+    # Build: set of pin_ids that belong to any endpoint's LRU connector on
+    # this harness. For a 2-endpoint harness this equals the old from_pin_ids
+    # ∪ to_pin_ids. For larger harnesses it's the union across all endpoints.
+    endpoint_rows = (db.query(HarnessEndpoint.lru_connector_id, HarnessEndpoint.mating_connector_id)
+                     .filter(HarnessEndpoint.harness_id == har_pk).all())
+    lru_connector_ids = {lru for (lru, _) in endpoint_rows if lru is not None}
+    # lru_connector_id -> mating_connector_id, used for mating pin resolution
+    lru_to_mating: dict = {lru: mating for (lru, mating) in endpoint_rows if lru is not None}
 
-    # Existing wire numbers in harness
+    # Fallback for harnesses that pre-date Phase 1 and somehow lack
+    # endpoint rows (shouldn't happen post-migration, but defensive).
+    if not lru_connector_ids and harness.from_connector_id and harness.to_connector_id:
+        lru_connector_ids = {harness.from_connector_id, harness.to_connector_id}
+        lru_to_mating = {}
+
+    valid_pin_ids = set(
+        r[0] for r in db.query(Pin.id).filter(Pin.connector_id.in_(lru_connector_ids)).all()
+    ) if lru_connector_ids else set()
+
+    # Pre-fetch existing state for conflict checks
     existing_numbers = set(
         r[0] for r in db.query(Wire.wire_number).filter(Wire.harness_id == har_pk).all()
     )
-    # Existing connected pins in harness
     existing_from = set(
         r[0] for r in db.query(Wire.from_pin_id).filter(Wire.harness_id == har_pk).all()
     )
@@ -2098,17 +2272,41 @@ def batch_create_wires(
         r[0] for r in db.query(Wire.to_pin_id).filter(Wire.harness_id == har_pk).all()
     )
 
+    # Helper: given an LRU pin, find its matching pin on the harness's
+    # mating connector for that pin's LRU connector. Returns None if either
+    # the endpoint doesn't exist or the pin_number doesn't match anything
+    # on the mating side (shouldn't happen if the migration ran; the
+    # engine's cloning preserves pin_number 1:1).
+    def _resolve_mating_pin(lru_pin_id: int):
+        lru_pin = db.query(Pin).filter(Pin.id == lru_pin_id).first()
+        if not lru_pin:
+            return None
+        mating_conn_id = lru_to_mating.get(lru_pin.connector_id)
+        if not mating_conn_id:
+            return None
+        return (db.query(Pin)
+                .filter(Pin.connector_id == mating_conn_id,
+                        Pin.pin_number == lru_pin.pin_number)
+                .first())
+
     created = []
     for wd in data.wires:
-        # Validate from_pin belongs to from_connector
-        if wd.from_pin_id not in from_pin_ids:
+        # Validate both pins live on this harness's endpoint LRUs
+        if wd.from_pin_id not in valid_pin_ids:
             raise HTTPException(
-                400, f"Pin {wd.from_pin_id} is not on the from_connector of harness {har_pk}"
+                400,
+                f"Pin {wd.from_pin_id} is not on any LRU connector plugged into harness {har_pk}. "
+                f"If you want to wire pins across different harnesses, use POST /interfaces/auto-grow."
             )
-        if wd.to_pin_id not in to_pin_ids:
+        if wd.to_pin_id not in valid_pin_ids:
             raise HTTPException(
-                400, f"Pin {wd.to_pin_id} is not on the to_connector of harness {har_pk}"
+                400,
+                f"Pin {wd.to_pin_id} is not on any LRU connector plugged into harness {har_pk}. "
+                f"If you want to wire pins across different harnesses, use POST /interfaces/auto-grow."
             )
+        if wd.from_pin_id == wd.to_pin_id:
+            raise HTTPException(400, "A wire cannot connect a pin to itself")
+
         if wd.wire_number in existing_numbers:
             raise HTTPException(409, f"Wire number '{wd.wire_number}' already exists in harness")
         if wd.from_pin_id in existing_from:
@@ -2120,12 +2318,36 @@ def batch_create_wires(
         existing_from.add(wd.from_pin_id)
         existing_to.add(wd.to_pin_id)
 
+        # Resolve mating-side pin refs for each end
+        from_mating = _resolve_mating_pin(wd.from_pin_id)
+        to_mating = _resolve_mating_pin(wd.to_pin_id)
+
         wire = Wire(
             harness_id=har_pk,
+            from_mating_pin_id=from_mating.id if from_mating else None,
+            to_mating_pin_id=to_mating.id if to_mating else None,
             **wd.model_dump(exclude_unset=True),
         )
         db.add(wire)
         created.append(wire)
+
+        # Maintain the Connection rollup row for this LRU pair. We do this
+        # per-wire so a batch that spans multiple LRU pairs updates all the
+        # relevant connections.
+        try:
+            from app.services.interface.auto_grow import AutoGrowEngine
+            engine = AutoGrowEngine(db, harness.project_id, current_user)
+            from_pin = db.query(Pin).filter(Pin.id == wd.from_pin_id).first()
+            to_pin = db.query(Pin).filter(Pin.id == wd.to_pin_id).first()
+            if from_pin and to_pin:
+                from_conn = db.query(Connector).filter(Connector.id == from_pin.connector_id).first()
+                to_conn = db.query(Connector).filter(Connector.id == to_pin.connector_id).first()
+                if (from_conn and to_conn and
+                        from_conn.unit_id and to_conn.unit_id and
+                        from_conn.unit_id != to_conn.unit_id):
+                    engine._upsert_connection(from_conn.unit_id, to_conn.unit_id)
+        except Exception as e:
+            logger.warning(f"connection rollup maintenance failed for wire create: {e}")
 
     db.commit()
     results = []
@@ -2157,100 +2379,392 @@ def batch_create_wires(
 @router.post("/harnesses/{har_pk}/auto-wire")
 def auto_wire_harness(
     har_pk: int,
+    mapping: str = Query(
+        "auto",
+        description=(
+            "Wiring strategy: "
+            "'auto' prefers by_peer_lru if pins have mating_unit_id set, else straight-through for RJ-45 pairs, else signal-name matching; "
+            "'by_signal' always matches on pin.signal_name (case-insensitive); "
+            "'by_peer_lru' matches pins where A.mating_unit == B's unit AND vice versa, with signal_name+complementary direction; "
+            "'straight_through' wires pin 1→1, 2→2, ... N→N (ignores names); "
+            "'crossover' uses T568B-style crossover (1↔3, 2↔6, rest straight). RJ-45 only."
+        ),
+    ),
     request: Request = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("interfaces.create")),
 ):
-    """Auto-create wires by matching signal names between connectors."""
+    """Auto-create wires between the two connectors on a harness.
+
+    Strategy (`mapping` query param):
+      * **auto**            — default. Priority order: by_peer_lru (if ≥1 pin
+                              on each side has mating_unit_id pointing at the
+                              other side's unit), then straight_through (RJ-45
+                              pairs with matching pin count), then by_signal.
+      * **by_signal**       — matches pins by normalized signal_name.
+      * **by_peer_lru**     — matches pins where:
+                                A.mating_unit_id == B.connector.unit_id AND
+                                B.mating_unit_id == A.connector.unit_id AND
+                                signal_name matches AND
+                                signal_type matches AND
+                                directions are complementary (input↔output or
+                                bidirectional↔bidirectional).
+      * **straight_through**— wires each pin N to pin N on the opposite end
+                              (by pin_number). Ignores signal names entirely.
+      * **crossover**       — T568B crossover: 1↔3, 2↔6, 3↔1, 6↔2, and
+                              4,5,7,8 straight. RJ-45 only.
+
+    Returns counts, the strategy actually used, and lists of unmatched pins
+    from each side so the caller can fill in the gaps manually.
+    """
+    VALID_STRATEGIES = {"auto", "by_signal", "by_peer_lru", "straight_through", "crossover"}
+    if mapping not in VALID_STRATEGIES:
+        raise HTTPException(
+            400,
+            f"Invalid mapping '{mapping}'. Must be one of: {', '.join(sorted(VALID_STRATEGIES))}",
+        )
+
     harness = db.query(WireHarness).filter(WireHarness.id == har_pk).first()
     if not harness:
         raise HTTPException(404, "Wire harness not found")
 
-    from_pins = db.query(Pin).join(Connector).filter(
-        Connector.id == harness.from_connector_id
-    ).all()
-    to_pins = db.query(Pin).join(Connector).filter(
-        Connector.id == harness.to_connector_id
-    ).all()
+    # Load both endpoint connectors (for type/pin-count detection) and pins
+    from_connector = db.query(Connector).filter(Connector.id == harness.from_connector_id).first()
+    to_connector = db.query(Connector).filter(Connector.id == harness.to_connector_id).first()
+    if not from_connector or not to_connector:
+        raise HTTPException(409, "Harness is missing one or both endpoint connectors")
 
-    # Already-connected pins
+    from_pins = db.query(Pin).filter(Pin.connector_id == harness.from_connector_id).all()
+    to_pins = db.query(Pin).filter(Pin.connector_id == harness.to_connector_id).all()
+
+    # Already-connected pins on this harness
     existing_from = set(
         r[0] for r in db.query(Wire.from_pin_id).filter(Wire.harness_id == har_pk).all()
     )
     existing_to = set(
         r[0] for r in db.query(Wire.to_pin_id).filter(Wire.harness_id == har_pk).all()
     )
-    max_wire_num = db.query(func.max(Wire.wire_number)).filter(
-        Wire.harness_id == har_pk
-    ).scalar()
-    wire_counter = int(re.search(r"(\d+)", max_wire_num).group(1)) + 1 if max_wire_num and re.search(r"(\d+)", max_wire_num) else 1
+    max_wire_num = db.query(func.max(Wire.wire_number)).filter(Wire.harness_id == har_pk).scalar()
+    wire_counter = (
+        int(re.search(r"(\d+)", max_wire_num).group(1)) + 1
+        if max_wire_num and re.search(r"(\d+)", max_wire_num) else 1
+    )
 
-    # Build lookup from to_pins by signal_name
-    to_map: dict = {}
-    for tp in to_pins:
-        if tp.id not in existing_to and tp.signal_name:
-            sn = tp.signal_name.upper().strip()
-            if sn not in to_map:
-                to_map[sn] = tp
+    # ── Resolve 'auto' into a concrete strategy ──
+    from_type = _ev(from_connector.connector_type) if from_connector.connector_type else None
+    to_type = _ev(to_connector.connector_type) if to_connector.connector_type else None
+    from_unit_id = from_connector.unit_id
+    to_unit_id = to_connector.unit_id
 
-    matched = []
-    unmatched_from = []
-    unmatched_to_names = set(to_map.keys())
+    # For the auto-detection: does any from_pin declare the to-side unit as
+    # its mate, and vice versa? If yes on both sides, by_peer_lru is the
+    # most specific signal so we prefer it.
+    from_has_peer_match = any(
+        getattr(p, "mating_unit_id", None) == to_unit_id for p in from_pins
+    )
+    to_has_peer_match = any(
+        getattr(p, "mating_unit_id", None) == from_unit_id for p in to_pins
+    )
 
-    for fp in from_pins:
-        if fp.id in existing_from:
-            continue
-        sn = (fp.signal_name or "").upper().strip()
-        if not sn or sn.startswith("SPARE") or sn.startswith("NC"):
-            unmatched_from.append({"pin_id": fp.id, "pin_number": fp.pin_number, "signal_name": fp.signal_name})
-            continue
-
-        tp = to_map.get(sn)
-        if tp:
-            wire_num = f"W{wire_counter:03d}"
-            wire_counter += 1
-            wire = Wire(
-                harness_id=har_pk,
-                wire_number=wire_num,
-                signal_name=fp.signal_name,
-                wire_type=_infer_wire_type(_ev(fp.signal_type)),
-                wire_gauge=_infer_wire_gauge(fp.current_max_amps),
-                from_pin_id=fp.id,
-                to_pin_id=tp.id,
-            )
-            db.add(wire)
-            matched.append(wire)
-            unmatched_to_names.discard(sn)
-            existing_from.add(fp.id)
-            existing_to.add(tp.id)
+    chosen_strategy = mapping
+    if mapping == "auto":
+        if from_has_peer_match and to_has_peer_match:
+            # Strongest signal: users have explicitly tagged which pins mate
+            # with which peer unit. Use that over any other heuristic.
+            chosen_strategy = "by_peer_lru"
+        elif (
+            from_type == "rj45" and to_type == "rj45"
+            and len(from_pins) > 0 and len(from_pins) == len(to_pins)
+        ):
+            # RJ-45 pairs: positional mapping is almost always right.
+            chosen_strategy = "straight_through"
         else:
-            unmatched_from.append({"pin_id": fp.id, "pin_number": fp.pin_number, "signal_name": fp.signal_name})
+            chosen_strategy = "by_signal"
 
-    db.commit()
+    # Crossover is only meaningful for RJ-45 (T568B crossover definition)
+    if chosen_strategy == "crossover" and not (from_type == "rj45" and to_type == "rj45"):
+        raise HTTPException(
+            400,
+            f"Crossover mapping requires both connectors to be RJ-45. "
+            f"This harness has {from_type or 'unknown'} → {to_type or 'unknown'}.",
+        )
 
+    # ── Build pin lookups for each strategy ──
+    # All three strategies end up populating `pairs`: a list of (from_pin, to_pin)
+    # tuples that will become wires. Unmatched pins are tracked separately.
+    pairs: list[tuple[Pin, Pin]] = []
+    unmatched_from: list[dict] = []
+    unmatched_to: list[dict] = []
+
+    def _pin_summary(p: Pin) -> dict:
+        return {
+            "pin_id": p.id,
+            "pin_number": p.pin_number,
+            "signal_name": p.signal_name,
+        }
+
+    if chosen_strategy == "by_signal":
+        # Original behavior: case-insensitive signal_name match. Skips
+        # SPARE/NC pins since those are intentionally unwired.
+        to_map: dict = {}
+        for tp in to_pins:
+            if tp.id in existing_to:
+                continue
+            if tp.signal_name:
+                sn = tp.signal_name.upper().strip()
+                if sn not in to_map:  # first match wins on duplicates
+                    to_map[sn] = tp
+        unmatched_to_names = set(to_map.keys())
+
+        for fp in from_pins:
+            if fp.id in existing_from:
+                continue
+            sn = (fp.signal_name or "").upper().strip()
+            if not sn or sn.startswith("SPARE") or sn.startswith("NC"):
+                unmatched_from.append(_pin_summary(fp))
+                continue
+            tp = to_map.get(sn)
+            if tp:
+                pairs.append((fp, tp))
+                unmatched_to_names.discard(sn)
+            else:
+                unmatched_from.append(_pin_summary(fp))
+        for sn in unmatched_to_names:
+            unmatched_to.append(_pin_summary(to_map[sn]))
+
+    elif chosen_strategy == "by_peer_lru":
+        # Peer-LRU match: each pin knows which unit it's supposed to talk to
+        # (via mating_unit_id). Wire A_pin to B_pin when:
+        #   1. A.mating_unit_id == B's connector's unit_id  AND
+        #   2. B.mating_unit_id == A's connector's unit_id  AND
+        #   3. signal_name matches (case-insensitive, whitespace-stripped) AND
+        #   4. signal_type matches AND
+        #   5. directions are complementary:
+        #        input  ↔ output
+        #        bidirectional ↔ bidirectional
+        # This is the intended-design strategy for inter-LRU buses where
+        # users label pins like "FCC_IMU_Avionics_Bus_Hi" and set direction
+        # per endpoint — the engine then figures out which pins are conjugate.
+        def _norm(s: str | None) -> str:
+            return (s or "").strip().upper()
+
+        def _directions_match(a: str | None, b: str | None) -> bool:
+            a = _norm(a); b = _norm(b)
+            if not a or not b:
+                return False
+            if a == "BIDIRECTIONAL" and b == "BIDIRECTIONAL":
+                return True
+            if {a, b} == {"INPUT", "OUTPUT"}:
+                return True
+            return False
+
+        # Pre-filter the to-side pins by peer-unit match + not-already-wired.
+        # Group them in a dict keyed by (signal_name, signal_type) for O(1)
+        # lookup during the from-side walk. If multiple to-pins share the
+        # same (name, type), first one wins — later ones land in unmatched_to.
+        to_candidates: dict[tuple[str, str], list[Pin]] = {}
+        to_excluded: list[Pin] = []
+        for tp in to_pins:
+            if tp.id in existing_to:
+                continue
+            if getattr(tp, "mating_unit_id", None) != from_unit_id:
+                to_excluded.append(tp)
+                continue
+            key = (_norm(tp.signal_name), _norm(_ev(tp.signal_type) if tp.signal_type else ""))
+            to_candidates.setdefault(key, []).append(tp)
+
+        consumed_to_ids: set[int] = set()
+
+        for fp in from_pins:
+            if fp.id in existing_from:
+                continue
+            if getattr(fp, "mating_unit_id", None) != to_unit_id:
+                # This pin doesn't claim to mate with the other side's unit.
+                # Could be a spare, a chassis ground, or a pin that mates
+                # with some third party. Leave it alone.
+                unmatched_from.append(_pin_summary(fp))
+                continue
+            key = (_norm(fp.signal_name), _norm(_ev(fp.signal_type) if fp.signal_type else ""))
+            candidates = to_candidates.get(key, [])
+            # Pick the first candidate with complementary direction that
+            # hasn't already been consumed.
+            match = None
+            for tp in candidates:
+                if tp.id in consumed_to_ids:
+                    continue
+                if _directions_match(_ev(fp.direction), _ev(tp.direction)):
+                    match = tp
+                    break
+            if match:
+                pairs.append((fp, match))
+                consumed_to_ids.add(match.id)
+            else:
+                unmatched_from.append(_pin_summary(fp))
+
+        # Any to-candidate we didn't consume is reported as unmatched
+        for key, cands in to_candidates.items():
+            for tp in cands:
+                if tp.id not in consumed_to_ids:
+                    unmatched_to.append(_pin_summary(tp))
+        # Pins that didn't even declare a peer link aren't reported as
+        # unmatched on the to-side either — they were never in scope.
+
+    elif chosen_strategy in ("straight_through", "crossover"):
+        # Both strategies map pins by pin_number. Build pin_number → Pin
+        # lookups so ordering is deterministic even if DB rows come back
+        # in insert order rather than pin order.
+        # pin_number is stored as text ("1", "1A", "J1-2"...) — we only do
+        # purely-numeric matching here since these strategies only make sense
+        # for numbered connectors like RJ-45.
+        def _by_number(pins: list[Pin]) -> dict:
+            d: dict = {}
+            for p in pins:
+                if p.pin_number and p.pin_number.strip().isdigit():
+                    d[int(p.pin_number.strip())] = p
+            return d
+
+        from_by_num = _by_number(from_pins)
+        to_by_num = _by_number(to_pins)
+
+        # Crossover swap map. For T568B crossover cables:
+        #   TX pair (1,2) on one end ↔ RX pair (3,6) on the other
+        # 4, 5, 7, 8 stay straight. This is a symmetric map, so applying it
+        # once from each end produces consistent results.
+        CROSSOVER_MAP = {1: 3, 2: 6, 3: 1, 6: 2, 4: 4, 5: 5, 7: 7, 8: 8}
+
+        matched_to_ids: set[int] = set()
+
+        for num, fp in sorted(from_by_num.items()):
+            if fp.id in existing_from:
+                continue
+            target_num = CROSSOVER_MAP.get(num, num) if chosen_strategy == "crossover" else num
+            tp = to_by_num.get(target_num)
+            if tp and tp.id not in existing_to and tp.id not in matched_to_ids:
+                pairs.append((fp, tp))
+                matched_to_ids.add(tp.id)
+            else:
+                unmatched_from.append(_pin_summary(fp))
+
+        for num, tp in sorted(to_by_num.items()):
+            if tp.id in existing_to or tp.id in matched_to_ids:
+                continue
+            unmatched_to.append(_pin_summary(tp))
+
+    # ── Materialize the wires via the auto-grow engine (Phase 2b) ──
+    #
+    # Before Phase 2b, this block did `db.add(Wire(...))` inline per pair.
+    # That worked but hardcoded the assumption "wires always stay on this
+    # specific harness and never trigger harness restructuring." With the
+    # multi-endpoint model, that's wrong: a wire between pins whose LRUs
+    # aren't both plugged into THIS harness may need to extend it, merge
+    # with another harness, or surface an ambiguity.
+    #
+    # So we keep ALL the matching logic above (strategy dispatch, pin
+    # matching, unmatched lists) unchanged — those are high-quality
+    # per-connector decisions — and just hand the resulting pairs to the
+    # engine. The engine figures out harness assignment.
+    #
+    # For the common 2-endpoint case (both pins belong to LRUs that already
+    # have endpoints on this harness), the engine's `existing_harness` path
+    # fires and wires land exactly where they would have before. Behavior
+    # is unchanged for old data.
+    from app.services.interface.auto_grow import (
+        AutoGrowEngine, AutoGrowPair as _AGPair,
+    )
+    engine = AutoGrowEngine(db, harness.project_id, current_user)
+    grow_pairs = [
+        _AGPair(
+            from_lru_pin_id=fp.id,
+            to_lru_pin_id=tp.id,
+            signal_name=fp.signal_name or tp.signal_name or f"PIN_{fp.pin_number}_TO_{tp.pin_number}",
+            wire_type=_infer_wire_type(_ev(fp.signal_type) if fp.signal_type else ""),
+            wire_gauge=_infer_wire_gauge(fp.current_max_amps),
+        )
+        for fp, tp in pairs
+    ]
+    try:
+        grow_result = engine.run(pairs=grow_pairs, decisions=[])
+    except ValueError as e:
+        db.rollback()
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        db.rollback()
+        logger.error(f"auto-wire via engine failed: {e}", exc_info=True)
+        raise HTTPException(500, f"Auto-wire failed: {e}")
+
+    # If the engine surfaced ambiguities, we can't quietly commit. Return
+    # them to the caller so the UI can resolve them via the same modal as
+    # a direct /auto-grow call. The `auto_wire` endpoint is a convenience
+    # wrapper that usually doesn't hit ambiguities (it's called per-harness
+    # and the pairs are all between the same 2 LRUs) — but we handle the
+    # edge case cleanly rather than silently dropping wires.
+    if grow_result.ambiguities:
+        return {
+            "matched": 0,
+            "unmatched_from": unmatched_from,
+            "unmatched_to": unmatched_to,
+            "wires_created": [],
+            "ambiguities": [
+                {
+                    "pair_index": a.pair_index,
+                    "from_lru_pin_id": a.from_lru_pin_id,
+                    "to_lru_pin_id": a.to_lru_pin_id,
+                    "from_lru_unit_designation": a.from_lru_unit_designation,
+                    "to_lru_unit_designation": a.to_lru_unit_designation,
+                    "harness_a_id": a.harness_a_id,
+                    "harness_a_name": a.harness_a_name,
+                    "harness_a_lru_designations": a.harness_a_lru_designations,
+                    "harness_b_id": a.harness_b_id,
+                    "harness_b_name": a.harness_b_name,
+                    "harness_b_lru_designations": a.harness_b_lru_designations,
+                    "valid_actions": a.valid_actions,
+                    "new_harness_disallowed_reason": a.new_harness_disallowed_reason,
+                }
+                for a in grow_result.ambiguities
+            ],
+            "strategy": chosen_strategy,
+            "strategy_requested": mapping,
+            "message": (
+                "Auto-wire produced pin matches that would span multiple harnesses. "
+                "Resolve each ambiguity via POST /interfaces/auto-grow with the decisions array."
+            ),
+        }
+
+    # No ambiguity — engine already committed. Hydrate the new wires for
+    # the response.
+    matched_wires: list[Wire] = []
+    if grow_result.new_wire_ids:
+        matched_wires = (db.query(Wire)
+                         .filter(Wire.id.in_(grow_result.new_wire_ids))
+                         .all())
+
+    # Build response wire list with joined names (for UI display)
     wire_results = []
-    for w in matched:
+    for w in matched_wires:
         db.refresh(w)
         wr = WireResponse.model_validate(w)
         _populate_wire_joins(db, wr, w)
         wire_results.append(wr)
 
-    unmatched_to = []
-    for sn in unmatched_to_names:
-        tp = to_map[sn]
-        unmatched_to.append({"pin_id": tp.id, "pin_number": tp.pin_number, "signal_name": tp.signal_name})
-
-    _audit(db, "harness.auto_wired", "wire_harness", har_pk, current_user.id,
-           {"matched": len(matched), "unmatched_from": len(unmatched_from), "unmatched_to": len(unmatched_to)},
-           project_id=harness.project_id, request=request)
+    _audit(
+        db, "harness.auto_wired", "wire_harness", har_pk, current_user.id,
+        {
+            "matched": len(matched_wires),
+            "unmatched_from": len(unmatched_from),
+            "unmatched_to": len(unmatched_to),
+            "strategy": chosen_strategy,
+            "requested": mapping,
+        },
+        project_id=harness.project_id, request=request,
+    )
 
     # Auto-generate requirements from new wires
     auto_result = {"requirements_generated": 0}
-    if matched:
+    if matched_wires:
         try:
             from app.services.interface.auto_requirements import AutoRequirementGenerator
             generator = AutoRequirementGenerator(db, harness.project_id, current_user)
-            auto_result = generator.on_wires_created(harness, matched)
+            auto_result = generator.on_wires_created(harness, matched_wires)
             db.commit()
         except Exception as e:
             import logging
@@ -2258,12 +2772,15 @@ def auto_wire_harness(
             auto_result = {"requirements_generated": 0, "error": str(e)}
 
     return {
-        "matched": len(matched),
+        "matched": len(matched_wires),
         "unmatched_from": unmatched_from,
         "unmatched_to": unmatched_to,
         "wires_created": wire_results,
         "auto_requirements": auto_result,
+        "strategy": chosen_strategy,
+        "strategy_requested": mapping,
     }
+
 
 @router.post("/harnesses/{har_pk}/generate-requirements")
 def generate_harness_requirements(
@@ -2543,6 +3060,16 @@ def delete_wire(
         InterfaceRequirementLink.entity_type == "wire",
         InterfaceRequirementLink.entity_id == wire_pk,
     ).delete()
+
+    # Phase 2: check if this is the last wire between its two LRUs; if so
+    # remove the Connection rollup row. Done BEFORE db.delete(wire) so the
+    # helper can still query the wire's pins.
+    try:
+        from app.services.interface.auto_grow import maybe_delete_connection_for_wire
+        maybe_delete_connection_for_wire(db, wire)
+    except Exception as e:
+        logger.warning(f"connection cleanup after wire delete failed: {e}")
+
     db.delete(wire)
     db.commit()
     return {"status": "deleted", "id": wire_pk}
@@ -3055,6 +3582,25 @@ def _populate_harness_joins(db: Session, resp, harness: WireHarness):
     resp.to_connector_designator = tc.designator if tc else None
 
 
+def _populate_pin_mating(db: Session, resp: "PinResponse", pin: "Pin"):
+    """Fill mating-LRU display fields on a PinResponse.
+
+    The Pin row stores only `mating_unit_id` (FK). For the frontend to
+    render the peer's designation without a second round-trip, we look
+    up the Unit here and populate `mating_unit_designation` / `_name`.
+
+    Safe to call when mating_unit_id is None (no-op) or when the target
+    unit has been deleted (leaves display fields null).
+    """
+    mating_id = getattr(pin, "mating_unit_id", None)
+    if not mating_id:
+        return
+    mu = db.query(Unit).filter(Unit.id == mating_id).first()
+    if mu:
+        resp.mating_unit_designation = mu.designation
+        resp.mating_unit_name = mu.name
+
+
 _CRIT_RANKS = {
     "catastrophic": 10, "hazardous": 9, "major": 8, "minor": 7,
     "safety_critical_a": 6, "safety_critical_b": 5, "safety_critical_c": 4,
@@ -3065,3 +3611,441 @@ _CRIT_RANKS = {
 
 def _crit_rank(c: str | None) -> int:
     return _CRIT_RANKS.get(c or "", -1)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Phase 2a — Auto-Grow, Connections, and Harness Endpoint CRUD
+# ══════════════════════════════════════════════════════════════════════════
+
+from app.services.interface.auto_grow import (
+    AutoGrowEngine,
+    AutoGrowPair as _AGPair,
+    AmbiguityDecision as _AGDec,
+    maybe_delete_connection_for_wire,
+)
+
+
+def _populate_endpoint_joins(db: Session, resp: HarnessEndpointResponse, endpoint: HarnessEndpoint):
+    """Fill in denormalized display fields on a HarnessEndpointResponse so
+    the frontend can render without extra round-trips."""
+    mating = db.query(Connector).filter(Connector.id == endpoint.mating_connector_id).first()
+    if mating:
+        resp.mating_connector_designator = mating.designator
+        resp.mating_connector_type = _ev(mating.connector_type) if mating.connector_type else None
+    if endpoint.lru_connector_id is not None:
+        lru = db.query(Connector).filter(Connector.id == endpoint.lru_connector_id).first()
+        if lru:
+            resp.lru_connector_designator = lru.designator
+            if lru.unit_id:
+                resp.lru_unit_id = lru.unit_id
+                u = db.query(Unit).filter(Unit.id == lru.unit_id).first()
+                if u:
+                    resp.lru_unit_designation = u.designation
+                    resp.lru_unit_name = u.name
+    # Wire count for this endpoint = wires that touch this endpoint's mating
+    # connector on either side
+    if mating:
+        wc = (db.query(func.count(Wire.id))
+              .join(Pin, (Pin.id == Wire.from_mating_pin_id) | (Pin.id == Wire.to_mating_pin_id))
+              .filter(Pin.connector_id == mating.id)
+              .scalar()) or 0
+        resp.wire_count = wc
+
+
+# ── Auto-Grow entry point ───────────────────────────────────────────────
+
+@router.post("/auto-grow", response_model=AutoGrowResultSchema)
+def auto_grow(
+    payload: AutoGrowRequest,
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("interfaces.create")),
+):
+    """Process a batch of proposed wires, auto-growing harnesses as needed.
+
+    If any pair is ambiguous (both LRUs already on different harnesses) and
+    the caller didn't supply a decision for it, the response contains an
+    `ambiguities` list and nothing was committed. The caller resolves each
+    ambiguity modal sequentially, accumulates AmbiguityDecision entries,
+    and re-submits with the full `decisions` list.
+
+    When `ambiguities` is empty, wires are created and Connection rollups
+    are updated in a single atomic commit.
+    """
+    _require_project(db, payload.project_id)
+    engine = AutoGrowEngine(db, payload.project_id, current_user)
+
+    pairs = [_AGPair(
+        from_lru_pin_id=p.from_lru_pin_id,
+        to_lru_pin_id=p.to_lru_pin_id,
+        signal_name=p.signal_name,
+        wire_type=p.wire_type,
+        wire_gauge=p.wire_gauge,
+    ) for p in payload.pairs]
+
+    decisions = [_AGDec(
+        pair_index=d.pair_index,
+        action=d.action,
+        new_harness_name=d.new_harness_name,
+    ) for d in (payload.decisions or [])]
+
+    try:
+        result = engine.run(pairs=pairs, decisions=decisions)
+    except ValueError as e:
+        # Engine raises ValueError for invalid inputs / impossible decisions
+        # (bad action for an ambiguity, claimed connector for new_harness,
+        # etc.). Translate to a loud 400 so the client sees a clean error
+        # instead of a mystery 500.
+        db.rollback()
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        db.rollback()
+        logger.error(f"auto-grow failed: {e}", exc_info=True)
+        raise HTTPException(500, f"Auto-grow failed: {e}")
+
+    # Audit whichever path completed
+    if not result.ambiguities:
+        try:
+            _audit(
+                db, "auto_grow.executed", "project", payload.project_id, current_user.id,
+                {
+                    "pairs_submitted": len(payload.pairs),
+                    "wires_created": result.wires_created,
+                    "harnesses_created": result.harnesses_created,
+                    "endpoints_added": result.endpoints_added,
+                    "connections_touched": result.connections_touched,
+                },
+                project_id=payload.project_id, request=request,
+            )
+        except Exception:
+            pass
+
+    # Map dataclass result → Pydantic
+    return AutoGrowResultSchema(
+        wires_created=result.wires_created,
+        harnesses_created=result.harnesses_created,
+        endpoints_added=result.endpoints_added,
+        ambiguities=[AutoGrowAmbiguitySchema(
+            pair_index=a.pair_index,
+            from_lru_pin_id=a.from_lru_pin_id,
+            to_lru_pin_id=a.to_lru_pin_id,
+            from_lru_unit_id=a.from_lru_unit_id,
+            from_lru_unit_designation=a.from_lru_unit_designation,
+            to_lru_unit_id=a.to_lru_unit_id,
+            to_lru_unit_designation=a.to_lru_unit_designation,
+            harness_a_id=a.harness_a_id,
+            harness_a_name=a.harness_a_name,
+            harness_a_wire_count=a.harness_a_wire_count,
+            harness_a_endpoint_count=a.harness_a_endpoint_count,
+            harness_b_id=a.harness_b_id,
+            harness_b_name=a.harness_b_name,
+            harness_b_wire_count=a.harness_b_wire_count,
+            harness_b_endpoint_count=a.harness_b_endpoint_count,
+            harness_a_lru_designations=a.harness_a_lru_designations,
+            harness_b_lru_designations=a.harness_b_lru_designations,
+            valid_actions=a.valid_actions,
+            new_harness_disallowed_reason=a.new_harness_disallowed_reason,
+        ) for a in result.ambiguities],
+        connections_touched=result.connections_touched,
+        new_wire_ids=result.new_wire_ids,
+        new_harness_ids=result.new_harness_ids,
+        skipped=[{
+            "pair_index": s.pair_index,
+            "from_lru_pin_id": s.from_lru_pin_id,
+            "to_lru_pin_id": s.to_lru_pin_id,
+            "reason": s.reason,
+        } for s in result.skipped],
+    )
+
+
+# ── Connections (bidirectional LRU-pair rollup) ─────────────────────────
+
+@router.get("/connections", response_model=List[ConnectionResponse])
+def list_connections(
+    project_id: int = Query(...),
+    system_id: Optional[int] = Query(None, description="Filter to connections where at least one LRU is in this system"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """List connections for a project. Each row is an unordered LRU pair
+    that has at least one wire between the two units.
+
+    Per Mason's spec, a system filter is available: when passed, the result
+    is filtered to connections where at least one endpoint LRU belongs to
+    the given system. This drives the system-scoped Connections tab.
+    """
+    _require_project(db, project_id)
+
+    q = db.query(Connection).filter(Connection.project_id == project_id)
+
+    if system_id is not None:
+        # Connection qualifies if unit_a's system OR unit_b's system matches
+        relevant_unit_ids = [r[0] for r in db.query(Unit.id).filter(Unit.system_id == system_id).all()]
+        if not relevant_unit_ids:
+            return []
+        q = q.filter(
+            (Connection.lru_a_id.in_(relevant_unit_ids)) |
+            (Connection.lru_b_id.in_(relevant_unit_ids))
+        )
+
+    connections = q.order_by(Connection.id).all()
+
+    # Build responses with denormalized fields
+    results = []
+    for c in connections:
+        resp = ConnectionResponse.model_validate(c)
+        ua = db.query(Unit).filter(Unit.id == c.lru_a_id).first()
+        ub = db.query(Unit).filter(Unit.id == c.lru_b_id).first()
+        if ua:
+            resp.lru_a_designation = ua.designation
+            resp.lru_a_name = ua.name
+        if ub:
+            resp.lru_b_designation = ub.designation
+            resp.lru_b_name = ub.name
+
+        # wire_count and harness_ids: walk wires touching either unit pair
+        from sqlalchemy.orm import aliased
+        FromPin = aliased(Pin); ToPin = aliased(Pin)
+        FromConn = aliased(Connector); ToConn = aliased(Connector)
+        wire_rows = (
+            db.query(Wire.id, Wire.harness_id)
+            .join(FromPin, FromPin.id == Wire.from_pin_id)
+            .join(FromConn, FromConn.id == FromPin.connector_id)
+            .join(ToPin, ToPin.id == Wire.to_pin_id)
+            .join(ToConn, ToConn.id == ToPin.connector_id)
+            .filter(
+                ((FromConn.unit_id == c.lru_a_id) & (ToConn.unit_id == c.lru_b_id)) |
+                ((FromConn.unit_id == c.lru_b_id) & (ToConn.unit_id == c.lru_a_id))
+            ).all()
+        )
+        resp.wire_count = len(wire_rows)
+        harness_ids_set = {h for (_, h) in wire_rows if h is not None}
+        resp.harness_ids = sorted(harness_ids_set)
+        if harness_ids_set:
+            names = [
+                n[0] for n in
+                db.query(WireHarness.name).filter(WireHarness.id.in_(harness_ids_set)).all()
+            ]
+            resp.harness_names = names
+        results.append(resp)
+
+    return results
+
+
+@router.get("/connections/{conn_pk}", response_model=ConnectionDetail)
+def get_connection(
+    conn_pk: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Full detail for a Connection: all wires between the two LRUs,
+    grouped for UI consumption."""
+    c = db.query(Connection).filter(Connection.id == conn_pk).first()
+    if not c:
+        raise HTTPException(404, "Connection not found")
+
+    resp = ConnectionDetail.model_validate(c)
+
+    ua = db.query(Unit).filter(Unit.id == c.lru_a_id).first()
+    ub = db.query(Unit).filter(Unit.id == c.lru_b_id).first()
+    if ua:
+        resp.lru_a_designation = ua.designation
+        resp.lru_a_name = ua.name
+    if ub:
+        resp.lru_b_designation = ub.designation
+        resp.lru_b_name = ub.name
+
+    # Gather all wires between these two LRUs
+    from sqlalchemy.orm import aliased
+    FromPin = aliased(Pin); ToPin = aliased(Pin)
+    FromConn = aliased(Connector); ToConn = aliased(Connector)
+    wires = (
+        db.query(Wire)
+        .join(FromPin, FromPin.id == Wire.from_pin_id)
+        .join(FromConn, FromConn.id == FromPin.connector_id)
+        .join(ToPin, ToPin.id == Wire.to_pin_id)
+        .join(ToConn, ToConn.id == ToPin.connector_id)
+        .filter(
+            ((FromConn.unit_id == c.lru_a_id) & (ToConn.unit_id == c.lru_b_id)) |
+            ((FromConn.unit_id == c.lru_b_id) & (ToConn.unit_id == c.lru_a_id))
+        )
+        .order_by(Wire.wire_number)
+        .all()
+    )
+    resp.wire_count = len(wires)
+    harness_ids_set = {w.harness_id for w in wires if w.harness_id}
+    resp.harness_ids = sorted(harness_ids_set)
+    if harness_ids_set:
+        resp.harness_names = [
+            n[0] for n in
+            db.query(WireHarness.name).filter(WireHarness.id.in_(harness_ids_set)).all()
+        ]
+
+    wire_responses = []
+    for w in wires:
+        wr = WireResponse.model_validate(w)
+        _populate_wire_joins(db, wr, w)
+        wire_responses.append(wr)
+    resp.wires = wire_responses
+
+    return resp
+
+
+# ── Harness Endpoint CRUD ───────────────────────────────────────────────
+
+@router.get("/harnesses/{har_pk}/endpoints", response_model=List[HarnessEndpointResponse])
+def list_harness_endpoints(
+    har_pk: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """List all endpoints for a harness with denormalized display fields."""
+    harness = db.query(WireHarness).filter(WireHarness.id == har_pk).first()
+    if not harness:
+        raise HTTPException(404, "Wire harness not found")
+
+    endpoints = (db.query(HarnessEndpoint)
+                 .filter(HarnessEndpoint.harness_id == har_pk)
+                 .order_by(HarnessEndpoint.id).all())
+    results = []
+    for ep in endpoints:
+        resp = HarnessEndpointResponse.model_validate(ep)
+        _populate_endpoint_joins(db, resp, ep)
+        results.append(resp)
+    return results
+
+
+@router.post("/harnesses/{har_pk}/endpoints", response_model=HarnessEndpointResponse, status_code=201)
+def create_harness_endpoint(
+    har_pk: int,
+    data: HarnessEndpointCreate,
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("interfaces.create")),
+):
+    """Add a new endpoint to an existing harness.
+
+    The router uses AutoGrowEngine._create_endpoint so the mating connector
+    cloning logic (gender-flip, pin cloning, etc.) stays in one place.
+    """
+    harness = db.query(WireHarness).filter(WireHarness.id == har_pk).first()
+    if not harness:
+        raise HTTPException(404, "Wire harness not found")
+
+    lru_conn = db.query(Connector).filter(Connector.id == data.lru_connector_id).first()
+    if not lru_conn:
+        raise HTTPException(404, "LRU connector not found")
+    if lru_conn.owner_type != "unit":
+        raise HTTPException(400, "lru_connector_id must reference a unit-owned connector")
+
+    # Uniqueness check — an LRU connector can only be on one harness
+    existing = db.query(HarnessEndpoint).filter(HarnessEndpoint.lru_connector_id == data.lru_connector_id).first()
+    if existing:
+        raise HTTPException(
+            409,
+            f"Connector {lru_conn.designator} is already plugged into harness {existing.harness_id}"
+        )
+
+    engine = AutoGrowEngine(db, harness.project_id, current_user)
+    ep = engine._create_endpoint(har_pk, lru_conn, label=data.label or f"P{len(harness.endpoints or []) + 1}" if hasattr(harness, 'endpoints') else (data.label or "P?"))
+    if data.tail_length_m is not None:
+        ep.tail_length_m = data.tail_length_m
+    if data.notes is not None:
+        ep.notes = data.notes
+    db.commit()
+    db.refresh(ep)
+
+    _audit(db, "harness.endpoint_added", "wire_harness", har_pk, current_user.id,
+           {"endpoint_id": ep.id, "lru_connector_id": data.lru_connector_id},
+           project_id=harness.project_id, request=request)
+
+    resp = HarnessEndpointResponse.model_validate(ep)
+    _populate_endpoint_joins(db, resp, ep)
+    return resp
+
+
+@router.patch("/endpoints/{ep_pk}", response_model=HarnessEndpointResponse)
+def update_harness_endpoint(
+    ep_pk: int,
+    data: HarnessEndpointUpdate,
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("interfaces.update")),
+):
+    ep = db.query(HarnessEndpoint).filter(HarnessEndpoint.id == ep_pk).first()
+    if not ep:
+        raise HTTPException(404, "Harness endpoint not found")
+    updates = data.model_dump(exclude_unset=True)
+    for field, value in updates.items():
+        setattr(ep, field, value)
+    db.commit()
+    db.refresh(ep)
+
+    harness = db.query(WireHarness).filter(WireHarness.id == ep.harness_id).first()
+    _audit(db, "harness.endpoint_updated", "wire_harness", ep.harness_id, current_user.id,
+           {"endpoint_id": ep.id, "fields": list(updates.keys())},
+           project_id=harness.project_id if harness else None, request=request)
+
+    resp = HarnessEndpointResponse.model_validate(ep)
+    _populate_endpoint_joins(db, resp, ep)
+    return resp
+
+
+@router.delete("/endpoints/{ep_pk}", status_code=200)
+def delete_harness_endpoint(
+    ep_pk: int,
+    confirm: bool = Query(False),
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("interfaces.delete")),
+):
+    """Delete a harness endpoint. This also deletes the mating connector
+    (and its pins via cascade) and any wires that touch this endpoint's
+    mating pins on either side.
+
+    Requires confirm=true if there are wires to avoid surprises.
+    """
+    ep = db.query(HarnessEndpoint).filter(HarnessEndpoint.id == ep_pk).first()
+    if not ep:
+        raise HTTPException(404, "Harness endpoint not found")
+
+    mating_connector_id = ep.mating_connector_id
+    harness_id = ep.harness_id
+
+    # Count wires touching this endpoint's mating pins
+    wire_count = (db.query(func.count(Wire.id))
+                  .join(Pin, (Pin.id == Wire.from_mating_pin_id) | (Pin.id == Wire.to_mating_pin_id))
+                  .filter(Pin.connector_id == mating_connector_id)
+                  .scalar()) or 0
+
+    if wire_count > 0 and not confirm:
+        return {"status": "preview", "impact": {"wires": wire_count}}
+
+    # Delete wires touching this endpoint's mating pins
+    if wire_count > 0:
+        wires_to_delete = (db.query(Wire)
+                           .join(Pin, (Pin.id == Wire.from_mating_pin_id) | (Pin.id == Wire.to_mating_pin_id))
+                           .filter(Pin.connector_id == mating_connector_id).all())
+        for w in wires_to_delete:
+            maybe_delete_connection_for_wire(db, w)
+            db.delete(w)
+        db.flush()
+
+    # Delete the endpoint (CASCADE in migration drops mating connector + its pins)
+    db.delete(ep)
+    # Also delete the mating connector explicitly (belt and suspenders since
+    # the FK is ON DELETE CASCADE the other way — harness_endpoints cascades
+    # from connectors deletion, not the other direction)
+    mating = db.query(Connector).filter(Connector.id == mating_connector_id).first()
+    if mating and mating.owner_type == "harness":
+        # Its pins will cascade via the pins.connector_id FK
+        db.delete(mating)
+
+    db.commit()
+
+    harness = db.query(WireHarness).filter(WireHarness.id == harness_id).first()
+    _audit(db, "harness.endpoint_deleted", "wire_harness", harness_id, current_user.id,
+           {"endpoint_id": ep_pk, "wires_removed": wire_count},
+           project_id=harness.project_id if harness else None, request=request)
+
+    return {"status": "deleted", "id": ep_pk, "wires_removed": wire_count}

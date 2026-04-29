@@ -25,11 +25,11 @@ import { useParams, useRouter } from 'next/navigation';
 import {
   ArrowLeft, Loader2, Edit3, Save, X, Plus, Trash2, RefreshCw,
   Box, Cpu, Cable, Radio, Zap, Shield, Network, ChevronRight,
-  AlertTriangle, Search,
+  AlertTriangle, Search, GitMerge,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { interfaceAPI } from '@/lib/interface-api';
-import type { SystemDetail, UnitSummary } from '@/lib/interface-types';
+import type { SystemDetail, UnitSummary, Connection, WireHarness } from '@/lib/interface-types';
 
 // ══════════════════════════════════════
 //  Constants
@@ -365,6 +365,206 @@ function AddUnitModal({ projectId, systemId, onClose, onCreated }: {
 //  Main Page
 // ══════════════════════════════════════
 
+// ══════════════════════════════════════════════════════════════
+//  Phase 3a: System-scoped Connections + Harnesses section
+// ══════════════════════════════════════════════════════════════
+
+/**
+ * Two sub-panels (Connections and Harnesses) scoped to one system.
+ *
+ * Per Mason's spec:
+ *  - Connections: show connection rows where at least one endpoint LRU is
+ *    in this system. The backend's ?system_id filter already enforces
+ *    that rule, so we render whatever the API returned.
+ *  - Harnesses: show harnesses where at least one endpoint LRU is in
+ *    this system. Backend's harness endpoint doesn't yet accept a system
+ *    filter, so we filter client-side using the system's unit id set.
+ *
+ * Both are read-only here — click through to the connection detail /
+ * harness detail page for edits. Kept as a component (not inline JSX)
+ * so the section is self-contained and easy to move around later.
+ */
+function SystemConnectionsSection({
+  projectId, systemId, systemUnitIds,
+  connections, harnesses,
+}: {
+  projectId: number;
+  systemId: number;
+  systemUnitIds: Set<number>;
+  connections: Connection[];
+  harnesses: WireHarness[];
+}) {
+  const router = useRouter();
+  const p = `/projects/${projectId}`;
+
+  // Filter harnesses: include one if at least one of its (from, to) units
+  // is in this system. Defensive against null unit_ids (shouldn't happen
+  // but we handle it rather than crash).
+  const systemHarnesses = useMemo(() => {
+    return harnesses.filter(h => {
+      const f = h.from_unit_id;
+      const t = h.to_unit_id;
+      return (f != null && systemUnitIds.has(f)) ||
+             (t != null && systemUnitIds.has(t));
+    });
+  }, [harnesses, systemUnitIds]);
+
+  if (connections.length === 0 && systemHarnesses.length === 0) {
+    // No wiring at all in this system — skip the section entirely rather
+    // than showing two empty-state blocks.
+    return null;
+  }
+
+  return (
+    <div className="space-y-6 mt-8">
+      {/* ── Connections ── */}
+      <div>
+        <div className="flex items-center gap-2 mb-3">
+          <GitMerge className="h-4 w-4 text-cyan-400" />
+          <h2 className="text-sm font-bold text-slate-200">Connections</h2>
+          <span className="rounded-full bg-astra-surface-alt px-2 py-0.5 text-[10px] font-bold text-slate-500">
+            {connections.length}
+          </span>
+        </div>
+
+        {connections.length === 0 ? (
+          <div className="rounded-xl border border-astra-border bg-astra-surface py-6 text-center">
+            <p className="text-sm text-slate-500">
+              No connections in this system yet.
+            </p>
+          </div>
+        ) : (
+          <div className="overflow-hidden rounded-xl border border-astra-border bg-astra-surface">
+            <table className="w-full text-[12px]">
+              <thead>
+                <tr className="border-b border-astra-border bg-astra-surface-alt">
+                  <th className="px-3 py-2 text-left font-semibold text-slate-400">LRU Pair</th>
+                  <th className="px-3 py-2 text-left font-semibold text-slate-400 w-20">Wires</th>
+                  <th className="px-3 py-2 text-left font-semibold text-slate-400">Harnesses</th>
+                  <th className="px-3 py-2 w-10" />
+                </tr>
+              </thead>
+              <tbody>
+                {connections.map(c => (
+                  <tr
+                    key={c.id}
+                    onClick={() => router.push(`${p}/interfaces/connection/${c.id}`)}
+                    className="border-b border-astra-border hover:bg-astra-surface-alt/50 cursor-pointer transition">
+                    <td className="px-3 py-2">
+                      <div className="flex items-center gap-2 font-mono">
+                        <span className="text-cyan-300">{c.lru_a_designation}</span>
+                        <span className="text-slate-500">—</span>
+                        <span className="text-violet-300">{c.lru_b_designation}</span>
+                      </div>
+                    </td>
+                    <td className="px-3 py-2">
+                      <span className="rounded-full bg-astra-surface-alt px-2 py-0.5 text-[11px] font-bold text-slate-300">
+                        {c.wire_count}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2">
+                      <div className="flex flex-wrap gap-1">
+                        {(c.harness_names || []).slice(0, 3).map((name, i) => (
+                          <span
+                            key={c.harness_ids?.[i] || i}
+                            className="rounded-full bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 text-[10px] text-emerald-300">
+                            {name}
+                          </span>
+                        ))}
+                        {(c.harness_names || []).length > 3 && (
+                          <span className="text-[10px] text-slate-500 self-center">
+                            +{c.harness_names.length - 3}
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-3 py-2">
+                      <ChevronRight className="h-4 w-4 text-slate-600" />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* ── Harnesses ── */}
+      <div>
+        <div className="flex items-center gap-2 mb-3">
+          <Cable className="h-4 w-4 text-emerald-400" />
+          <h2 className="text-sm font-bold text-slate-200">Harnesses</h2>
+          <span className="rounded-full bg-astra-surface-alt px-2 py-0.5 text-[10px] font-bold text-slate-500">
+            {systemHarnesses.length}
+          </span>
+        </div>
+
+        {systemHarnesses.length === 0 ? (
+          <div className="rounded-xl border border-astra-border bg-astra-surface py-6 text-center">
+            <p className="text-sm text-slate-500">
+              No harnesses in this system yet.
+            </p>
+          </div>
+        ) : (
+          <div className="overflow-hidden rounded-xl border border-astra-border bg-astra-surface">
+            <table className="w-full text-[12px]">
+              <thead>
+                <tr className="border-b border-astra-border bg-astra-surface-alt">
+                  <th className="px-3 py-2 text-left font-semibold text-slate-400">Harness</th>
+                  <th className="px-3 py-2 text-left font-semibold text-slate-400">Endpoints</th>
+                  <th className="px-3 py-2 text-left font-semibold text-slate-400 w-20">Wires</th>
+                  <th className="px-3 py-2 w-10" />
+                </tr>
+              </thead>
+              <tbody>
+                {systemHarnesses.map(h => (
+                  <tr
+                    key={h.id}
+                    onClick={() => router.push(`${p}/interfaces/harness/${h.id}`)}
+                    className="border-b border-astra-border hover:bg-astra-surface-alt/50 cursor-pointer transition">
+                    <td className="px-3 py-2">
+                      <div className="font-semibold text-slate-200">{h.name}</div>
+                      {h.harness_id && (
+                        <div className="text-[10px] font-mono text-slate-500">{h.harness_id}</div>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-[11px] text-slate-400">
+                      <span className="font-mono text-emerald-400">
+                        {h.from_unit_designation}
+                      </span>
+                      <span className="text-slate-600 mx-1">—</span>
+                      <span className="font-mono text-violet-400">
+                        {h.to_unit_designation}
+                      </span>
+                      {h.endpoints && h.endpoints.length > 2 && (
+                        <span className="ml-2 text-[10px] text-amber-400">
+                          +{h.endpoints.length - 2} more
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2">
+                      <span className="rounded-full bg-astra-surface-alt px-2 py-0.5 text-[11px] font-bold text-slate-300">
+                        {h.wire_count}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2">
+                      <ChevronRight className="h-4 w-4 text-slate-600" />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════
+//  Main page
+// ══════════════════════════════════════════════════════════════
+
 export default function SystemDetailPage() {
   const params = useParams();
   const router = useRouter();
@@ -384,15 +584,33 @@ export default function SystemDetailPage() {
   const [unitSearch, setUnitSearch]       = useState('');
   const [msg, setMsg]                     = useState('');
 
+  // Phase 3a: System-scoped Connections + Harnesses.
+  // Per spec, a Connection is shown in this system if AT LEAST ONE of its
+  // two LRUs belongs to this system. The backend's ?system_id filter
+  // applies that rule server-side. Harnesses are filtered client-side
+  // against the system's unit list.
+  const [connections, setConnections] = useState<Connection[]>([]);
+  const [harnesses, setHarnesses]     = useState<WireHarness[]>([]);
+
   // ── Fetch ──
   const fetchSystem = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await interfaceAPI.getSystem(systemId);
-      setSystem(res.data);
+      // Parallel fetch: system detail + system-scoped connections + all
+      // harnesses for this project. We filter harnesses to this system
+      // below (one-side-in-system rule) since the harness list endpoint
+      // doesn't yet have a system_id filter server-side.
+      const [sysRes, connRes, harnRes] = await Promise.all([
+        interfaceAPI.getSystem(systemId),
+        interfaceAPI.listConnections(projectId, systemId).catch(() => ({ data: [] })),
+        interfaceAPI.listHarnesses(projectId).catch(() => ({ data: [] })),
+      ]);
+      setSystem(sysRes.data);
+      setConnections(connRes.data || []);
+      setHarnesses(harnRes.data || []);
     } catch { }
     setLoading(false);
-  }, [systemId]);
+  }, [systemId, projectId]);
 
   useEffect(() => { fetchSystem(); }, [fetchSystem]);
 
@@ -752,6 +970,17 @@ export default function SystemDetailPage() {
           ))}
         </div>
       )}
+
+      {/* ════════════════════════════════════════════════════════════ */}
+      {/*  Phase 3a: System-scoped Connections + Harnesses             */}
+      {/* ════════════════════════════════════════════════════════════ */}
+      <SystemConnectionsSection
+        projectId={projectId}
+        systemId={systemId}
+        systemUnitIds={new Set((system?.units || []).map(u => u.id))}
+        connections={connections}
+        harnesses={harnesses}
+      />
 
       {/* ─── Modals ─── */}
       {showAddUnit && (

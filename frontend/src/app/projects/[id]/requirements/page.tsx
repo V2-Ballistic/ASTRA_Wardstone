@@ -15,19 +15,19 @@
  *   7. All internal links use project-scoped URLs
  */
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import {
   Search, Plus, Loader2, RefreshCw, ChevronDown, ChevronRight,
   List, GitBranch, AlertTriangle, CheckCircle, Archive, Sparkles,
-  Copy, FileText, Wand2, Download, CheckSquare, Square, X,
+  Copy, FileText, Wand2, Download, CheckSquare, Square, X, Trash2,
 } from 'lucide-react';
 import {
   STATUS_COLORS, STATUS_LABELS, LEVEL_COLORS, LEVEL_LABELS, PRIORITY_COLORS,
   type RequirementStatus, type RequirementLevel, type Priority, type Requirement,
 } from '@/lib/types';
-import { requirementsAPI, projectsAPI, baselinesAPI } from '@/lib/api';
+import api, { requirementsAPI, projectsAPI, baselinesAPI } from '@/lib/api';
 
 // Optional AI API
 let aiAPI: any = null;
@@ -258,8 +258,9 @@ function DuplicateBanner({ count, projectId }: { count: number; projectId: numbe
 //  Bulk Actions Bar
 // ══════════════════════════════════════
 
-function BulkActionsBar({ count, onClear, onQualityCheck, onExport }: {
+function BulkActionsBar({ count, onClear, onQualityCheck, onExport, onDelete }: {
   count: number; onClear: () => void; onQualityCheck: () => void; onExport: () => void;
+  onDelete: () => void;
 }) {
   if (count === 0) return null;
   return (
@@ -280,6 +281,13 @@ function BulkActionsBar({ count, onClear, onQualityCheck, onExport }: {
         className="flex items-center gap-1.5 rounded-lg border border-blue-500/30 px-3 py-1.5 text-[11px] font-semibold text-blue-400 transition hover:bg-blue-500/10"
       >
         <Download className="h-3 w-3" /> Export
+      </button>
+      <button
+        onClick={onDelete}
+        className="flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/5 px-3 py-1.5 text-[11px] font-semibold text-rose-300 transition hover:bg-rose-500/15"
+        title="Soft-delete the selected requirements"
+      >
+        <Trash2 className="h-3 w-3" /> Delete ({count})
       </button>
       <button
         onClick={onClear}
@@ -360,6 +368,17 @@ export default function ProjectRequirementsPage() {
   const [creatingBaseline, setCreatingBaseline] = useState(false);
   const [baselineMsg, setBaselineMsg] = useState('');
 
+  // ── Bulk delete modal ──
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [deleteMsg, setDeleteMsg] = useState('');
+
+  // ── Abort ref for fetchRequirements ──
+  // Prevents "Failed to load requirements" false positives when the user
+  // navigates away or quickly switches pages — the old in-flight request is
+  // canceled and its rejection is swallowed rather than shown as an error.
+  const abortRef = useRef<AbortController | null>(null);
+
   // ── Debounced search ──
   useEffect(() => {
     const t = setTimeout(() => setSearch(searchInput), 250);
@@ -376,13 +395,29 @@ export default function ProjectRequirementsPage() {
   // ── Fetch requirements ──
   const fetchRequirements = useCallback(async () => {
     if (!projectId) return;
+    // Abort prior fetch so its setState calls won't overwrite fresh state.
+    // Note: we don't pass signal into requirementsAPI.list because the API
+    // wrapper's 2nd arg is URL params, not axios config — we can't cancel
+    // the request itself. What we CAN do is skip state updates when the
+    // signal is aborted, which eliminates the false "Failed to load" error.
+    if (abortRef.current) abortRef.current.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setLoading(true);
     setError('');
     try {
       const res = await requirementsAPI.list(projectId, { limit: 200 });
+      if (controller.signal.aborted) return;
       setRequirements(Array.isArray(res.data) ? res.data : []);
     } catch (e: any) {
-      // Log full error for dev diagnosis (visible in browser console)
+      if (controller.signal.aborted) return;
+      const isAbort =
+        e?.name === 'CanceledError' ||
+        e?.code === 'ERR_CANCELED' ||
+        e?.message === 'canceled';
+      if (isAbort) return;
+
       console.error('[requirements] list failed:', e);
       const status = e?.response?.status;
       const detail = e?.response?.data?.detail;
@@ -392,11 +427,15 @@ export default function ProjectRequirementsPage() {
         status ? `Failed to load requirements (HTTP ${status})` :
         'Failed to load requirements — is the backend running?'
       );
+    } finally {
+      if (!controller.signal.aborted) setLoading(false);
     }
-    setLoading(false);
   }, [projectId]);
 
-  useEffect(() => { fetchRequirements(); }, [fetchRequirements]);
+  useEffect(() => {
+    fetchRequirements();
+    return () => { abortRef.current?.abort(); };
+  }, [fetchRequirements]);
 
   // ── Fetch duplicate count (non-blocking) ──
   useEffect(() => {
@@ -409,8 +448,15 @@ export default function ProjectRequirementsPage() {
   }, [projectId, requirements.length]);
 
   // ── Filtering ──
+  // Workflow rule: requirements on this page are the "approved pipeline" —
+  // once a req has been approved from the Auto Requirements dashboard (or
+  // created directly), it flows here as draft/under_review/approved/etc.
+  // We hide pending_review (still on Auto Requirements page) and deleted
+  // (soft-removed via bulk delete or the per-row delete).
   const filtered = useMemo(() => {
-    let result = requirements;
+    let result = requirements.filter(
+      (r) => r.status !== 'pending_review' && r.status !== 'deleted'
+    );
     if (search) {
       const s = search.toLowerCase();
       result = result.filter(
@@ -477,6 +523,40 @@ export default function ProjectRequirementsPage() {
     router.push(`${p}/reports`);
   };
 
+  // ── Bulk delete ──
+  // Soft-delete selected requirements. Posts the list of IDs to the new
+  // /requirements/bulk-delete endpoint which records history per item.
+  // Runs the fetch again after to refresh the list (deleted items filter out).
+  const handleBulkDelete = async () => {
+    if (selected.size === 0) return;
+    setBulkDeleting(true);
+    setDeleteMsg('');
+    try {
+      const res = await api.post('/requirements/bulk-delete', {
+        requirement_ids: [...selected],
+      });
+      const { deleted, skipped_already_deleted, not_found } = res.data || {};
+      const parts: string[] = [];
+      if (deleted) parts.push(`${deleted} deleted`);
+      if (skipped_already_deleted) parts.push(`${skipped_already_deleted} already deleted`);
+      if (not_found) parts.push(`${not_found} not found`);
+      setDeleteMsg(parts.join(', ') || 'No changes');
+      setSelected(new Set());
+      setConfirmDelete(false);
+      // Give the user a second to see the result before it fades
+      setTimeout(() => setDeleteMsg(''), 4000);
+      fetchRequirements();
+    } catch (e: any) {
+      console.error('[requirements] bulk delete failed:', e);
+      setDeleteMsg(
+        e?.response?.data?.detail ||
+        e?.message ||
+        'Bulk delete failed'
+      );
+    }
+    setBulkDeleting(false);
+  };
+
   // ── Navigate to requirement ──
   const navigateToReq = (id: number) => router.push(`${p}/requirements/${id}`);
 
@@ -535,8 +615,16 @@ export default function ProjectRequirementsPage() {
         onClear={clearSelection}
         onQualityCheck={handleBulkQualityCheck}
         onExport={handleBulkExport}
+        onDelete={() => setConfirmDelete(true)}
       />
 
+      {/* Bulk delete result toast (appears after a successful delete) */}
+      {deleteMsg && (
+        <div className="mb-4 rounded-xl border border-emerald-500/20 bg-emerald-500/5 px-4 py-2.5 text-xs text-emerald-300 flex items-center gap-2">
+          <CheckCircle className="h-3.5 w-3.5" />
+          {deleteMsg}
+        </div>
+      )}
       {/* Error */}
       {error && !loading && (
         <div className="mb-4 rounded-xl border border-red-500/30 bg-red-500/10 p-4">
@@ -772,6 +860,49 @@ export default function ProjectRequirementsPage() {
                 className="flex items-center gap-2 rounded-lg bg-blue-500 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-600 disabled:opacity-50">
                 {creatingBaseline ? <Loader2 className="h-3 w-3 animate-spin" /> : <Archive className="h-3 w-3" />}
                 {creatingBaseline ? 'Creating...' : `Snapshot ${requirements.length} Reqs`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk delete confirmation modal */}
+      {confirmDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+             onClick={() => !bulkDeleting && setConfirmDelete(false)}>
+          <div className="w-full max-w-md rounded-xl border border-rose-500/30 bg-astra-surface p-5 shadow-2xl"
+               onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start gap-3">
+              <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-rose-500/15">
+                <Trash2 className="h-5 w-5 text-rose-400" />
+              </div>
+              <div className="flex-1">
+                <h3 className="text-sm font-bold text-slate-100">
+                  Delete {selected.size} requirement{selected.size !== 1 ? 's' : ''}?
+                </h3>
+                <p className="mt-1 text-xs text-slate-400">
+                  The selected requirement{selected.size !== 1 ? 's' : ''} will be soft-deleted.
+                  Audit history is preserved and each deletion is logged, but the item{selected.size !== 1 ? 's' : ''}
+                  will no longer appear in this list, reports, or traceability views.
+                </p>
+                <p className="mt-2 text-[11px] text-slate-500">
+                  This cannot be undone from the UI. An admin can restore via the database if needed.
+                </p>
+              </div>
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                onClick={() => setConfirmDelete(false)}
+                disabled={bulkDeleting}
+                className="rounded-lg border border-astra-border px-4 py-1.5 text-xs font-semibold text-slate-300 hover:bg-astra-surface-alt disabled:opacity-40">
+                Cancel
+              </button>
+              <button
+                onClick={handleBulkDelete}
+                disabled={bulkDeleting}
+                className="flex items-center gap-1.5 rounded-lg bg-rose-500/20 px-4 py-1.5 text-xs font-bold text-rose-300 hover:bg-rose-500/30 disabled:opacity-40">
+                {bulkDeleting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                {bulkDeleting ? 'Deleting...' : `Delete ${selected.size}`}
               </button>
             </div>
           </div>

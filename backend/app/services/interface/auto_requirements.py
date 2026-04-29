@@ -1131,7 +1131,47 @@ class AutoRequirementGenerator:
         template_name: Optional[str] = None,
         req_type: str = "interface",
     ) -> Requirement:
-        """Create requirement through standard ASTRA pipeline."""
+        """Create requirement through standard ASTRA pipeline.
+
+        Idempotency: if an auto-generated, non-deleted requirement already
+        exists for this (source_type, source_id, template_name) tuple in this
+        project, return it instead of creating a duplicate. This makes repeated
+        'Generate Requirements' clicks safe — the second click is a no-op.
+        """
+
+        # ── Idempotency check ──
+        # Look for existing non-deleted auto-generated requirement tied to this
+        # exact source entity + template. If found, reuse it.
+        has_valid_source = (
+            isinstance(source_type, str) and source_type.strip() != ""
+            and isinstance(source_id, int) and source_id > 0
+            and isinstance(template_name, str) and template_name.strip() != ""
+        )
+        if has_valid_source:
+            existing = (
+                self.db.query(Requirement)
+                .join(
+                    InterfaceRequirementLink,
+                    InterfaceRequirementLink.requirement_id == Requirement.id,
+                )
+                .filter(
+                    Requirement.project_id == self.project_id,
+                    Requirement.status != "deleted",
+                    InterfaceRequirementLink.entity_type == source_type,
+                    InterfaceRequirementLink.entity_id == source_id,
+                    InterfaceRequirementLink.auto_req_template == template_name,
+                    InterfaceRequirementLink.auto_generated.is_(True),
+                )
+                .first()
+            )
+            if existing:
+                logger.info(
+                    "auto-req idempotency: reusing existing %s for "
+                    "(source_type=%s, source_id=%d, template=%s)",
+                    existing.req_id, source_type, source_id, template_name,
+                )
+                # Don't append to self.generated_reqs — nothing was created.
+                return existing
 
         # Quality check
         quality = check_requirement_quality(statement, title, rationale)

@@ -399,6 +399,12 @@ class PinCreate(BaseModel):
     esd_protection: Optional[str] = Field(None, max_length=50)
     description: Optional[str] = None
     notes: Optional[str] = None
+    # Mating LRU — the peer unit this pin talks to through the wire on the
+    # other side of the connector. FK to units.id so renaming the unit
+    # propagates everywhere. Nullable because not every pin connects to
+    # another in-project unit (spare pins, chassis grounds, external
+    # test-equipment interfaces, etc.).
+    mating_unit_id: Optional[int] = None
 
 
 class PinUpdate(BaseModel):
@@ -424,6 +430,10 @@ class PinUpdate(BaseModel):
     esd_protection: Optional[str] = Field(None, max_length=50)
     description: Optional[str] = None
     notes: Optional[str] = None
+    # Mating LRU — can be cleared by sending null, or reassigned to a
+    # different unit. Router validates the target unit exists and belongs
+    # to the same project as this pin's connector.
+    mating_unit_id: Optional[int] = None
 
 
 class PinBatchCreate(BaseModel):
@@ -483,6 +493,12 @@ class PinResponse(BaseModel):
     notes: Optional[str]
     connector_id: int
     created_at: datetime
+    # Mating LRU (FK + denormalized display fields for the UI so it doesn't
+    # have to do a second round-trip). Populated by router endpoints when
+    # a mating_unit_id is set.
+    mating_unit_id: Optional[int] = None
+    mating_unit_designation: Optional[str] = None
+    mating_unit_name: Optional[str] = None
     # Computed
     bus_assignment: Optional[PinBusAssignmentResponse] = None
 
@@ -600,7 +616,12 @@ class ConnectorResponse(BaseModel):
     connector_manufacturer: Optional[str]
     backshell_type: Optional[str]
     notes: Optional[str]
-    unit_id: int
+    # Ownership: connectors now belong to either a Unit (LRU-side, the old
+    # behavior) or a Harness (mating connector, Phase 1 addition). unit_id
+    # is nullable when owner_type='harness'. DB check constraint enforces
+    # exactly one ownership at a time.
+    unit_id: Optional[int] = None
+    owner_type: str = "unit"
     project_id: Optional[int]
     created_at: datetime
     # Computed
@@ -1145,7 +1166,13 @@ class WireResponse(BaseModel):
     heat_shrink_size: Optional[str]
     notes: Optional[str]
     created_at: datetime
-    # Computed joins
+    # Phase 1: the matching pin on the harness's mating connector at each end.
+    # Null until the wire is assigned to a harness endpoint (e.g., freshly
+    # created wires before auto-grow lands them). Kept in sync with the
+    # LRU-side pin references — same pin_number on the mating connector.
+    from_mating_pin_id: Optional[int] = None
+    to_mating_pin_id: Optional[int] = None
+    # Computed joins (LRU side)
     from_pin_number: Optional[str] = None
     from_signal_name: Optional[str] = None
     from_connector_designator: Optional[str] = None
@@ -1154,6 +1181,9 @@ class WireResponse(BaseModel):
     to_signal_name: Optional[str] = None
     to_connector_designator: Optional[str] = None
     to_unit_designation: Optional[str] = None
+    # Computed joins (mating side) — populated when mating refs exist
+    from_mating_connector_designator: Optional[str] = None
+    to_mating_connector_designator: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -1224,6 +1254,16 @@ class WireHarnessUpdate(BaseModel):
     drawing_revision: Optional[str] = Field(None, max_length=10)
     approved_by: Optional[str] = Field(None, max_length=100)
     approval_date: Optional[datetime] = None
+    # Phase 1: new Harness Overview attributes
+    shielding_class: Optional[str] = Field(None, max_length=50)
+    sleeve_type: Optional[str] = Field(None, max_length=50)
+    operating_temp_min_c: Optional[float] = None
+    operating_temp_max_c: Optional[float] = None
+    min_bend_radius_mm: Optional[float] = None
+    weight_g_per_m: Optional[float] = None
+    drain_wire_spec: Optional[str] = Field(None, max_length=100)
+    service_loop_m: Optional[float] = None
+    mil_spec: Optional[str] = Field(None, max_length=100)
 
 
 class WireHarnessResponse(BaseModel):
@@ -1257,19 +1297,35 @@ class WireHarnessResponse(BaseModel):
     drawing_revision: Optional[str]
     approved_by: Optional[str]
     approval_date: Optional[datetime]
-    from_unit_id: int
-    from_connector_id: int
-    to_unit_id: int
-    to_connector_id: int
+    # Legacy 2-endpoint fields — still populated for backward compat during
+    # the Phase 1 → Phase 3 transition. New code should read from the
+    # endpoints[] list below instead of these fields.
+    from_unit_id: Optional[int] = None
+    from_connector_id: Optional[int] = None
+    to_unit_id: Optional[int] = None
+    to_connector_id: Optional[int] = None
     project_id: Optional[int]
     created_at: datetime
     updated_at: datetime
+    # Phase 1: new Harness Overview attributes (match migration columns)
+    shielding_class: Optional[str] = None
+    sleeve_type: Optional[str] = None
+    operating_temp_min_c: Optional[float] = None
+    operating_temp_max_c: Optional[float] = None
+    min_bend_radius_mm: Optional[float] = None
+    weight_g_per_m: Optional[float] = None
+    drain_wire_spec: Optional[str] = None
+    service_loop_m: Optional[float] = None
+    mil_spec: Optional[str] = None
     # Computed joins
     wire_count: int = 0
     from_unit_designation: Optional[str] = None
     from_connector_designator: Optional[str] = None
     to_unit_designation: Optional[str] = None
     to_connector_designator: Optional[str] = None
+    # Phase 1: endpoint list — populated by the router from harness_endpoints
+    # rows. Replaces from/to_connector_id semantics for multi-endpoint harnesses.
+    endpoints: List["HarnessEndpointResponse"] = []
 
     class Config:
         from_attributes = True
@@ -1277,6 +1333,203 @@ class WireHarnessResponse(BaseModel):
 
 class WireHarnessDetail(WireHarnessResponse):
     wires: List[WireResponse] = []
+
+
+# ══════════════════════════════════════════════════════════════
+#  10b. Phase 1: Harness Endpoints (multi-endpoint trunk+branch model)
+# ══════════════════════════════════════════════════════════════
+
+class HarnessEndpointCreate(BaseModel):
+    """Add a new endpoint to an existing harness.
+
+    The router creates the mating connector automatically by cloning the
+    LRU-side connector spec (gender flipped). Caller only supplies the LRU
+    connector id and an optional label / tail length.
+    """
+    harness_id: int
+    lru_connector_id: int
+    label: Optional[str] = Field(None, max_length=40)
+    tail_length_m: Optional[float] = None
+    notes: Optional[str] = None
+
+
+class HarnessEndpointUpdate(BaseModel):
+    label: Optional[str] = Field(None, max_length=40)
+    tail_length_m: Optional[float] = None
+    notes: Optional[str] = None
+
+
+class HarnessEndpointResponse(BaseModel):
+    id: int
+    harness_id: int
+    mating_connector_id: int
+    lru_connector_id: Optional[int]
+    label: Optional[str]
+    tail_length_m: Optional[float]
+    notes: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+    # Computed joins — filled in by the router for UI convenience
+    mating_connector_designator: Optional[str] = None
+    mating_connector_type: Optional[str] = None
+    lru_connector_designator: Optional[str] = None
+    lru_unit_id: Optional[int] = None
+    lru_unit_designation: Optional[str] = None
+    lru_unit_name: Optional[str] = None
+    wire_count: int = 0
+
+    class Config:
+        from_attributes = True
+
+
+# Needed for the forward reference on WireHarnessResponse.endpoints
+WireHarnessResponse.model_rebuild()
+
+
+# ══════════════════════════════════════════════════════════════
+#  10c. Phase 1: Connections (bidirectional LRU-pair rollup)
+# ══════════════════════════════════════════════════════════════
+
+class ConnectionResponse(BaseModel):
+    """A logical "these two LRUs are wired together" row.
+
+    Auto-maintained by the wire-create/delete path. Canonical ordering
+    (lru_a_id < lru_b_id) is enforced at the DB level so the pair
+    {FCC, IMU} always stores as one row regardless of which end the
+    user started from.
+    """
+    id: int
+    project_id: int
+    lru_a_id: int
+    lru_b_id: int
+    created_at: datetime
+    updated_at: datetime
+    # Computed joins for the UI
+    lru_a_designation: Optional[str] = None
+    lru_a_name: Optional[str] = None
+    lru_b_designation: Optional[str] = None
+    lru_b_name: Optional[str] = None
+    wire_count: int = 0
+    harness_ids: List[int] = []
+    harness_names: List[str] = []
+
+    class Config:
+        from_attributes = True
+
+
+class ConnectionDetail(ConnectionResponse):
+    """Connection with its full wire list — used by the Connection detail page.
+
+    Wires are grouped under the two connectors on each side. The frontend
+    renders one pin map per connector pair.
+    """
+    wires: List[WireResponse] = []
+
+
+# ══════════════════════════════════════════════════════════════
+#  10d. Phase 1: Auto-Grow Engine request/response
+# ══════════════════════════════════════════════════════════════
+
+class AutoGrowPair(BaseModel):
+    """A single proposed wire in an auto-grow batch.
+
+    The engine takes a list of these and figures out which harness each
+    wire should land on — creating new harnesses or extending existing
+    ones as needed. Ambiguous cases are surfaced to the caller.
+    """
+    from_lru_pin_id: int
+    to_lru_pin_id: int
+    # Hint carried through from the auto-wire strategy so we can label wires
+    signal_name: Optional[str] = None
+    wire_type: Optional[str] = None
+    wire_gauge: Optional[str] = None
+
+
+class AmbiguityDecision(BaseModel):
+    """User's choice on an ambiguous harness merge.
+
+    When both LRUs of a proposed wire are already on different harnesses,
+    the engine pauses and returns the ambiguity. The caller re-submits with
+    a list of decisions keyed by the ambiguity's index in the original batch.
+    """
+    pair_index: int
+    # One of: "merge_into_a", "merge_into_b", "new_harness", "cancel"
+    action: str
+    # When action='new_harness', optionally supply a name. Otherwise auto-named.
+    new_harness_name: Optional[str] = Field(None, max_length=255)
+
+
+class AutoGrowRequest(BaseModel):
+    project_id: int
+    pairs: List[AutoGrowPair] = Field(..., min_length=1)
+    # Optional resolutions for ambiguous pairs from a previous preview call.
+    # Empty on first call; populated when re-submitting after the user has
+    # resolved each ambiguity modal.
+    decisions: List[AmbiguityDecision] = []
+
+
+class AutoGrowAmbiguity(BaseModel):
+    """One ambiguous decision surfaced to the user."""
+    pair_index: int
+    from_lru_pin_id: int
+    to_lru_pin_id: int
+    from_lru_unit_id: int
+    from_lru_unit_designation: str
+    to_lru_unit_id: int
+    to_lru_unit_designation: str
+    # The two candidate harnesses
+    harness_a_id: int
+    harness_a_name: str
+    harness_a_wire_count: int
+    harness_a_endpoint_count: int
+    harness_b_id: int
+    harness_b_name: str
+    harness_b_wire_count: int
+    harness_b_endpoint_count: int
+    # Phase 2a enrichments — UI consumes these directly for the modal
+    harness_a_lru_designations: List[str] = Field(default_factory=list)
+    harness_b_lru_designations: List[str] = Field(default_factory=list)
+    # Which actions the user may pick. 'new_harness' is only in this list
+    # when BOTH LRU connectors on the pair are un-claimed. The UI hides or
+    # disables options not in this list. 'cancel' is always present.
+    valid_actions: List[str] = Field(default_factory=list)
+    # When new_harness isn't in valid_actions, this field explains why —
+    # UI can show a greyed-out option with this as the tooltip.
+    new_harness_disallowed_reason: Optional[str] = None
+
+
+class AutoGrowResult(BaseModel):
+    """Outcome of an auto-grow call.
+
+    If `ambiguities` is non-empty, the caller must resolve each one and
+    resubmit. Otherwise `wires_created` / `harnesses_created` /
+    `endpoints_added` describe what changed.
+    """
+    wires_created: int = 0
+    harnesses_created: int = 0
+    endpoints_added: int = 0
+    ambiguities: List[AutoGrowAmbiguity] = []
+    # For connection-page refresh
+    connections_touched: List[int] = []
+    # Echo back so UI can highlight
+    new_wire_ids: List[int] = []
+    new_harness_ids: List[int] = []
+    # Phase 2b — pairs the engine skipped and why. Empty means every pair
+    # was either turned into a wire or surfaced as an ambiguity.
+    skipped: List["AutoGrowSkipped"] = []
+
+
+class AutoGrowSkipped(BaseModel):
+    """One pair that the engine couldn't process — bad pin id, same LRU
+    on both sides, duplicate wire, etc. Surfaced so the UI can tell the
+    user which pairs didn't result in wires and why."""
+    pair_index: int
+    from_lru_pin_id: int
+    to_lru_pin_id: int
+    reason: str
+
+
+AutoGrowResult.model_rebuild()
 
 
 # ══════════════════════════════════════════════════════════════

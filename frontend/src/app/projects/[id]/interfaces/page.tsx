@@ -16,7 +16,7 @@ import { useParams, useRouter } from 'next/navigation';
 import {
   Loader2, RefreshCw, Plus, Search, ChevronRight, ChevronDown,
   Cable, Network, Box, Zap, Shield, Radio, Layers, Cpu,
-  X, ArrowRight, Grid3X3, AlertTriangle, FileSpreadsheet,
+  X, ArrowRight, Grid3X3, AlertTriangle, FileSpreadsheet, GitMerge,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { projectsAPI } from '@/lib/api';
@@ -24,6 +24,7 @@ import { interfaceAPI } from '@/lib/interface-api';
 import type {
   System, SystemDetail, UnitSummary, Connector, WireHarness,
   N2MatrixResponse, N2MatrixCell, InterfaceCoverageResponse,
+  Connection,
 } from '@/lib/interface-types';
 
 // ══════════════════════════════════════
@@ -497,7 +498,7 @@ function N2Matrix({ data }: { data: N2MatrixResponse | null }) {
 //  Tab type
 // ══════════════════════════════════════
 
-type Tab = 'systems' | 'connections' | 'n2matrix';
+type Tab = 'systems' | 'connections' | 'harnesses' | 'n2matrix';
 
 // ══════════════════════════════════════
 //  Main Page
@@ -517,6 +518,14 @@ export default function InterfacesPage() {
   const [systems, setSystems]     = useState<System[]>([]);
   const [units, setUnits]         = useState<UnitSummary[]>([]);
   const [harnesses, setHarnesses] = useState<WireHarness[]>([]);
+  /**
+   * Phase 3a: Connections are the new bidirectional LRU-pair rollup.
+   * Auto-maintained by the backend, so this is read-only from the UI.
+   * The previous "Connections" tab was a list of harnesses — that's now
+   * the "Harnesses" tab. This list is the semantic view: one row per
+   * unordered unit-pair that has wires between them.
+   */
+  const [connections, setConnections] = useState<Connection[]>([]);
   const [n2Data, setN2Data]       = useState<N2MatrixResponse | null>(null);
   const [coverage, setCoverage]   = useState<InterfaceCoverageResponse | null>(null);
 
@@ -532,18 +541,23 @@ export default function InterfacesPage() {
   const [connSystemFilter, setConnSystemFilter]      = useState<number | ''>('');
   const [connStatusFilter, setConnStatusFilter]      = useState('');
   const [connExpandedSys, setConnExpandedSys]        = useState<Set<number | 0>>(new Set());
+  /** Phase 3a — search for the new Connections tab (LRU pair search). */
+  const [connectionSearch, setConnectionSearch]      = useState('');
 
   // ── Fetch everything ──
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const [projRes, sysRes, unitRes, harnRes, n2Res, covRes] = await Promise.all([
+      const [projRes, sysRes, unitRes, harnRes, n2Res, covRes, connRes] = await Promise.all([
         projectsAPI.get(projectId),
         interfaceAPI.listSystems(projectId),
         interfaceAPI.listUnits(projectId),
         interfaceAPI.listHarnesses(projectId),
         interfaceAPI.getN2Matrix(projectId).catch(() => ({ data: null })),
         interfaceAPI.getCoverage(projectId).catch(() => ({ data: null })),
+        // Phase 3a: new connections rollup. .catch so the page still loads
+        // on older backends that don't expose this endpoint yet.
+        interfaceAPI.listConnections(projectId).catch(() => ({ data: [] })),
       ]);
 
       setProjectCode(projRes.data?.code || '');
@@ -551,6 +565,7 @@ export default function InterfacesPage() {
       setSystems(sysList);
       setUnits(unitRes.data || []);
       setHarnesses(harnRes.data || []);
+      setConnections(connRes.data || []);
       setN2Data(n2Res.data || null);
       setCoverage(covRes.data || null);
 
@@ -648,6 +663,31 @@ export default function InterfacesPage() {
     harnessGroups.reduce((s, g) => s + g.harnesses.length, 0),
   [harnessGroups]);
 
+  // ── Phase 3a: filter Connections by search + system ──
+  // A connection qualifies for the system filter if at least one of its
+  // two LRUs is in the selected system (per Mason's spec: "don't show a
+  // connection if neither LRU is in this system").
+  const filteredConnections = useMemo(() => {
+    return connections.filter(c => {
+      if (connectionSearch) {
+        const q = connectionSearch.toLowerCase();
+        const hit =
+          (c.lru_a_designation || '').toLowerCase().includes(q) ||
+          (c.lru_b_designation || '').toLowerCase().includes(q) ||
+          (c.lru_a_name || '').toLowerCase().includes(q) ||
+          (c.lru_b_name || '').toLowerCase().includes(q) ||
+          (c.harness_names || []).some(n => (n || '').toLowerCase().includes(q));
+        if (!hit) return false;
+      }
+      if (connSystemFilter !== '') {
+        const aSys = unitSystemMap[c.lru_a_id];
+        const bSys = unitSystemMap[c.lru_b_id];
+        if (aSys !== connSystemFilter && bSys !== connSystemFilter) return false;
+      }
+      return true;
+    });
+  }, [connections, connectionSearch, connSystemFilter, unitSystemMap]);
+
   // ── Toggle connection group ──
   const toggleConnGroup = (sysId: number) => {
     setConnExpandedSys(prev => {
@@ -723,7 +763,8 @@ export default function InterfacesPage() {
       <div className="mb-4 flex items-center gap-1 border-b border-astra-border">
         {([
           { key: 'systems' as Tab,     label: 'Systems',     icon: Network,   count: systems.length },
-          { key: 'connections' as Tab,  label: 'Connections', icon: Cable,     count: harnesses.length },
+          { key: 'connections' as Tab,  label: 'Connections', icon: GitMerge, count: connections.length },
+          { key: 'harnesses' as Tab,    label: 'Harnesses',   icon: Cable,    count: harnesses.length },
           { key: 'n2matrix' as Tab,     label: 'N² Matrix',  icon: Grid3X3,   count: null },
         ]).map(t => (
           <button key={t.key}
@@ -856,7 +897,137 @@ export default function InterfacesPage() {
       {/* ══════════════════════════════════════ */}
       {/*  CONNECTIONS TAB                      */}
       {/* ══════════════════════════════════════ */}
+      {/* ══════════════════════════════════════ */}
+      {/*  CONNECTIONS TAB (Phase 3a — semantic LRU-pair view) */}
+      {/* ══════════════════════════════════════ */}
       {tab === 'connections' && !loading && (
+        <div>
+          {/* Toolbar */}
+          <div className="mb-4 flex gap-2">
+            <div className="relative flex-1 max-w-md">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-600" />
+              <input
+                value={connectionSearch}
+                onChange={e => setConnectionSearch(e.target.value)}
+                placeholder="Search LRU pairs…"
+                className="w-full rounded-lg border border-astra-border bg-astra-surface pl-9 pr-3 py-2 text-sm text-slate-200 outline-none focus:border-blue-500/50"
+              />
+            </div>
+            {systems.length > 0 && (
+              <select value={connSystemFilter}
+                onChange={e => setConnSystemFilter(e.target.value ? Number(e.target.value) : '')}
+                className="rounded-lg border border-astra-border bg-astra-surface px-3 py-2 text-sm text-slate-300 outline-none focus:border-blue-500/50">
+                <option value="">All Systems</option>
+                {systems.map(s => (
+                  <option key={s.id} value={s.id}>{s.abbreviation || s.name}</option>
+                ))}
+              </select>
+            )}
+            <div className="flex-1" />
+            <div className="rounded-lg border border-astra-border px-3 py-2 text-[11px] text-slate-500">
+              <span className="text-slate-300 font-semibold">{filteredConnections.length}</span>
+              {' '}of{' '}
+              <span className="text-slate-300 font-semibold">{connections.length}</span>
+              {' '}connections
+            </div>
+          </div>
+
+          {/* Info banner — only show if they have harnesses but no connections
+              (would suggest the backfill didn't run). Helpful diagnostic. */}
+          {connections.length === 0 && harnesses.length > 0 && (
+            <div className="mb-4 rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-3 flex items-start gap-2">
+              <AlertTriangle className="h-4 w-4 text-amber-400 flex-shrink-0 mt-0.5" />
+              <p className="text-[11px] text-amber-200">
+                You have {harnesses.length} harness(es) but no Connections — this is unusual.
+                The Phase 1 migration should have backfilled one Connection row per
+                wired LRU-pair. Try clicking refresh, or check that the migration
+                ran successfully.
+              </p>
+            </div>
+          )}
+
+          {/* Empty state */}
+          {connections.length === 0 ? (
+            <div className="py-16 text-center">
+              <GitMerge className="mx-auto h-10 w-10 text-slate-600 mb-3" />
+              <p className="text-sm text-slate-400">
+                No connections yet. Connections are auto-created when wires are
+                added between LRUs.
+              </p>
+              <p className="text-[11px] text-slate-500 mt-2">
+                Visit a harness and use Auto-Wire, or create a new harness by
+                opening the Harnesses tab.
+              </p>
+            </div>
+          ) : filteredConnections.length === 0 ? (
+            <div className="py-12 text-center">
+              <Search className="mx-auto h-8 w-8 text-slate-600 mb-2" />
+              <p className="text-sm text-slate-400">No connections match your filters.</p>
+            </div>
+          ) : (
+            <div className="overflow-hidden rounded-xl border border-astra-border bg-astra-surface">
+              <table className="w-full text-[13px]">
+                <thead>
+                  <tr className="border-b border-astra-border bg-astra-surface-alt">
+                    <th className="px-4 py-2.5 text-left font-semibold text-slate-400">LRU Pair</th>
+                    <th className="px-4 py-2.5 text-left font-semibold text-slate-400 w-24">Wires</th>
+                    <th className="px-4 py-2.5 text-left font-semibold text-slate-400">Harnesses</th>
+                    <th className="px-4 py-2.5 w-10"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredConnections.map(c => (
+                    <tr
+                      key={c.id}
+                      onClick={() => router.push(`${p}/interfaces/connection/${c.id}`)}
+                      className="border-b border-astra-border hover:bg-astra-surface-alt/50 cursor-pointer transition">
+                      <td className="px-4 py-2.5">
+                        <div className="flex items-center gap-2 font-mono">
+                          <span className="text-cyan-300">{c.lru_a_designation}</span>
+                          <span className="text-slate-500">—</span>
+                          <span className="text-violet-300">{c.lru_b_designation}</span>
+                        </div>
+                        <div className="text-[10px] text-slate-500 mt-0.5">
+                          {c.lru_a_name} and {c.lru_b_name}
+                        </div>
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <span className="rounded-full bg-astra-surface-alt px-2.5 py-0.5 text-[11px] font-bold text-slate-300">
+                          {c.wire_count}
+                        </span>
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <div className="flex flex-wrap gap-1">
+                          {(c.harness_names || []).slice(0, 3).map((name, i) => (
+                            <span
+                              key={c.harness_ids?.[i] || i}
+                              className="rounded-full bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 text-[10px] text-emerald-300">
+                              {name}
+                            </span>
+                          ))}
+                          {(c.harness_names || []).length > 3 && (
+                            <span className="text-[10px] text-slate-500 self-center">
+                              +{c.harness_names.length - 3} more
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <ChevronRight className="h-4 w-4 text-slate-600" />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ══════════════════════════════════════ */}
+      {/*  HARNESSES TAB (Phase 3a — physical trunks, formerly "Connections") */}
+      {/* ══════════════════════════════════════ */}
+      {tab === 'harnesses' && !loading && (
         <div>
           {/* Toolbar */}
           <div className="mb-4 flex gap-2">
@@ -880,11 +1051,6 @@ export default function InterfacesPage() {
                 ))}
               </select>
             )}
-            <div className="flex-1" />
-            <button onClick={() => setShowAddConnection(true)}
-              className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-500">
-              <Plus className="h-3.5 w-3.5" /> Add Connection
-            </button>
           </div>
 
           {/* Empty state */}
@@ -892,13 +1058,14 @@ export default function InterfacesPage() {
             <div className="py-16 text-center">
               <Cable className="mx-auto h-10 w-10 text-slate-600 mb-3" />
               <p className="text-sm text-slate-400">
-                No connections defined yet. Click "Add Connection" to create a wire harness.
+                No harnesses yet. Harnesses are auto-created by Auto-Wire and
+                the auto-grow engine.
               </p>
             </div>
           ) : filteredHarnessCount === 0 ? (
             <div className="py-12 text-center">
               <Search className="mx-auto h-8 w-8 text-slate-600 mb-2" />
-              <p className="text-sm text-slate-400">No connections match your filters.</p>
+              <p className="text-sm text-slate-400">No harnesses match your filters.</p>
             </div>
           ) : (
             /* Grouped harness list */
@@ -948,13 +1115,19 @@ export default function InterfacesPage() {
                                 <span className="text-slate-600">
                                   ({h.from_connector_designator})
                                 </span>
-                                <ArrowRight className="h-3 w-3 text-slate-600" />
+                                {/* Dash (not arrow) since harnesses are physically bidirectional */}
+                                <span className="text-slate-600 mx-0.5">—</span>
                                 <span className="font-mono text-violet-400">
                                   {h.to_unit_designation}
                                 </span>
                                 <span className="text-slate-600">
                                   ({h.to_connector_designator})
                                 </span>
+                                {h.endpoints && h.endpoints.length > 2 && (
+                                  <span className="text-[10px] text-amber-400 ml-1">
+                                    +{h.endpoints.length - 2} more endpoint{h.endpoints.length - 2 === 1 ? '' : 's'}
+                                  </span>
+                                )}
                               </div>
                             </div>
                             <span className="rounded-full bg-astra-surface-alt px-2 py-0.5 text-[10px] font-bold text-slate-400">
@@ -1016,10 +1189,10 @@ export default function InterfacesPage() {
         <CreateSystemModal projectId={projectId}
           onClose={() => setShowCreateSystem(false)} onCreated={fetchData} />
       )}
-      {showAddConnection && (
-        <AddConnectionModal projectId={projectId} units={units}
-          onClose={() => setShowAddConnection(false)} onCreated={fetchData} />
-      )}
+      {/* AddConnectionModal removed in Phase 3a — Connections are now
+          auto-created by the wire-creation engine. If users want to add
+          a new harness manually, they do it from the Harnesses tab of a
+          system detail page (or future dedicated Add-Harness flow). */}
     </div>
   );
 }

@@ -24,6 +24,10 @@ import type {
   N2MatrixResponse, BlockDiagramResponse, SignalTraceResult,
   InterfaceCoverageResponse, ImpactPreview,
   ImportPreviewResponse, ImportConfirmResponse,
+  // Phase 1/2 additions
+  HarnessEndpoint,
+  Connection, ConnectionDetail,
+  AutoGrowRequest, AutoGrowResult,
 } from './interface-types';
 
 const BASE = '/interfaces';
@@ -205,8 +209,26 @@ export const interfaceAPI = {
   batchAddWires: (harnessId: number, wires: Partial<Wire>[]) =>
     api.post(`${BASE}/harnesses/${harnessId}/wires`, { wires }),
 
-  autoWire: (harnessId: number) =>
-    api.post(`${BASE}/harnesses/${harnessId}/auto-wire`),
+  /**
+   * Auto-create wires between the two connectors on a harness.
+   *
+   * @param harnessId  The harness primary key
+   * @param mapping    Optional wiring strategy:
+   *   - 'auto' (default): picks straight-through for RJ-45↔RJ-45 pairs,
+   *     otherwise signal-name matching
+   *   - 'by_signal': case-insensitive match on pin.signal_name
+   *   - 'straight_through': wires pin N → pin N by pin_number (ignores names)
+   *   - 'crossover': T568B crossover for RJ-45 (1↔3, 2↔6, rest straight)
+   */
+  autoWire: (
+    harnessId: number,
+    mapping?: 'auto' | 'by_signal' | 'straight_through' | 'crossover',
+  ) =>
+    api.post(
+      `${BASE}/harnesses/${harnessId}/auto-wire`,
+      null,
+      { params: mapping ? { mapping } : undefined },
+    ),
 	
   generateRequirements: (harnessId: number) =>
 	api.post(`${BASE}/harnesses/${harnessId}/generate-requirements`),
@@ -302,6 +324,67 @@ export const interfaceAPI = {
 
   exportICDData: (projectId: number) =>
     api.get(`${IO}/export/icd-data`, { params: { project_id: projectId }, responseType: 'blob' }),
+
+  // ══════════════════════════════════════
+  //  Phase 2 — Auto-Grow, Connections, Harness Endpoints
+  // ══════════════════════════════════════
+
+  /**
+   * Submit a batch of proposed wires. The engine figures out harness
+   * assignment per pair (new harness, extend existing, or surface
+   * ambiguity). Returns either {wires_created: N} on success, or
+   * {ambiguities: [...]} when user resolution is needed.
+   *
+   * Typical flow:
+   *   1. Call autoGrow with just pairs=[].
+   *   2. If response.ambiguities is non-empty, show each one in a modal
+   *      sequentially and collect AmbiguityDecision entries.
+   *   3. Re-call autoGrow with the same pairs + the decisions array.
+   *   4. Repeat until ambiguities is empty.
+   */
+  autoGrow: (data: AutoGrowRequest) =>
+    api.post<AutoGrowResult>(`${BASE}/auto-grow`, data),
+
+  /** List connections for a project. Optional system_id filter scopes to
+   *  connections where at least one endpoint LRU is in that system. */
+  listConnections: (projectId: number, systemId?: number) =>
+    api.get<Connection[]>(`${BASE}/connections`, {
+      params: { project_id: projectId, ...(systemId !== undefined ? { system_id: systemId } : {}) },
+    }),
+
+  /** Full detail for a Connection: metadata + all wires between the pair. */
+  getConnection: (id: number) =>
+    api.get<ConnectionDetail>(`${BASE}/connections/${id}`),
+
+  /** List a harness's endpoints with denormalized display fields
+   *  (mating connector, LRU unit, wire count per endpoint). */
+  listHarnessEndpoints: (harnessId: number) =>
+    api.get<HarnessEndpoint[]>(`${BASE}/harnesses/${harnessId}/endpoints`),
+
+  /** Add a new endpoint to a harness. Mating connector is auto-created by
+   *  cloning the LRU connector's spec and pins. */
+  createHarnessEndpoint: (harnessId: number, data: {
+    lru_connector_id: number;
+    label?: string;
+    tail_length_m?: number;
+    notes?: string;
+  }) => api.post<HarnessEndpoint>(`${BASE}/harnesses/${harnessId}/endpoints`, {
+    harness_id: harnessId, ...data,
+  }),
+
+  /** Update endpoint label, tail_length_m, or notes. The mating connector
+   *  itself is edited via the regular connector update endpoint. */
+  updateHarnessEndpoint: (endpointId: number, data: {
+    label?: string;
+    tail_length_m?: number;
+    notes?: string;
+  }) => api.patch<HarnessEndpoint>(`${BASE}/endpoints/${endpointId}`, data),
+
+  /** Delete an endpoint. Cascades to its mating connector, mating pins,
+   *  and any wires touching those mating pins. Requires confirm=true if
+   *  wires will be removed. */
+  deleteHarnessEndpoint: (endpointId: number, confirm = false) =>
+    api.delete(`${BASE}/endpoints/${endpointId}`, { params: { confirm } }),
 };
 
 // ══════════════════════════════════════

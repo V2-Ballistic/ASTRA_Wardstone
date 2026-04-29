@@ -24,7 +24,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import relationship, backref
 from app.database import Base
-
+from sqlalchemy.sql import func
 
 # ══════════════════════════════════════════════════════════════
 #  Enums (38)
@@ -1255,7 +1255,8 @@ class Connector(Base):
     notes = Column(Text, default="")
 
     # Foreign keys
-    unit_id = Column(Integer, ForeignKey("units.id"), nullable=False)
+    unit_id = Column(Integer, ForeignKey("units.id"), nullable=True)
+    owner_type = Column(String(20), nullable=False, default="unit", index=True)
     project_id = Column(Integer, ForeignKey("projects.id"))
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -1299,6 +1300,7 @@ class Pin(Base):
 
     # Foreign keys
     connector_id = Column(Integer, ForeignKey("connectors.id"), nullable=False)
+    mating_unit_id = Column(Integer, ForeignKey("units.id", ondelete="SET NULL"), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     # Relationships
@@ -1525,6 +1527,19 @@ class WireHarness(Base):
     to_unit = relationship("Unit", foreign_keys=[to_unit_id])
     to_connector = relationship("Connector", foreign_keys=[to_connector_id])
 
+    # Phase 1: Harness Overview editable attributes. All optional; dropdowns
+    # and free-text entries on the frontend.
+    shielding_class = Column(String(50), nullable=True)
+    sleeve_type = Column(String(50), nullable=True)
+    operating_temp_min_c = Column(Float, nullable=True)
+    operating_temp_max_c = Column(Float, nullable=True)
+    min_bend_radius_mm = Column(Float, nullable=True)
+    weight_g_per_m = Column(Float, nullable=True)
+    drain_wire_spec = Column(String(100), nullable=True)
+    service_loop_m = Column(Float, nullable=True)
+    mil_spec = Column(String(100), nullable=True)
+
+
     __table_args__ = (
         UniqueConstraint("from_connector_id", "to_connector_id", name="uq_harness_connectors"),
     )
@@ -1555,6 +1570,8 @@ class Wire(Base):
     # Foreign keys
     from_pin_id = Column(Integer, ForeignKey("pins.id"), nullable=False)
     to_pin_id = Column(Integer, ForeignKey("pins.id"), nullable=False)
+    from_mating_pin_id = Column(Integer, ForeignKey("pins.id", ondelete="SET NULL"), nullable=True)
+    to_mating_pin_id = Column(Integer, ForeignKey("pins.id", ondelete="SET NULL"), nullable=True)
     harness_id = Column(Integer, ForeignKey("wire_harnesses.id"), nullable=False)
     splice_info = Column(String(100))
     termination_from = Column(String(50))
@@ -1738,3 +1755,43 @@ class InterfaceChangeImpact(Base):
         Index("ix_ici_project_date", "project_id", "created_at"),
         Index("ix_ici_resolved", "resolved"),
     )
+
+class HarnessEndpoint(Base):
+    """Phase 1: per-endpoint row for multi-endpoint wire harnesses.
+
+    Each harness has N endpoints. Each endpoint owns a mating_connector
+    (Connector with owner_type='harness') and points at the LRU-side
+    connector it plugs into. An LRU connector can only be plugged into one
+    harness endpoint at a time (enforced by UNIQUE constraint in DB).
+    """
+    __tablename__ = "harness_endpoints"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    harness_id = Column(Integer, ForeignKey("wire_harnesses.id", ondelete="CASCADE"), nullable=False, index=True)
+    mating_connector_id = Column(Integer, ForeignKey("connectors.id", ondelete="CASCADE"), nullable=False, index=True)
+    lru_connector_id = Column(Integer, ForeignKey("connectors.id", ondelete="SET NULL"), nullable=True, index=True)
+    label = Column(String(40), nullable=True)
+    tail_length_m = Column(Float, nullable=True)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    # UNIQUE on lru_connector_id prevents two harnesses both claiming to
+    # plug into the same physical LRU connector. Enforced in migration SQL.
+
+
+class Connection(Base):
+    """Phase 1: bidirectional 'these two LRUs are wired together' rollup.
+
+    Auto-maintained by the wire-create/delete flow. Canonical order is
+    enforced at the DB layer: lru_a_id < lru_b_id, always. The app layer
+    normalizes before insert/query.
+    """
+    __tablename__ = "connections"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    lru_a_id = Column(Integer, ForeignKey("units.id", ondelete="CASCADE"), nullable=False, index=True)
+    lru_b_id = Column(Integer, ForeignKey("units.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
