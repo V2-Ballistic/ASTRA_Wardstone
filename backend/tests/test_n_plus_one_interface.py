@@ -147,6 +147,57 @@ class TestGetUnitQueryCount:
         )
 
 
+class TestDashboardStatsQueryCount:
+    def test_dashboard_stats_query_count_is_bounded(
+        self, client, db_session, db_engine, test_user,
+    ):
+        """F-040: dashboard previously emitted O(N) user lookups in
+        the recent-activity loop plus loaded every requirement into
+        Python. Post-fix it uses GROUP BY for aggregates and a single
+        IN-clause for user names — bounded query count."""
+        from app.models import Project, Requirement, RequirementHistory
+        from datetime import datetime
+
+        owner = test_user
+        project = Project(code="DASH1", name="P", owner_id=owner.id, status="active")
+        db_session.add(project); db_session.commit(); db_session.refresh(project)
+
+        for i in range(50):
+            r = Requirement(
+                req_id=f"FR-{i+1:03d}", title=f"R {i}",
+                statement=f"The system shall do thing {i} within 1 second.",
+                rationale="dashboard perf test",
+                req_type="functional", priority="medium", status="draft",
+                level="L1", version=1, quality_score=80.0,
+                project_id=project.id, owner_id=owner.id, created_by_id=owner.id,
+            )
+            db_session.add(r); db_session.flush()
+            db_session.add(RequirementHistory(
+                requirement_id=r.id, version=1, field_changed="created",
+                old_value=None, new_value="draft",
+                changed_by_id=owner.id, changed_at=datetime.utcnow(),
+            ))
+        db_session.commit()
+
+        from app.services.auth import create_access_token
+        headers = {"Authorization": f"Bearer {create_access_token(data={'sub': owner.username})}"}
+
+        with _count_queries(db_engine) as stmts:
+            r = client.get(
+                f"/api/v1/dashboard/stats?project_id={project.id}",
+                headers=headers,
+            )
+        assert r.status_code == 200, r.text
+        n = len(stmts)
+        print(f"\n[dashboard_stats] 50 reqs + 50 history → {n} statements")
+        # Pre-fix: 1 reqs + 1 trace + 1 verif + 1 history + 20 user lookups
+        # = ~25-50+ depending on history density.
+        # Post-fix: ~10 (group bys + bounded IN-clauses).
+        assert n < 20, (
+            f"dashboard_stats issued {n} queries — N+1 regression"
+        )
+
+
 class TestListSystemsQueryCount:
     def test_query_count_is_bounded(self, client, db_session, db_engine):
         owner = _user(db_session, username="npo_systems")
