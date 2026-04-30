@@ -532,6 +532,12 @@ export default function InterfacesPage() {
   // ── unit_id → system mapping (now sourced from UnitSummary.system_id) ──
   const [unitSystemMap, setUnitSystemMap] = useState<Record<number, number>>({});
 
+  // F-089: track fetch failures so the page renders a banner instead
+  // of silently going blank when one of the parallel requests blows
+  // up. Pre-fix the `try { ... } catch { }` swallowed every error
+  // and `setLoading(false)` left the user staring at empty tables.
+  const [fetchError, setFetchError] = useState<string | null>(null);
+
   // ── UI state ──
   const [showCreateSystem, setShowCreateSystem]     = useState(false);
   const [showAddConnection, setShowAddConnection]   = useState(false);
@@ -547,6 +553,7 @@ export default function InterfacesPage() {
   // ── Fetch everything ──
   const fetchData = useCallback(async () => {
     setLoading(true);
+    setFetchError(null);
     try {
       const [projRes, sysRes, unitRes, harnRes, n2Res, covRes, connRes] = await Promise.all([
         projectsAPI.get(projectId),
@@ -584,7 +591,24 @@ export default function InterfacesPage() {
       // Auto-expand all system groups
       const expandSet = new Set<number | 0>([0, ...sysList.map(s => s.id)]);
       setConnExpandedSys(expandSet);
-    } catch { }
+    } catch (err: unknown) {
+      // F-089: surface the failure rather than silently leaving the
+      // page blank. Most failures here are 401 (auth expired), 403
+      // (project membership lost), or a network error.
+      const msg =
+        (typeof err === 'object' && err && 'message' in err && typeof (err as { message: unknown }).message === 'string')
+          ? (err as { message: string }).message
+          : 'Failed to load interface data';
+      setFetchError(msg);
+      // Reset core lists so stale data from a previous project
+      // doesn't bleed through.
+      setSystems([]);
+      setUnits([]);
+      setHarnesses([]);
+      setConnections([]);
+      setN2Data(null);
+      setCoverage(null);
+    }
     setLoading(false);
   }, [projectId]);
 
@@ -721,6 +745,25 @@ export default function InterfacesPage() {
           </p>
         </div>
       </div>
+
+      {/* F-089: surface fetch errors instead of going silently blank. */}
+      {fetchError && (
+        <div
+          className="mb-4 flex items-start justify-between gap-4 rounded-xl border border-red-500/20 bg-red-500/5 px-4 py-3"
+          role="alert"
+        >
+          <div className="text-xs text-red-300">
+            <div className="font-semibold">Failed to load interface data</div>
+            <div className="mt-1 text-red-300/80">{fetchError}</div>
+          </div>
+          <button
+            onClick={fetchData}
+            className="rounded-lg border border-red-500/30 px-3 py-1.5 text-xs font-medium text-red-300 hover:bg-red-500/10"
+          >
+            Retry
+          </button>
+        </div>
+      )}
 
       {/* Summary stats */}
       {!loading && (
