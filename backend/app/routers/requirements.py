@@ -523,6 +523,13 @@ def clone_requirement(req_id: int, request: Request = None,
                       project: Project = Depends(
                           entity_project_member_required(resolve_project_for_requirement)
                       )):
+    """F-053: pre-fix this issued two separate commits with no
+    rollback path between them. If the second commit (history row)
+    failed, the cloned Requirement persisted without its provenance
+    history. Now we wrap the clone+history in a single transaction
+    with explicit try/except and rollback, and emit
+    `requirement.cloned` to the audit log only after the commit
+    succeeds (matches Phase 2's after-commit audit pattern)."""
     source = db.query(Requirement).filter(Requirement.id == req_id).first()
     if not source:
         raise HTTPException(404, "Source requirement not found")
@@ -535,6 +542,7 @@ def clone_requirement(req_id: int, request: Request = None,
     title = f"[CLONE] {source.title}"
     quality = check_requirement_quality(source.statement or "", title, source.rationale or "")
     level_str = _ev(source.level) if hasattr(source, "level") and source.level else "L1"
+
     clone = Requirement(
         req_id=new_req_id, title=title, statement=source.statement or "",
         rationale=source.rationale, req_type=req_type_str,
@@ -543,12 +551,33 @@ def clone_requirement(req_id: int, request: Request = None,
         owner_id=current_user.id, created_by_id=current_user.id,
         quality_score=quality["score"],
     )
-    db.add(clone)
-    db.commit()
+    try:
+        db.add(clone)
+        db.flush()  # assign clone.id without committing
+        _record_history(
+            db, clone.id, 1, "created", None, clone.req_id,
+            current_user.id, f"Cloned from {source.req_id}",
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     db.refresh(clone)
-    _record_history(db, clone.id, 1, "created", None, clone.req_id,
-                    current_user.id, f"Cloned from {source.req_id}")
-    db.commit()
+
+    # F-053: audit AFTER commit so a successful audit row implies a
+    # successful clone. Failure to audit doesn't undo the clone (the
+    # audit fallback shim swallows ImportError) but a destructive
+    # rollback of the audit row would otherwise leave an orphan.
+    _audit(
+        db, "requirement.cloned", "requirement", clone.id, current_user.id,
+        {
+            "source_requirement_id": source.id,
+            "source_req_id": source.req_id,
+            "new_req_id": clone.req_id,
+        },
+        project_id=source.project_id, request=request,
+    )
+
     return clone
 
 
