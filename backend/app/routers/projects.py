@@ -141,25 +141,88 @@ def list_trace_links(
     return query.all()
 
 
+def _resolve_entity_project(db: Session, entity_type: str, entity_id: int) -> int | None:
+    """
+    Polymorphic project_id resolver for trace-link endpoints. Returns
+    the project_id of the entity, or ``None`` if the entity doesn't
+    exist (or its type is unsupported).
+    """
+    from app.models import Verification  # local import — avoids cycles
+
+    if entity_type == "requirement":
+        row = db.query(Requirement.project_id).filter(Requirement.id == entity_id).first()
+    elif entity_type == "source_artifact":
+        row = db.query(SourceArtifact.project_id).filter(SourceArtifact.id == entity_id).first()
+    elif entity_type == "verification":
+        # verifications.project_id lives via the parent requirement.
+        row = (
+            db.query(Requirement.project_id)
+            .join(Verification, Verification.requirement_id == Requirement.id)
+            .filter(Verification.id == entity_id)
+            .first()
+        )
+    else:
+        return None
+    return row[0] if row else None
+
+
 @traceability_router.post("/links", response_model=TraceLinkResponse, status_code=201)
 def create_trace_link(data: TraceLinkCreate, request: Request,
                       db: Session = Depends(get_db),
                       current_user: User = Depends(require_permission("traceability.create"))):
-    # AUDIT_FINDINGS F-014: source/target must belong to a project the
-    # caller is a member of. Resolve project_id from the source entity
-    # and assert membership before insert.
-    pid = None
-    if data.source_type == "requirement":
-        r = db.query(Requirement).filter(Requirement.id == data.source_id).first()
-        pid = r.project_id if r else None
-    elif data.source_type == "source_artifact":
-        a = db.query(SourceArtifact).filter(SourceArtifact.id == data.source_id).first()
-        pid = a.project_id if a else None
-    if pid is None:
-        raise HTTPException(400, "Could not resolve source entity's project")
-    _check_membership(db, pid, current_user)
+    # F-035: full integrity validation.
+    #   1. Source AND target entities must exist (no dangling refs).
+    #   2. Both must live in the SAME project (no cross-project links).
+    #   3. Caller must be a member of that project (F-014).
+    #   4. The (source, target, link_type) tuple must be unique
+    #      (uq_trace_link_endpoints — enforced by DB; we pre-check
+    #      to return a friendly 409 instead of an IntegrityError 500).
+    src_pid = _resolve_entity_project(db, data.source_type, data.source_id)
+    if src_pid is None:
+        raise HTTPException(
+            400,
+            f"Source {data.source_type}:{data.source_id} does not exist or "
+            "has no resolvable project.",
+        )
+    tgt_pid = _resolve_entity_project(db, data.target_type, data.target_id)
+    if tgt_pid is None:
+        raise HTTPException(
+            400,
+            f"Target {data.target_type}:{data.target_id} does not exist or "
+            "has no resolvable project.",
+        )
+    if src_pid != tgt_pid:
+        raise HTTPException(
+            400,
+            f"Trace link endpoints span projects (source project {src_pid} → "
+            f"target project {tgt_pid}); cross-project links are not allowed.",
+        )
 
-    link = TraceLink(**data.model_dump(), created_by_id=current_user.id)
+    _check_membership(db, src_pid, current_user)
+
+    duplicate = (
+        db.query(TraceLink.id)
+        .filter(
+            TraceLink.source_type == data.source_type,
+            TraceLink.source_id == data.source_id,
+            TraceLink.target_type == data.target_type,
+            TraceLink.target_id == data.target_id,
+            TraceLink.link_type == data.link_type,
+        )
+        .first()
+    )
+    if duplicate:
+        raise HTTPException(
+            409,
+            f"A {data.link_type} link from {data.source_type}:{data.source_id} "
+            f"to {data.target_type}:{data.target_id} already exists.",
+        )
+
+    link = TraceLink(
+        **data.model_dump(),
+        project_id=src_pid,
+        created_by_id=current_user.id,
+    )
     db.add(link)
     db.commit()
     db.refresh(link)
@@ -168,7 +231,7 @@ def create_trace_link(data: TraceLinkCreate, request: Request,
                  {"source": f"{data.source_type}:{data.source_id}",
                   "target": f"{data.target_type}:{data.target_id}",
                   "link_type": data.link_type},
-                 project_id=pid, request=request)
+                 project_id=src_pid, request=request)
     return link
 
 

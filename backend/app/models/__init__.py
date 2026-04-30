@@ -1,7 +1,7 @@
 from datetime import datetime
 from sqlalchemy import (
     Column, Integer, String, Text, DateTime, Boolean, ForeignKey,
-    Enum as SQLEnum, Float, JSON
+    Enum as SQLEnum, Float, JSON, Index, UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -223,6 +223,10 @@ class TraceLink(Base):
     __tablename__ = "trace_links"
 
     id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(
+        Integer, ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
     source_type = Column(String(50), nullable=False)  # "requirement", "source_artifact", "verification"
     source_id = Column(Integer, nullable=False)
     target_type = Column(String(50), nullable=False)
@@ -235,6 +239,17 @@ class TraceLink(Base):
 
     # Relationships
     created_by = relationship("User")
+    project = relationship("Project")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "source_type", "source_id", "target_type", "target_id", "link_type",
+            name="uq_trace_link_endpoints",
+        ),
+        Index("ix_trace_links_project", "project_id"),
+        Index("ix_trace_links_source_pair", "source_type", "source_id"),
+        Index("ix_trace_links_target_pair", "target_type", "target_id"),
+    )
 
 
 class Verification(Base):
