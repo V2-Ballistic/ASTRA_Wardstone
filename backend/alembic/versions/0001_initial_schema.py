@@ -402,6 +402,18 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # AUDIT_FINDINGS F-022: This downgrade drops 21 core tables and 12
+    # enum types — a single accidental `alembic downgrade base` against
+    # production wipes every customer's data. Refuse to run in
+    # production unless ASTRA_ALLOW_DESTRUCTIVE_DOWNGRADE=true is set.
+    import os
+    if (os.getenv("ENVIRONMENT") == "production"
+            and not os.getenv("ASTRA_ALLOW_DESTRUCTIVE_DOWNGRADE")):
+        raise NotImplementedError(
+            "Refusing destructive downgrade in production. "
+            "Set ASTRA_ALLOW_DESTRUCTIVE_DOWNGRADE=true to override."
+        )
+
     # Reverse order — drop dependents first
     op.drop_table("workflow_stage_actions")
     op.drop_table("workflow_instances")
