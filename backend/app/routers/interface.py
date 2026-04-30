@@ -21,7 +21,10 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
 
 from app.database import get_db
-from app.dependencies.project_access import _check_membership
+from app.dependencies.project_access import (
+    _check_membership,
+    project_member_required,
+)
 from app.models import (
     User, Project, RequirementHistory, TraceLink,
 )
@@ -3744,6 +3747,54 @@ def list_req_links(
         results.append(resp)
 
     return results
+
+
+@router.get("/req-links/by-project")
+def list_req_links_for_project(
+    project_id: int = Query(...),
+    auto_generated: Optional[bool] = None,
+    status: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    project: Project = Depends(project_member_required),
+):
+    """F-086: project-scoped bulk endpoint for InterfaceRequirementLink.
+
+    The auto-requirements review page used to issue one
+    /interfaces/req-links?requirement_id=X call per requirement,
+    batched 5-at-a-time with 100ms delays. For a 100-requirement
+    project that's 20 batches × ~100ms = ~2s before the UI render.
+
+    This endpoint joins through Requirement to filter by project_id
+    in a single query, returns every link in one round-trip, and
+    optionally filters by `auto_generated` and `status`.
+    """
+    q = (
+        db.query(InterfaceRequirementLink, Requirement)
+        .join(Requirement, Requirement.id == InterfaceRequirementLink.requirement_id)
+        .filter(
+            Requirement.project_id == project_id,
+            Requirement.status != "deleted",
+        )
+    )
+    if auto_generated is not None:
+        q = q.filter(InterfaceRequirementLink.auto_generated.is_(auto_generated))
+    if status:
+        q = q.filter(InterfaceRequirementLink.status == status)
+
+    rows = q.order_by(InterfaceRequirementLink.created_at.desc()).all()
+
+    results = []
+    for lk, req in rows:
+        resp = InterfaceReqLinkResponse.model_validate(lk)
+        resp.requirement_req_id = req.req_id
+        resp.requirement_title = req.title
+        results.append(resp)
+    return {
+        "project_id": project_id,
+        "total": len(results),
+        "items": results,
+    }
 
 
 @router.delete("/req-links/{link_pk}", status_code=200)

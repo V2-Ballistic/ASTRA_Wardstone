@@ -197,6 +197,37 @@ def list_requirement_verifications(
     return [_serialize_verification(v) for v in verifs]
 
 
+# F-085: project-wide bulk verifications endpoint. The frontend's
+# verification page used to issue one /requirements/{id}/verifications
+# call per requirement, batched 5-at-a-time with 100ms delays — for a
+# 100-requirement project that's ~2s end-to-end before any UI render.
+# This endpoint returns every verification scoped by membership in
+# one round-trip. Pre-fetch happens via a single Verification + JOIN
+# Requirement query so non-member requirements can't leak.
+@router.get("/verifications/by-project")
+def list_verifications_for_project(
+    project_id: int = Query(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    project: Project = Depends(project_member_required),
+):
+    verifs = (
+        db.query(Verification)
+        .join(Requirement, Requirement.id == Verification.requirement_id)
+        .filter(
+            Requirement.project_id == project_id,
+            Requirement.status != "deleted",
+        )
+        .order_by(Verification.created_at.desc())
+        .all()
+    )
+    return {
+        "project_id": project_id,
+        "total": len(verifs),
+        "items": [_serialize_verification(v) for v in verifs],
+    }
+
+
 @router.post("/{req_id}/verifications", status_code=201)
 def create_verification(
     req_id: int,

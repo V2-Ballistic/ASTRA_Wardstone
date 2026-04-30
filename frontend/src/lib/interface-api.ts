@@ -265,6 +265,20 @@ export const interfaceAPI = {
   listReqLinks: (params: { entity_type?: string; entity_id?: number; requirement_id?: number }) =>
     api.get<InterfaceRequirementLink[]>(`${BASE}/req-links`, { params }),
 
+  // F-086: project-wide bulk req-links — replaces the per-requirement
+  // batched-with-delay pattern in /interfaces/auto-requirements/page.tsx.
+  listReqLinksForProject: (
+    projectId: number,
+    params?: { auto_generated?: boolean; status?: string },
+  ) =>
+    api.get<{
+      project_id: number;
+      total: number;
+      items: InterfaceRequirementLink[];
+    }>(`${BASE}/req-links/by-project`, {
+      params: { project_id: projectId, ...(params || {}) },
+    }),
+
   deleteReqLink: (id: number) =>
     api.delete(`${BASE}/req-links/${id}`),
 

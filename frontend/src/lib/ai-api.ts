@@ -107,6 +107,27 @@ export const aiAPI = {
       params: { requirement_id: requirementId, project_id: projectId },
     }),
 
+  // F-087: project-wide trace suggestions with explicit pagination.
+  // Pre-fix the traceability page issued one getTraceSuggestions call
+  // per requirement with `reqs.slice(0, 20)` and silently dropped
+  // suggestions for requirements 21..N. Now there's a single endpoint
+  // that returns total + scanned + a paginated suggestions slice so
+  // the UI can render "Showing first N of M".
+  getProjectTraceSuggestions: (
+    projectId: number,
+    params?: { threshold?: number; skip?: number; limit?: number },
+  ) =>
+    api.get<{
+      project_id: number;
+      total_requirements: number;
+      scanned: number;
+      skip: number;
+      limit: number;
+      suggestions: Array<TraceSuggestion & { requirement_id: number }>;
+    }>('/ai/trace-suggestions/by-project', {
+      params: { project_id: projectId, ...(params || {}) },
+    }),
+
   // Verification suggestions
   getVerificationSuggestion: (requirementId: number) =>
     api.get<VerificationSuggestion>('/ai/verification-suggestion', {

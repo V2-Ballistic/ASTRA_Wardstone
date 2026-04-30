@@ -79,6 +79,12 @@ export const verificationsAPI = {
     criteria?: string;
     responsible_id?: number;
   }) => api.post(`/requirements/${requirementId}/verifications`, data),
+  // F-085: project-wide bulk fetch — replaces the per-requirement
+  // batched-with-delay pattern in /verification/page.tsx.
+  listForProject: (projectId: number) =>
+    api.get('/requirements/verifications/by-project', {
+      params: { project_id: projectId },
+    }),
 };
 
 // ── Source Artifacts ──
