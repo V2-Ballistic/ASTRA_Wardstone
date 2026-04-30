@@ -133,15 +133,53 @@ function TreeNodeRow({
   const isExpanded = expanded.has(req.id);
   const sc = STATUS_COLORS[req.status as RequirementStatus];
 
+  // F-096: ARIA tree semantics + arrow-key handler.
+  // The tree's outer container (rendered in the parent below) has
+  // role="tree". Each TreeNodeRow becomes a treeitem with aria-level
+  // (1-based depth), aria-expanded (when it has children), and
+  // aria-selected derived from the selection set. Right/Left
+  // expand/collapse, Enter navigates, Space toggles selection.
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    switch (e.key) {
+      case 'ArrowRight':
+        if (hasChildren && !isExpanded) {
+          e.preventDefault();
+          onToggle(req.id);
+        }
+        break;
+      case 'ArrowLeft':
+        if (hasChildren && isExpanded) {
+          e.preventDefault();
+          onToggle(req.id);
+        }
+        break;
+      case 'Enter':
+        e.preventDefault();
+        onNavigate(req.id);
+        break;
+      case ' ':
+        e.preventDefault();
+        onSelect(req.id);
+        break;
+    }
+  };
+
   return (
     <>
       <div
-        className="group flex items-center border-b border-astra-border py-2.5 pr-4 transition-colors hover:bg-astra-surface-hover cursor-pointer"
+        role="treeitem"
+        aria-level={depth + 1}
+        aria-expanded={hasChildren ? isExpanded : undefined}
+        aria-selected={selected.has(req.id)}
+        tabIndex={0}
+        onKeyDown={onKeyDown}
+        className="group flex items-center border-b border-astra-border py-2.5 pr-4 transition-colors hover:bg-astra-surface-hover cursor-pointer focus:outline-none focus:bg-astra-surface-hover focus:ring-1 focus:ring-blue-500/40"
         style={{ paddingLeft: `${16 + depth * 28}px` }}
       >
         {/* Checkbox */}
         <button
           onClick={(e) => { e.stopPropagation(); onSelect(req.id); }}
+          aria-label={`Select ${req.req_id}`}
           className="mr-2 flex h-5 w-5 items-center justify-center"
         >
           {selected.has(req.id) ? (
@@ -155,10 +193,11 @@ function TreeNodeRow({
         <div className="mr-2 flex h-5 w-5 items-center justify-center">
           {hasChildren ? (
             <button onClick={(e) => { e.stopPropagation(); onToggle(req.id); }}
+              aria-label={isExpanded ? `Collapse ${req.req_id}` : `Expand ${req.req_id}`}
               className="flex h-5 w-5 items-center justify-center rounded transition hover:bg-slate-700">
               {isExpanded
-                ? <ChevronDown className="h-3.5 w-3.5 text-slate-400" />
-                : <ChevronRight className="h-3.5 w-3.5 text-slate-400" />}
+                ? <ChevronDown className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />
+                : <ChevronRight className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />}
             </button>
           ) : <div className="w-5" />}
         </div>
@@ -593,6 +632,7 @@ export default function ProjectRequirementsPage() {
           </button>
 
           <button onClick={fetchRequirements}
+            aria-label="Refresh requirements"
             className="rounded-full border border-astra-border p-2 text-slate-400 transition hover:text-slate-200">
             <RefreshCw className="h-3.5 w-3.5" />
           </button>
@@ -747,7 +787,11 @@ export default function ProjectRequirementsPage() {
                   {tree.length} root{tree.length !== 1 ? 's' : ''}
                 </span>
               </div>
-              <div className="overflow-hidden rounded-xl border border-astra-border bg-astra-surface">
+              <div
+                role={tree.length > 0 ? 'tree' : undefined}
+                aria-label="Requirements hierarchy"
+                className="overflow-hidden rounded-xl border border-astra-border bg-astra-surface"
+              >
                 {tree.length === 0 ? (
                   <div className="py-12 text-center text-sm text-slate-500">No hierarchy — all requirements are unlinked</div>
                 ) : (

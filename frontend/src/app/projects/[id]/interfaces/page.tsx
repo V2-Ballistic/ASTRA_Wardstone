@@ -836,6 +836,7 @@ export default function InterfacesPage() {
           Import from Excel
         </button>
         <button onClick={fetchData}
+          aria-label="Refresh interface data"
           className="rounded-lg p-2 text-slate-500 hover:text-slate-300" title="Refresh">
           <RefreshCw className={clsx('h-3.5 w-3.5', loading && 'animate-spin')} />
         </button>

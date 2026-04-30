@@ -165,7 +165,7 @@ export default function AuditLogPage() {
             </div>
           </div>
           {/* Refresh */}
-          <button onClick={fetchLogs} className="rounded-full border border-astra-border p-2 text-slate-400 hover:text-slate-200">
+          <button onClick={fetchLogs} aria-label="Refresh audit log" className="rounded-full border border-astra-border p-2 text-slate-400 hover:text-slate-200">
             <RefreshCw className="h-3.5 w-3.5" />
           </button>
         </div>

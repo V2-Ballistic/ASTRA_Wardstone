@@ -110,7 +110,7 @@ export default function BaselinesPage() {
         <div className="flex gap-2">
           {view !== 'list' && <button onClick={() => setView('list')} className="rounded-lg border border-astra-border px-3 py-2 text-xs text-slate-400 hover:text-slate-200">← Back</button>}
           <button onClick={() => setShowCreate(true)} className="flex items-center gap-1.5 rounded-lg bg-blue-500 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-600"><Plus className="h-3.5 w-3.5" /> Create Baseline</button>
-          <button onClick={fetchBaselines} className="rounded-full border border-astra-border p-2 text-slate-400 hover:text-slate-200"><RefreshCw className="h-3.5 w-3.5" /></button>
+          <button onClick={fetchBaselines} aria-label="Refresh baselines" className="rounded-full border border-astra-border p-2 text-slate-400 hover:text-slate-200"><RefreshCw className="h-3.5 w-3.5" /></button>
         </div>
       </div>
 

@@ -58,9 +58,42 @@ function wireColor(signalType?: string | null, wireType?: string | null): string
   return '#3B82F6';
 }
 
+// F-097: a one-character glyph paired with the color so signal type
+// is conveyed by both colour AND text. Maps the same prefixes
+// wireColor uses; defaults to "S" for generic signal.
+function signalGlyph(signalType?: string | null, wireType?: string | null): string {
+  const s = (signalType || '').toLowerCase();
+  if (s.startsWith('power')) return 'P';
+  if (s.includes('ground')) return 'G';
+  if (s.startsWith('clock')) return 'C';
+  if (s.startsWith('rf_') || s === 'rf_signal') return 'R';
+  if (s.startsWith('discrete')) return 'D';
+  if (s.includes('analog')) return 'A';
+  if (s.includes('digital')) return 'D';
+  if (s.startsWith('serial') || s.startsWith('spi') || s.startsWith('i2c') || s.startsWith('can')) return 'B';
+  if (s.startsWith('fiber') || s.startsWith('shield')) return 'S';
+  if (s === 'spare' || s === 'no_connect') return '–';
+  const t = (wireType || '').toLowerCase();
+  if (t.startsWith('power')) return 'P';
+  if (t.startsWith('ground')) return 'G';
+  if (t.startsWith('shield')) return 'S';
+  if (t.startsWith('coax') || t.startsWith('rf')) return 'R';
+  if (t.startsWith('fiber')) return 'S';
+  return 'S';
+}
+
 function WireColor({ type, signalType }: { type: string; signalType?: string }) {
   const color = wireColor(signalType, type);
-  return <div className="h-2 w-2 rounded-full flex-shrink-0" style={{ background: color }} />;
+  const glyph = signalGlyph(signalType, type);
+  // F-097: render a glyph next to the color dot — colour-only signals
+  // failed WCAG 1.4.1; the adjacent letter gives the same info to
+  // users who can't distinguish the colours.
+  return (
+    <div className="flex items-center gap-1 flex-shrink-0">
+      <div className="h-2 w-2 rounded-full" style={{ background: color }} aria-hidden="true" />
+      <span className="text-[8px] font-bold text-slate-400" aria-label={`Signal class ${glyph}`}>{glyph}</span>
+    </div>
+  );
 }
 
 const STATUS_COLORS: Record<string, { bg: string; text: string }> = {
