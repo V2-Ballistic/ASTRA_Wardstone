@@ -197,21 +197,21 @@ DATA_FONT_SIZE = 10
 class RowPreview(BaseModel):
     row: int
     valid: bool = True
-    errors: List[str] = []
-    warnings: List[str] = []
-    data: dict = {}
+    errors: List[str] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+    data: dict = Field(default_factory=dict)
 
 
 class ImportPreviewResponse(BaseModel):
     file_name: str
-    sheets_found: List[str] = []
-    units: List[RowPreview] = []
-    connectors: List[RowPreview] = []
-    pins: List[RowPreview] = []
-    buses: List[RowPreview] = []
-    messages: List[RowPreview] = []
-    fields: List[RowPreview] = []
-    summary: dict = {}
+    sheets_found: List[str] = Field(default_factory=list)
+    units: List[RowPreview] = Field(default_factory=list)
+    connectors: List[RowPreview] = Field(default_factory=list)
+    pins: List[RowPreview] = Field(default_factory=list)
+    buses: List[RowPreview] = Field(default_factory=list)
+    messages: List[RowPreview] = Field(default_factory=list)
+    fields: List[RowPreview] = Field(default_factory=list)
+    summary: dict = Field(default_factory=dict)
 
 
 class ImportConfirmResponse(BaseModel):
@@ -224,8 +224,8 @@ class ImportConfirmResponse(BaseModel):
     messages_created: int = 0
     fields_created: int = 0
     env_specs_created: int = 0
-    errors: List[str] = []
-    created_ids: dict = {}
+    errors: List[str] = Field(default_factory=list)
+    created_ids: dict = Field(default_factory=dict)
 
 
 # ══════════════════════════════════════════════════════════════

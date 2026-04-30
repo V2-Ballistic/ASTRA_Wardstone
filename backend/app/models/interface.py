@@ -1195,7 +1195,7 @@ class Unit(Base):
     specification_doc = Column(String(255))
     test_report_doc = Column(String(255))
     notes = Column(Text, default="")
-    metadata_json = Column(JSON, default={})
+    metadata_json = Column(JSON, default=dict)
 
     # Foreign keys
     system_id = Column(Integer, ForeignKey("systems.id"), nullable=False)
@@ -1348,7 +1348,7 @@ class BusDefinition(Base):
     bus_length_max_m = Column(Float)
     termination_required = Column(String(50))
     notes = Column(Text, default="")
-    metadata_json = Column(JSON, default={})
+    metadata_json = Column(JSON, default=dict)
 
     # Foreign keys
     unit_id = Column(Integer, ForeignKey("units.id"), nullable=False)
@@ -1417,7 +1417,7 @@ class MessageDefinition(Base):
     target_system_name = Column(String(100))
     icd_reference = Column(String(100))
     notes = Column(Text, default="")
-    metadata_json = Column(JSON, default={})
+    metadata_json = Column(JSON, default=dict)
 
     # Foreign keys
     bus_def_id = Column(Integer, ForeignKey("bus_definitions.id"), nullable=False)
@@ -1625,7 +1625,7 @@ class Interface(Base):
     latency_requirement_ms = Column(Float)
     availability_requirement_pct = Column(Float)
     notes = Column(Text, default="")
-    metadata_json = Column(JSON, default={})
+    metadata_json = Column(JSON, default=dict)
 
     # Foreign keys
     project_id = Column(Integer, ForeignKey("projects.id"))

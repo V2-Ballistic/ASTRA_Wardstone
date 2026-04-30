@@ -37,7 +37,7 @@ class AuditLog(Base):
     user_agent = Column(String(500), default="")
 
     # ── Payload ──
-    action_detail = Column(JSON, default={})
+    action_detail = Column(JSON, default=dict)
     # e.g. {"field": "status", "old": "draft", "new": "approved"}
 
     # ── Tamper-evidence chain ──

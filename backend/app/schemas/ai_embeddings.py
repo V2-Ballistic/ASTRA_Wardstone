@@ -33,7 +33,7 @@ class SimilarRequirement(BaseModel):
 class DuplicateGroup(BaseModel):
     """A group of requirements that are near-duplicates of each other."""
     group_id: int = 0
-    requirements: List[SimilarRequirement] = []
+    requirements: List[SimilarRequirement] = Field(default_factory=list)
     max_similarity: float = 0.0
     avg_similarity: float = 0.0
 
@@ -48,7 +48,7 @@ class DuplicateCheckRequest(BaseModel):
 class DuplicateCheckResponse(BaseModel):
     """Response for duplicate check on a new statement."""
     is_likely_duplicate: bool = False
-    similar_requirements: List[SimilarRequirement] = []
+    similar_requirements: List[SimilarRequirement] = Field(default_factory=list)
     ai_available: bool = True
 
 
@@ -56,7 +56,7 @@ class ProjectDuplicatesResponse(BaseModel):
     """All duplicate groups found in a project."""
     project_id: int
     total_requirements: int = 0
-    duplicate_groups: List[DuplicateGroup] = []
+    duplicate_groups: List[DuplicateGroup] = Field(default_factory=list)
     threshold: float = 0.85
     ai_available: bool = True
 
@@ -84,7 +84,7 @@ class TraceSuggestionsResponse(BaseModel):
     """Trace link suggestions for a requirement."""
     requirement_id: int
     req_id: str = ""
-    suggestions: List[TraceSuggestion] = []
+    suggestions: List[TraceSuggestion] = Field(default_factory=list)
     ai_available: bool = True
 
 
@@ -99,7 +99,7 @@ class VerificationSuggestion(BaseModel):
     suggested_method: str = ""          # test, analysis, inspection, demonstration
     method_rationale: str = ""
     suggested_criteria: str = ""
-    success_conditions: List[str] = []
+    success_conditions: List[str] = Field(default_factory=list)
     confidence: float = 0.0
     ai_available: bool = True
 
@@ -151,6 +151,6 @@ class AIEmbeddingStats(BaseModel):
     accepted_suggestions: int = 0
     rejected_suggestions: int = 0
     acceptance_rate: float = 0.0
-    suggestions_by_type: Dict[str, int] = {}
+    suggestions_by_type: Dict[str, int] = Field(default_factory=dict)
     # Feedback stats from existing AI feedback system
-    feedback_stats: Dict[str, Any] = {}
+    feedback_stats: Dict[str, Any] = Field(default_factory=dict)

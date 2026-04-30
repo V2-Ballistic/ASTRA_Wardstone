@@ -62,8 +62,8 @@ class IntegrationCreate(BaseModel):
     project_id: int
     integration_type: str = Field(..., pattern="^(jira|azure_devops|doors)$")
     display_name: str = ""
-    config: dict = {}                   # raw connection config (will be encrypted)
-    field_mapping: dict = {}
+    config: dict = Field(default_factory=dict)        # raw connection config (will be encrypted)
+    field_mapping: dict = Field(default_factory=dict)
     external_project: str = ""
     sync_direction: str = Field("import", pattern="^(import|export|bidirectional)$")
     sync_schedule: str = ""

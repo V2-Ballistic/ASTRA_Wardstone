@@ -633,7 +633,7 @@ class ConnectorResponse(BaseModel):
 
 
 class ConnectorWithPins(ConnectorResponse):
-    pins: List[PinResponse] = []
+    pins: List[PinResponse] = Field(default_factory=list)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -986,14 +986,14 @@ class MessageDefinitionResponse(BaseModel):
 
 
 class MessageWithFields(MessageDefinitionResponse):
-    fields: List[MessageFieldResponse] = []
+    fields: List[MessageFieldResponse] = Field(default_factory=list)
 
 
 # ── BusWithMessages (needs MessageSummary + PinBusAssignmentResponse) ──
 
 class BusWithMessages(BusDefinitionResponse):
-    messages: List[MessageSummary] = []
-    pin_assignments: List[PinBusAssignmentResponse] = []
+    messages: List[MessageSummary] = Field(default_factory=list)
+    pin_assignments: List[PinBusAssignmentResponse] = Field(default_factory=list)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1067,15 +1067,15 @@ class EnvironmentalSpecResponse(BaseModel):
 # ── Now define UnitDetail (needs ConnectorWithPins, BusWithMessages, EnvironmentalSpecResponse) ──
 
 class UnitDetail(UnitResponse):
-    connectors: List[ConnectorWithPins] = []
-    bus_definitions: List[BusWithMessages] = []
-    environmental_specs: List[EnvironmentalSpecResponse] = []
+    connectors: List[ConnectorWithPins] = Field(default_factory=list)
+    bus_definitions: List[BusWithMessages] = Field(default_factory=list)
+    environmental_specs: List[EnvironmentalSpecResponse] = Field(default_factory=list)
 
 
 # ── Now define SystemDetail (needs UnitSummary) ──
 
 class SystemDetail(SystemResponse):
-    units: List[UnitSummary] = []
+    units: List[UnitSummary] = Field(default_factory=list)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1325,14 +1325,14 @@ class WireHarnessResponse(BaseModel):
     to_connector_designator: Optional[str] = None
     # Phase 1: endpoint list — populated by the router from harness_endpoints
     # rows. Replaces from/to_connector_id semantics for multi-endpoint harnesses.
-    endpoints: List["HarnessEndpointResponse"] = []
+    endpoints: List["HarnessEndpointResponse"] = Field(default_factory=list)
 
     class Config:
         from_attributes = True
 
 
 class WireHarnessDetail(WireHarnessResponse):
-    wires: List[WireResponse] = []
+    wires: List[WireResponse] = Field(default_factory=list)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1410,8 +1410,8 @@ class ConnectionResponse(BaseModel):
     lru_b_designation: Optional[str] = None
     lru_b_name: Optional[str] = None
     wire_count: int = 0
-    harness_ids: List[int] = []
-    harness_names: List[str] = []
+    harness_ids: List[int] = Field(default_factory=list)
+    harness_names: List[str] = Field(default_factory=list)
 
     class Config:
         from_attributes = True
@@ -1423,7 +1423,7 @@ class ConnectionDetail(ConnectionResponse):
     Wires are grouped under the two connectors on each side. The frontend
     renders one pin map per connector pair.
     """
-    wires: List[WireResponse] = []
+    wires: List[WireResponse] = Field(default_factory=list)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1465,7 +1465,7 @@ class AutoGrowRequest(BaseModel):
     # Optional resolutions for ambiguous pairs from a previous preview call.
     # Empty on first call; populated when re-submitting after the user has
     # resolved each ambiguity modal.
-    decisions: List[AmbiguityDecision] = []
+    decisions: List[AmbiguityDecision] = Field(default_factory=list)
 
 
 class AutoGrowAmbiguity(BaseModel):
@@ -1508,15 +1508,15 @@ class AutoGrowResult(BaseModel):
     wires_created: int = 0
     harnesses_created: int = 0
     endpoints_added: int = 0
-    ambiguities: List[AutoGrowAmbiguity] = []
+    ambiguities: List[AutoGrowAmbiguity] = Field(default_factory=list)
     # For connection-page refresh
-    connections_touched: List[int] = []
+    connections_touched: List[int] = Field(default_factory=list)
     # Echo back so UI can highlight
-    new_wire_ids: List[int] = []
-    new_harness_ids: List[int] = []
+    new_wire_ids: List[int] = Field(default_factory=list)
+    new_harness_ids: List[int] = Field(default_factory=list)
     # Phase 2b — pairs the engine skipped and why. Empty means every pair
     # was either turned into a wire or surfaced as an ambiguity.
-    skipped: List["AutoGrowSkipped"] = []
+    skipped: List["AutoGrowSkipped"] = Field(default_factory=list)
 
 
 class AutoGrowSkipped(BaseModel):
@@ -1725,13 +1725,13 @@ class N2MatrixCell(BaseModel):
     target_system_name: str
     interface_count: int = 0
     harness_count: int = 0
-    bus_protocols: List[str] = []
+    bus_protocols: List[str] = Field(default_factory=list)
     signal_count: int = 0
     criticality_max: Optional[str] = None
 
 
 class N2MatrixResponse(BaseModel):
-    systems: List[SystemResponse] = []
+    systems: List[SystemResponse] = Field(default_factory=list)
     matrix: List[List[Optional[N2MatrixCell]]] = []
 
 
@@ -1760,8 +1760,8 @@ class BlockDiagramEdge(BaseModel):
 
 
 class BlockDiagramResponse(BaseModel):
-    nodes: List[BlockDiagramNode] = []
-    edges: List[BlockDiagramEdge] = []
+    nodes: List[BlockDiagramNode] = Field(default_factory=list)
+    edges: List[BlockDiagramEdge] = Field(default_factory=list)
 
 
 # ── Signal Trace ──
@@ -1778,7 +1778,7 @@ class SignalTraceHop(BaseModel):
 
 class SignalTraceResult(BaseModel):
     signal_name: str
-    path: List[SignalTraceHop] = []
+    path: List[SignalTraceHop] = Field(default_factory=list)
 
 
 # ── Interface Coverage ──
@@ -1809,7 +1809,7 @@ class AutoReqGenerationResult(BaseModel):
     requirements_generated: int = 0
     verifications_generated: int = 0
     links_generated: int = 0
-    requirements: List[GeneratedRequirementSummary] = []
+    requirements: List[GeneratedRequirementSummary] = Field(default_factory=list)
 
 
 # ── Impact Preview ──
@@ -1818,7 +1818,7 @@ class ImpactPreview(BaseModel):
     affected_requirements: List[Dict[str, Any]] = []
     risk_level: str = "low"
     total_affected: int = 0
-    action_options: List[str] = []
+    action_options: List[str] = Field(default_factory=list)
 
 
 # ── Wiring Diagram ──
@@ -1826,6 +1826,6 @@ class ImpactPreview(BaseModel):
 class WiringDiagramData(BaseModel):
     from_connector: ConnectorWithPins
     to_connector: ConnectorWithPins
-    wires: List[WireResponse] = []
-    unconnected_from: List[PinResponse] = []
-    unconnected_to: List[PinResponse] = []
+    wires: List[WireResponse] = Field(default_factory=list)
+    unconnected_from: List[PinResponse] = Field(default_factory=list)
+    unconnected_to: List[PinResponse] = Field(default_factory=list)

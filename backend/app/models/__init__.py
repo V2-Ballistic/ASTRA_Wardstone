@@ -147,7 +147,7 @@ class Project(Base):
     description = Column(Text)
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     status = Column(String(50), default="active")
-    config = Column(JSON, default={})  # Project-specific settings
+    config = Column(JSON, default=dict)  # Project-specific settings
     auto_req_approval_required = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -208,7 +208,7 @@ class SourceArtifact(Base):
     description = Column(Text)
     file_path = Column(String(500))  # Path to uploaded file
     source_date = Column(DateTime)
-    participants = Column(JSON, default=[])  # List of participant names
+    participants = Column(JSON, default=list)  # List of participant names
     project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
     created_by_id = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime, default=datetime.utcnow)

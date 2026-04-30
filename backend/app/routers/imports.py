@@ -91,8 +91,8 @@ class ImportRowPreview(BaseModel):
     parent_req_id: str = ""
     quality_score: float = 0.0
     quality_passed: bool = False
-    warnings: List[str] = []
-    errors: List[str] = []
+    warnings: List[str] = Field(default_factory=list)
+    errors: List[str] = Field(default_factory=list)
     included: bool = True
 
 
@@ -114,7 +114,7 @@ class ImportConfirmResponse(BaseModel):
     created: int
     skipped: int
     errors: List[str]
-    requirements: List[dict] = []
+    requirements: List[dict] = Field(default_factory=list)
 
 
 # ── Parse helpers ──

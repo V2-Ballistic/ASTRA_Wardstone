@@ -41,7 +41,7 @@ class RequirementEmbedding(Base):
         index=True,
     )
     # Embedding stored as JSON array of floats (portable, works without pgvector)
-    embedding = Column(JSON, nullable=False, default=[])
+    embedding = Column(JSON, nullable=False, default=list)
     # Embedding dimensionality for validation
     dimensions = Column(Integer, nullable=False, default=384)
     # Which model produced this embedding
@@ -84,7 +84,7 @@ class AISuggestion(Base):
     # Human-readable explanation
     explanation = Column(Text, default="")
     # Extra structured data (e.g., verification criteria, similarity details)
-    metadata_json = Column(JSON, default={})
+    metadata_json = Column(JSON, default=dict)
     # Resolution status
     status = Column(String(20), nullable=False, default="pending")  # pending, accepted, rejected, dismissed
     resolved_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
