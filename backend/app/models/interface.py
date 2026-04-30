@@ -1598,6 +1598,10 @@ class Wire(Base):
         Index("ix_wire_from_pin", "from_pin_id"),
         Index("ix_wire_to_pin", "to_pin_id"),
         Index("ix_wire_signal_name", "signal_name"),
+        # Schema-drift sync: created by 0007 alongside the mating-pin
+        # columns added there.
+        Index("ix_wires_from_mating_pin", "from_mating_pin_id"),
+        Index("ix_wires_to_mating_pin", "to_mating_pin_id"),
     )
 
 
@@ -1784,7 +1788,14 @@ class HarnessEndpoint(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     # UNIQUE on lru_connector_id prevents two harnesses both claiming to
-    # plug into the same physical LRU connector. Enforced in migration SQL.
+    # plug into the same physical LRU connector. Enforced in migration SQL
+    # (created by 0007). Mirrored here for `alembic check` cleanliness.
+    __table_args__ = (
+        UniqueConstraint("lru_connector_id", name="uq_lru_connector_once"),
+        Index("ix_harness_endpoints_harness", "harness_id"),
+        Index("ix_harness_endpoints_lru", "lru_connector_id"),
+        Index("ix_harness_endpoints_mating", "mating_connector_id"),
+    )
 
 
 class Connection(Base):
@@ -1802,3 +1813,11 @@ class Connection(Base):
     lru_b_id = Column(Integer, ForeignKey("units.id", ondelete="CASCADE"), nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    # Schema-drift sync: created by 0007.
+    __table_args__ = (
+        UniqueConstraint("lru_a_id", "lru_b_id", name="uq_connection_pair"),
+        Index("ix_connections_project", "project_id"),
+        Index("ix_connections_lru_a", "lru_a_id"),
+        Index("ix_connections_lru_b", "lru_b_id"),
+    )

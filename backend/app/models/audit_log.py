@@ -67,4 +67,11 @@ class AuditLog(Base):
         Index("ix_audit_project", "project_id", "timestamp"),
         Index("ix_audit_user", "user_id", "timestamp"),
         Index("ix_audit_seq", "sequence_number"),
+        # Schema-drift sync: these indexes were created by migration
+        # 0002 but never declared in Base.metadata. Declaring them
+        # here keeps `alembic check` clean.
+        Index("ix_audit_entity_lookup", "entity_type", "entity_id", "timestamp"),
+        Index("ix_audit_project_time", "project_id", "timestamp"),
+        Index("ix_audit_user_time", "user_id", "timestamp"),
+        Index("ix_audit_sequence", "sequence_number"),
     )

@@ -38,7 +38,10 @@ _optional_models = [
     "app.models.ai_models",
     "app.models.embedding",          # Prompt 1: RequirementEmbedding, AISuggestion
     "app.models.impact",             # Prompt 2: ImpactReport
-    "app.models.interface"           # ICD management module
+    "app.models.interface",          # ICD management module
+    "app.models.report_job",         # Phase 2C F-019/F-032
+    "app.models.step_up_token",      # Phase 2D F-036
+    "app.models.id_sequence",        # Phase 2D F-074
 ]
 for _mod in _optional_models:
     try:

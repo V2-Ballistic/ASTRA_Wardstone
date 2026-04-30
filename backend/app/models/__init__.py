@@ -264,8 +264,10 @@ class TraceLink(Base):
             name="uq_trace_link_endpoints",
         ),
         Index("ix_trace_links_project", "project_id"),
-        Index("ix_trace_links_source_pair", "source_type", "source_id"),
-        Index("ix_trace_links_target_pair", "target_type", "target_id"),
+        # Source/target pair indexes were created by migration 0002 with
+        # the names below — keep them so alembic check stays clean.
+        Index("ix_tracelink_source", "source_type", "source_id"),
+        Index("ix_tracelink_target", "target_type", "target_id"),
     )
 
 
@@ -316,6 +318,11 @@ class RequirementHistory(Base):
     requirement = relationship("Requirement", back_populates="history")
     changed_by = relationship("User")
 
+    __table_args__ = (
+        # Schema-drift sync: created by 0002 but not declared on the model.
+        Index("ix_reqhistory_req_time", "requirement_id", "changed_at"),
+    )
+
 
 class Baseline(Base):
     __tablename__ = "baselines"
@@ -332,6 +339,11 @@ class Baseline(Base):
     project = relationship("Project", back_populates="baselines")
     created_by = relationship("User")
     requirements = relationship("BaselineRequirement", back_populates="baseline", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        # Schema-drift sync: created by 0002.
+        Index("ix_baseline_project_time", "project_id", "created_at"),
+    )
 
 
 class BaselineRequirement(Base):
@@ -374,3 +386,8 @@ class Comment(Base):
     requirement = relationship("Requirement", back_populates="comments")
     author = relationship("User", back_populates="comments")
     parent = relationship("Comment", remote_side=[id], backref="replies")
+
+    __table_args__ = (
+        # Schema-drift sync: created by 0002.
+        Index("ix_comment_req_created", "requirement_id", "created_at"),
+    )

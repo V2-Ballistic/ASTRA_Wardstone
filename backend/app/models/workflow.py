@@ -146,6 +146,9 @@ class WorkflowInstance(Base):
 
     __table_args__ = (
         Index("ix_wf_instance_entity", "entity_type", "entity_id"),
+        # Schema-drift sync: created by 0002 with these compact names.
+        Index("ix_wfinst_entity", "entity_type", "entity_id"),
+        Index("ix_wfinst_project_status", "project_id", "status"),
     )
 
 
