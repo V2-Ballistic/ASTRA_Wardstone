@@ -578,11 +578,11 @@ export default function ProjectDashboard() {
                 <LevelBar key={lv} level={lv} count={byLevel[lv] || 0} total={totalReqs} />
               ))}
             </div>
-            {(stats?.orphan_count > 0) && (
+            {((stats?.orphan_count ?? 0) > 0) && (
               <div className="mt-4 flex items-center gap-2 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2">
                 <AlertTriangle className="h-3.5 w-3.5 text-amber-400 flex-shrink-0" />
                 <span className="text-[11px] text-amber-300">
-                  {stats.orphan_count} orphan{stats.orphan_count !== 1 ? 's' : ''} with no trace links
+                  {stats!.orphan_count} orphan{stats!.orphan_count !== 1 ? 's' : ''} with no trace links
                 </span>
               </div>
             )}

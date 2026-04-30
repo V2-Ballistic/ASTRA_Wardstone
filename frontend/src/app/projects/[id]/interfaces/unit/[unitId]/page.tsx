@@ -34,6 +34,7 @@ import { interfaceAPI } from '@/lib/interface-api';
 import type {
   UnitDetail, ConnectorWithPins, Pin, BusWithMessages, MessageSummary,
   UnitEnvironmentalSpec, SystemDetail as SystemDetailType,
+  ConnectorType, ConnectorGender, BusProtocol,
 } from '@/lib/interface-types';
 import { SIGNAL_TYPE_COLORS } from '@/lib/interface-types';
 
@@ -148,14 +149,16 @@ export default function UnitDetailPage() {
 
   // ── Connector CRUD ──
   const [showAddConn, setShowAddConn]     = useState(false);
-  const [connForm, setConnForm]           = useState({ designator: '', name: '', connector_type: 'circular_mil', gender: 'female_socket', total_contacts: 37 });
+  const [connForm, setConnForm]           = useState<{
+    designator: string; name: string; connector_type: ConnectorType; gender: ConnectorGender; total_contacts: number;
+  }>({ designator: '', name: '', connector_type: 'mil_dtl_38999_series_iii', gender: 'female_socket', total_contacts: 37 });
   const [savingConn, setSavingConn]       = useState(false);
   const [expandedConns, setExpandedConns] = useState<Set<number>>(new Set());
   const [deleteConnId, setDeleteConnId]   = useState<number | null>(null);
 
   // ── Bus CRUD ──
   const [showAddBus, setShowAddBus]       = useState(false);
-  const [busForm, setBusForm]             = useState({ name: '', bus_type: 'mil_std_1553b', protocol_version: '' });
+  const [busForm, setBusForm]             = useState<{ name: string; bus_type: BusProtocol; protocol_version: string }>({ name: '', bus_type: 'mil_std_1553b', protocol_version: '' });
   const [savingBus, setSavingBus]         = useState(false);
 
   // ── Fetch ──
@@ -269,7 +272,7 @@ export default function UnitDetailPage() {
     try {
       await interfaceAPI.createConnector({ unit_id: unitId, ...connForm });
       setShowAddConn(false);
-      setConnForm({ designator: '', name: '', connector_type: 'circular_mil', gender: 'female_socket', total_contacts: 37 });
+      setConnForm({ designator: '', name: '', connector_type: 'mil_dtl_38999_series_iii' as ConnectorType, gender: 'female_socket' as ConnectorGender, total_contacts: 37 });
       flash('Connector created');
       fetchUnit();
     } catch (e: any) { flash(e?.response?.data?.detail || 'Failed'); }
@@ -517,11 +520,11 @@ export default function UnitDetailPage() {
                   className="rounded-lg border border-astra-border bg-astra-bg px-3 py-2 text-sm text-slate-200 outline-none focus:border-blue-500/50" />
                 <input value={connForm.name} onChange={e => setConnForm({ ...connForm, name: e.target.value })} placeholder="Name"
                   className="rounded-lg border border-astra-border bg-astra-bg px-3 py-2 text-sm text-slate-200 outline-none focus:border-blue-500/50" />
-                <select value={connForm.connector_type} onChange={e => setConnForm({ ...connForm, connector_type: e.target.value })}
+                <select value={connForm.connector_type} onChange={e => setConnForm({ ...connForm, connector_type: e.target.value as ConnectorType })}
                   className="rounded-lg border border-astra-border bg-astra-bg px-3 py-2 text-sm text-slate-200 outline-none focus:border-blue-500/50">
                   {CONNECTOR_TYPES.map(t => <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>)}
                 </select>
-                <select value={connForm.gender} onChange={e => setConnForm({ ...connForm, gender: e.target.value })}
+                <select value={connForm.gender} onChange={e => setConnForm({ ...connForm, gender: e.target.value as ConnectorGender })}
                   className="rounded-lg border border-astra-border bg-astra-bg px-3 py-2 text-sm text-slate-200 outline-none focus:border-blue-500/50">
                   {GENDERS.map(g => <option key={g} value={g}>{g.replace(/_/g, ' ')}</option>)}
                 </select>
@@ -643,7 +646,7 @@ export default function UnitDetailPage() {
               <div className="grid grid-cols-3 gap-3">
                 <input value={busForm.name} onChange={e => setBusForm({ ...busForm, name: e.target.value })} placeholder="Bus name *"
                   className="rounded-lg border border-astra-border bg-astra-bg px-3 py-2 text-sm text-slate-200 outline-none focus:border-blue-500/50" />
-                <select value={busForm.bus_type} onChange={e => setBusForm({ ...busForm, bus_type: e.target.value })}
+                <select value={busForm.bus_type} onChange={e => setBusForm({ ...busForm, bus_type: e.target.value as BusProtocol })}
                   className="rounded-lg border border-astra-border bg-astra-bg px-3 py-2 text-sm text-slate-200 outline-none focus:border-blue-500/50">
                   {BUS_TYPES.map(t => <option key={t} value={t}>{t.replace(/_/g, ' ').toUpperCase()}</option>)}
                 </select>

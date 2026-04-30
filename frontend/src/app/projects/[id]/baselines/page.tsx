@@ -96,7 +96,8 @@ export default function BaselinesPage() {
   // Helper: get field from snapshot row (handles both plain and _snapshot suffixed names)
   const sf = (r: any, field: string) => r[field] || r[`${field}_snapshot`] || '';
 
-  const formatDate = (iso: string) => iso ? new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
+  const formatDate = (iso: string | null | undefined) =>
+    iso ? new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
 
   if (loading) return <div className="flex min-h-[60vh] items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-blue-500" /></div>;
 
@@ -160,9 +161,9 @@ export default function BaselinesPage() {
           <div className="rounded-xl border border-astra-border bg-astra-surface p-5">
             <h2 className="text-base font-bold text-slate-100 mb-1">{selected.name}</h2>
             <p className="text-xs text-slate-500 mb-4">{selected.requirements_count || selected.requirements?.length || 0} requirements · {formatDate(selected.created_at)}</p>
-            {selected.requirements?.length > 0 && (
+            {(selected.requirements?.length ?? 0) > 0 && (
               <div className="overflow-hidden rounded-lg border border-astra-border">
-                {selected.requirements.map((r: any, i: number) => {
+                {selected.requirements!.map((r: any, i: number) => {
                   const lvl = (sf(r, 'level') || 'L1') as RequirementLevel;
                   const st = (sf(r, 'status') || 'draft') as RequirementStatus;
                   const sc = STATUS_COLORS[st];
@@ -194,44 +195,44 @@ export default function BaselinesPage() {
             <div className="grid grid-cols-3 gap-4 mb-4">
               <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3 text-center">
                 <Plus className="mx-auto h-4 w-4 text-emerald-400 mb-1" />
-                <div className="text-lg font-bold text-emerald-400">{compareResult.summary?.added ?? compareResult.added?.length ?? 0}</div>
+                <div className="text-lg font-bold text-emerald-400">{(compareResult.summary?.added as number | undefined) ?? compareResult.added?.length ?? 0}</div>
                 <div className="text-[10px] text-slate-500">Added</div>
               </div>
               <div className="rounded-lg border border-red-500/20 bg-red-500/5 p-3 text-center">
                 <Minus className="mx-auto h-4 w-4 text-red-400 mb-1" />
-                <div className="text-lg font-bold text-red-400">{compareResult.summary?.removed ?? compareResult.removed?.length ?? 0}</div>
+                <div className="text-lg font-bold text-red-400">{(compareResult.summary?.removed as number | undefined) ?? compareResult.removed?.length ?? 0}</div>
                 <div className="text-[10px] text-slate-500">Removed</div>
               </div>
               <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-center">
                 <Edit3 className="mx-auto h-4 w-4 text-amber-400 mb-1" />
-                <div className="text-lg font-bold text-amber-400">{compareResult.summary?.modified ?? compareResult.modified?.length ?? 0}</div>
+                <div className="text-lg font-bold text-amber-400">{(compareResult.summary?.modified as number | undefined) ?? compareResult.modified?.length ?? 0}</div>
                 <div className="text-[10px] text-slate-500">Changed</div>
               </div>
             </div>
-            {compareResult.added?.length > 0 && (
+            {(compareResult.added?.length ?? 0) > 0 && (
               <div className="mb-3">
                 <h4 className="text-[10px] font-semibold uppercase text-emerald-400 mb-1">Added</h4>
-                {compareResult.added.map((r: any, i: number) => (
+                {compareResult.added!.map((r: any, i: number) => (
                   <div key={i} className="text-xs text-slate-300 py-0.5">
                     <span className="font-mono text-blue-400">{sf(r, 'req_id')}</span> {sf(r, 'title')}
                   </div>
                 ))}
               </div>
             )}
-            {compareResult.removed?.length > 0 && (
+            {(compareResult.removed?.length ?? 0) > 0 && (
               <div className="mb-3">
                 <h4 className="text-[10px] font-semibold uppercase text-red-400 mb-1">Removed</h4>
-                {compareResult.removed.map((r: any, i: number) => (
+                {compareResult.removed!.map((r: any, i: number) => (
                   <div key={i} className="text-xs text-slate-300 py-0.5 line-through opacity-60">
                     <span className="font-mono text-blue-400">{sf(r, 'req_id')}</span> {sf(r, 'title')}
                   </div>
                 ))}
               </div>
             )}
-            {(compareResult.modified?.length > 0) && (
+            {((compareResult.modified?.length ?? 0) > 0) && (
               <div>
                 <h4 className="text-[10px] font-semibold uppercase text-amber-400 mb-1">Changed</h4>
-                {compareResult.modified.map((r: any, i: number) => (
+                {compareResult.modified!.map((r: any, i: number) => (
                   <div key={i} className="text-xs text-slate-300 py-0.5">
                     <span className="font-mono text-blue-400">{r.req_id}</span> {r.title}{' '}
                     <span className="text-[10px] text-amber-400">

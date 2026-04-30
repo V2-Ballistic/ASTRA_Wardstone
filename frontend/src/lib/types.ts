@@ -123,15 +123,24 @@ export interface DashboardStats {
 }
 
 export interface CoverageReport {
+  // The router computes the same coverage three different ways for
+  // backward compatibility with consumers (landing page, traceability
+  // page, sidebar). All fields below are part of the documented
+  // payload — see backend/app/routers/projects.py::get_coverage.
   total_requirements: number;
+  total?: number;                // alias used by traceability page
   with_source: number;
+  with_source_pct: number;
   with_children: number;
+  with_children_pct: number;
   with_verification: number;
+  with_verification_pct: number;
   orphans: number;
-  source_pct: number;
-  children_pct: number;
-  verification_pct: number;
   orphan_pct: number;
+  // Legacy keys consumed by projects/[id]/page.tsx:
+  forward_coverage: number;      // == with_source_pct
+  backward_coverage: number;     // == with_children_pct
+  verification_coverage: number; // == with_verification_pct
 }
 
 export interface BaselineDetail {
@@ -142,21 +151,33 @@ export interface BaselineDetail {
   requirements_count: number;
   created_by: string;
   created_at: string | null;
+  // The detail-fetch payload bundles the snapshot rows alongside the
+  // header. Modeled loosely (Record<string, unknown>) because the
+  // snapshot row schema mixes typed fields and free-form columns;
+  // tightening it further is a follow-up.
+  requirements?: Array<Record<string, unknown>>;
 }
 
 export interface BaselineCompareResult {
-  baseline_a: BaselineDetail;
-  baseline_b: BaselineDetail;
-  added: Array<Record<string, unknown>>;
-  removed: Array<Record<string, unknown>>;
-  modified: Array<Record<string, unknown>>;
+  baseline_a?: BaselineDetail;
+  baseline_b?: BaselineDetail;
+  added?: Array<Record<string, unknown>>;
+  removed?: Array<Record<string, unknown>>;
+  modified?: Array<Record<string, unknown>>;
+  // The compare endpoint returns a free-form `summary` block too;
+  // typed loosely until the response shape is locked down.
+  summary?: Record<string, unknown>;
 }
 
 export interface AuditChainVerifyResult {
   is_valid: boolean;
   verified_count?: number;
+  total_records?: number;
   error?: string;
-  first_invalid_seq?: number | null;
+  // Server returns the offending record as `first_invalid: { sequence_number, reason }`
+  // (or null when the chain is valid). Modeled loosely so the page can
+  // read `.first_invalid?.sequence_number` without ceremony.
+  first_invalid?: { sequence_number?: number; reason?: string } | null;
 }
 
 // ── Enums ──

@@ -22,7 +22,7 @@ import clsx from 'clsx';
 import { projectsAPI } from '@/lib/api';
 import { interfaceAPI } from '@/lib/interface-api';
 import type {
-  System, UnitSummary, Connector, WireHarness,
+  System, SystemType, UnitSummary, Connector, WireHarness,
   N2MatrixResponse, N2MatrixCell, InterfaceCoverageResponse,
   Connection,
 } from '@/lib/interface-types';
@@ -109,7 +109,7 @@ function CreateSystemModal({ projectId, onClose, onCreated }: {
   projectId: number; onClose: () => void; onCreated: () => void;
 }) {
   const [name, setName] = useState('');
-  const [sysType, setSysType] = useState('subsystem');
+  const [sysType, setSysType] = useState<SystemType>('subsystem');
   const [abbr, setAbbr] = useState('');
   const [desc, setDesc] = useState('');
   const [wbs, setWbs] = useState('');
@@ -160,7 +160,7 @@ function CreateSystemModal({ projectId, onClose, onCreated }: {
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1 block">Type</label>
-              <select value={sysType} onChange={e => setSysType(e.target.value)}
+              <select value={sysType} onChange={e => setSysType(e.target.value as SystemType)}
                 className="w-full rounded-lg border border-astra-border bg-astra-bg px-3 py-2.5 text-sm text-slate-200 outline-none focus:border-blue-500/50">
                 {SYSTEM_TYPES.map(t => (
                   <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>
@@ -652,7 +652,7 @@ export default function InterfacesPage() {
       // Apply filters
       if (connStatusFilter && h.status !== connStatusFilter) continue;
 
-      const sysId = unitSystemMap[h.from_unit_id] || 0;
+      const sysId = (h.from_unit_id != null ? unitSystemMap[h.from_unit_id] : 0) || 0;
       if (connSystemFilter && sysId !== Number(connSystemFilter)) continue;
 
       const group = groups.get(sysId) || groups.get(0)!;

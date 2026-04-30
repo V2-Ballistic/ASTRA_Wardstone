@@ -29,7 +29,7 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { interfaceAPI } from '@/lib/interface-api';
-import type { SystemDetail, UnitSummary, Connection, WireHarness } from '@/lib/interface-types';
+import type { SystemDetail, UnitSummary, Connection, WireHarness, UnitType } from '@/lib/interface-types';
 
 // ══════════════════════════════════════
 //  Constants
@@ -240,7 +240,7 @@ function AddUnitModal({ projectId, systemId, onClose, onCreated }: {
   const [designation, setDesignation]  = useState('');
   const [partNumber, setPartNumber]    = useState('');
   const [manufacturer, setManufacturer] = useState('');
-  const [unitType, setUnitType]        = useState('lru');
+  const [unitType, setUnitType]        = useState<UnitType>('lru');
   const [desc, setDesc]                = useState('');
   const [saving, setSaving]            = useState(false);
   const [error, setError]              = useState('');
@@ -327,7 +327,7 @@ function AddUnitModal({ projectId, systemId, onClose, onCreated }: {
             <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1 block">
               Unit Type
             </label>
-            <select value={unitType} onChange={e => setUnitType(e.target.value)}
+            <select value={unitType} onChange={e => setUnitType(e.target.value as UnitType)}
               className="w-full rounded-lg border border-astra-border bg-astra-bg px-3 py-2.5 text-sm text-slate-200 outline-none focus:border-blue-500/50">
               {UNIT_TYPES.map(t => (
                 <option key={t} value={t}>{t.replace(/_/g, ' ').toUpperCase()}</option>
