@@ -240,20 +240,31 @@ def create_verification(
 # ══════════════════════════════════════
 
 def _run_background_ai(db_url: str, req_id: int):
-    """Background task: run Tier 2 AI analysis and cache the result."""
+    """Background task: run Tier 2 AI analysis and cache the result.
+
+    F-054: pre-fix this opened a SessionLocal, called cache_analysis,
+    and closed without an explicit commit — relying on cache_analysis
+    to commit internally. If cache_analysis ever changed to defer
+    its commit (or raised mid-flush), the cached row would silently
+    roll back. Using `with SessionLocal() as db:` and an explicit
+    `db.commit()` makes the persistence intent obvious and survives
+    a future cache_analysis refactor.
+
+    The `db_url` parameter is unused (F-030 — a separate finding —
+    will retire it); SessionLocal pulls from settings directly.
+    """
     if not is_ai_available():
         return
+    from app.database import SessionLocal
     try:
-        from app.database import SessionLocal
-        db = SessionLocal()
-        req = db.query(Requirement).filter(Requirement.id == req_id).first()
-        if not req:
-            db.close()
-            return
-        result = analyze_quality_deep(
-            req.statement or "", req.title or "", req.rationale or "")
-        cache_analysis(db, req_id, "deep", result.model_dump(), result.model_used)
-        db.close()
+        with SessionLocal() as db:
+            req = db.query(Requirement).filter(Requirement.id == req_id).first()
+            if not req:
+                return
+            result = analyze_quality_deep(
+                req.statement or "", req.title or "", req.rationale or "")
+            cache_analysis(db, req_id, "deep", result.model_dump(), result.model_used)
+            db.commit()
     except Exception as exc:
         import logging
         logging.getLogger("astra.ai").error("Background AI failed for req %d: %s", req_id, exc)
