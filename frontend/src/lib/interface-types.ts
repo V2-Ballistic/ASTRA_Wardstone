@@ -231,6 +231,9 @@ export interface UnitSummary {
   manufacturer: string;
   unit_type: UnitType;
   status: UnitStatus;
+  // F-029: surfaced from the backend so callers can group units
+  // by system without an N-call getSystem fan-out.
+  system_id: number;
   connector_count: number;
   bus_count: number;
 }

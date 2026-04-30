@@ -22,7 +22,7 @@ import clsx from 'clsx';
 import { projectsAPI } from '@/lib/api';
 import { interfaceAPI } from '@/lib/interface-api';
 import type {
-  System, SystemDetail, UnitSummary, Connector, WireHarness,
+  System, UnitSummary, Connector, WireHarness,
   N2MatrixResponse, N2MatrixCell, InterfaceCoverageResponse,
   Connection,
 } from '@/lib/interface-types';
@@ -529,7 +529,7 @@ export default function InterfacesPage() {
   const [n2Data, setN2Data]       = useState<N2MatrixResponse | null>(null);
   const [coverage, setCoverage]   = useState<InterfaceCoverageResponse | null>(null);
 
-  // ── unit_id → system mapping (built from SystemDetail calls) ──
+  // ── unit_id → system mapping (now sourced from UnitSummary.system_id) ──
   const [unitSystemMap, setUnitSystemMap] = useState<Record<number, number>>({});
 
   // ── UI state ──
@@ -563,25 +563,21 @@ export default function InterfacesPage() {
       setProjectCode(projRes.data?.code || '');
       const sysList: System[] = sysRes.data || [];
       setSystems(sysList);
-      setUnits(unitRes.data || []);
+      const unitList: UnitSummary[] = unitRes.data || [];
+      setUnits(unitList);
       setHarnesses(harnRes.data || []);
       setConnections(connRes.data || []);
       setN2Data(n2Res.data || null);
       setCoverage(covRes.data || null);
 
-      // Build unit → system map by fetching SystemDetail for each system
+      // F-029: build unit → system map directly from each unit's
+      // `system_id` (now surfaced by UnitSummary). Pre-fix this
+      // issued one getSystem(id) call per system in the project to
+      // walk SystemDetail.units — N round-trips for what is now
+      // available in the unitList we already loaded.
       const map: Record<number, number> = {};
-      const detailPromises = sysList.map(s =>
-        interfaceAPI.getSystem(s.id).catch(() => ({ data: null }))
-      );
-      const details = await Promise.all(detailPromises);
-      for (const d of details) {
-        const sd = d.data as SystemDetail | null;
-        if (sd?.units) {
-          for (const u of sd.units) {
-            map[u.id] = sd.id;
-          }
-        }
+      for (const u of unitList) {
+        map[u.id] = u.system_id;
       }
       setUnitSystemMap(map);
 
