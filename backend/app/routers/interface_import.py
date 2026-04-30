@@ -283,14 +283,15 @@ def _cell_val(ws, row, col) -> str:
 
 
 def _next_id(db: Session, model, project_id: int, prefix: str, id_field: str) -> str:
-    max_row = db.query(model).filter(model.project_id == project_id).order_by(model.id.desc()).first()
-    if max_row:
-        existing_id = getattr(max_row, id_field, "") or ""
-        match = re.search(r"(\d+)$", existing_id)
-        next_num = (int(match.group(1)) + 1) if match else 1
-    else:
-        next_num = 1
-    return f"{prefix}-{next_num:03d}"
+    """F-074: race-safe per-project ID generation. See routers/interface.py:_next_id."""
+    from app.services.id_sequence import next_human_id
+    return next_human_id(
+        db,
+        project_id=project_id,
+        prefix=prefix,
+        source_model=model,
+        id_field=id_field,
+    )
 
 
 # ══════════════════════════════════════════════════════════════

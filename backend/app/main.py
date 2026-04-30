@@ -88,6 +88,7 @@ for _model_path in [
     "app.models.interface",
     "app.models.report_job",
     "app.models.step_up_token",
+    "app.models.id_sequence",
 ]:
     try:
         __import__(_model_path)

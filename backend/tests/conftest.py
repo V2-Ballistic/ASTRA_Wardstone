@@ -96,6 +96,19 @@ try:
     from app.models.interface import *                     # noqa: F401, F403, E402
 except ImportError:
     pass
+# Phase 2C / 2D models the older fixture didn't know about.
+try:
+    from app.models.report_job import ReportJob            # noqa: F401, E402
+except ImportError:
+    pass
+try:
+    from app.models.step_up_token import StepUpToken       # noqa: F401, E402
+except ImportError:
+    pass
+try:
+    from app.models.id_sequence import IdSequence          # noqa: F401, E402
+except ImportError:
+    pass
 
 
 # ══════════════════════════════════════

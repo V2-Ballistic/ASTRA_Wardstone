@@ -484,8 +484,16 @@ def create_artifact(project_id: int, data: SourceArtifactCreate, request: Reques
                     db: Session = Depends(get_db),
                     current_user: User = Depends(get_current_user),
                     project: Project = Depends(project_member_required)):
-    count = db.query(SourceArtifact).filter(SourceArtifact.project_id == project_id).count()
-    artifact_id = f"ART-{project.code}-{count + 1:03d}"
+    # F-074: replace racy `count + 1` (two concurrent creates compute
+    # the same number) with the FOR-UPDATE-locked id_sequences row.
+    from app.services.id_sequence import next_human_id
+    artifact_id = next_human_id(
+        db,
+        project_id=project_id,
+        prefix=f"ART-{project.code}",
+        source_model=SourceArtifact,
+        id_field="artifact_id",
+    )
     artifact = SourceArtifact(artifact_id=artifact_id, **data.model_dump(), project_id=project_id)
     db.add(artifact)
     db.commit()

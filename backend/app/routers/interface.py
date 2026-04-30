@@ -112,20 +112,24 @@ def _ev(v) -> str:
 
 
 def _next_id(db: Session, model, project_id: int, prefix: str, id_field: str) -> str:
-    """Generate next auto-ID: PREFIX-{N:03d}"""
-    max_row = (
-        db.query(model)
-        .filter(model.project_id == project_id)
-        .order_by(model.id.desc())
-        .first()
+    """
+    Generate next auto-ID PREFIX-{N:03d}.
+
+    F-074: delegates to `app.services.id_sequence.next_human_id` which
+    serialises concurrent generators against the per-(project, prefix)
+    row in ``id_sequences`` via SELECT … FOR UPDATE. The legacy
+    "ORDER BY id DESC + parse trailing digits" path was racy — two
+    concurrent creates on the same project could compute the same ID
+    and fight over the unique constraint.
+    """
+    from app.services.id_sequence import next_human_id
+    return next_human_id(
+        db,
+        project_id=project_id,
+        prefix=prefix,
+        source_model=model,
+        id_field=id_field,
     )
-    if max_row:
-        existing_id = getattr(max_row, id_field, "") or ""
-        match = re.search(r"(\d+)$", existing_id)
-        next_num = (int(match.group(1)) + 1) if match else 1
-    else:
-        next_num = 1
-    return f"{prefix}-{next_num:03d}"
 
 
 def _require_project(db: Session, project_id: int, current_user: User) -> Project:
