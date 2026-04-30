@@ -71,7 +71,7 @@ class SyncLog(Base):
     updated_count = Column(Integer, default=0)
     skipped_count = Column(Integer, default=0)
     error_count = Column(Integer, default=0)
-    details = Column(JSON, default={})                      # error messages, item-level details
+    details = Column(JSON, default=dict)                    # error messages, item-level details
     triggered_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     started_at = Column(DateTime, default=datetime.utcnow)
     completed_at = Column(DateTime, nullable=True)

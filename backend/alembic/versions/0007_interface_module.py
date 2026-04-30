@@ -956,6 +956,18 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # AUDIT_FINDINGS F-022: This downgrade drops 15 ICD tables and 38
+    # enum types — total destruction of the Interface module on any
+    # accidental invocation. Refuse to run in production unless
+    # ASTRA_ALLOW_DESTRUCTIVE_DOWNGRADE=true is set.
+    import os
+    if (os.getenv("ENVIRONMENT") == "production"
+            and not os.getenv("ASTRA_ALLOW_DESTRUCTIVE_DOWNGRADE")):
+        raise NotImplementedError(
+            "Refusing destructive downgrade in production. "
+            "Set ASTRA_ALLOW_DESTRUCTIVE_DOWNGRADE=true to override."
+        )
+
     # ── Drop tables in reverse dependency order ──
     op.drop_table("interface_change_impacts")
     op.drop_table("auto_requirement_logs")

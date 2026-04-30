@@ -102,8 +102,8 @@ class RequirementResponse(BaseModel):
 
 class RequirementDetail(RequirementResponse):
     owner: Optional[UserResponse] = None
-    children: List["RequirementResponse"] = []
-    verifications: list = []
+    children: List["RequirementResponse"] = Field(default_factory=list)
+    verifications: list = Field(default_factory=list)
     trace_count: int = 0
     verification_status: Optional[str] = None
 
@@ -117,7 +117,7 @@ class SourceArtifactCreate(BaseModel):
     artifact_type: str
     description: Optional[str] = None
     source_date: Optional[datetime] = None
-    participants: List[str] = []
+    participants: List[str] = Field(default_factory=list)
 
 class SourceArtifactResponse(BaseModel):
     id: int
@@ -196,8 +196,8 @@ class VerificationResponse(BaseModel):
 class QualityCheckResult(BaseModel):
     score: float
     passed: bool
-    warnings: List[str] = []
-    suggestions: List[str] = []
+    warnings: List[str] = Field(default_factory=list)
+    suggestions: List[str] = Field(default_factory=list)
 
 
 # ══════════════════════════════════════

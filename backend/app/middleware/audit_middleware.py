@@ -13,15 +13,18 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.requests import Request
 from starlette.responses import Response
 
-# Context variable — set per request
-_request_ctx: contextvars.ContextVar[dict] = contextvars.ContextVar(
-    "audit_request_ctx", default={}
+# Context variable — set per request. F-038: default is None (sentinel),
+# never a shared mutable dict; the getter returns a fresh dict on miss
+# so callers can't accidentally mutate global state.
+_request_ctx: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "audit_request_ctx", default=None
 )
 
 
 def get_request_context() -> dict:
     """Read the current request's IP + UA from the context."""
-    return _request_ctx.get()
+    val = _request_ctx.get()
+    return val if val is not None else {}
 
 
 class AuditContextMiddleware(BaseHTTPMiddleware):

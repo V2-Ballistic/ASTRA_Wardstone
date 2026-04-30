@@ -11,6 +11,12 @@ services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
+    # F-066: override hba_file so 127.0.0.1 requires scram-sha-256.
+    # The mounted file at /etc/postgresql/pg_hba.conf is the source
+    # of truth; the default file in PGDATA is ignored.
+    command: >
+      postgres
+      -c hba_file=/etc/postgresql/pg_hba.conf
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -18,8 +24,13 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./database/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+      - ./database/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
     ports:
-      - "5432:5432"
+      # F-104: bound to loopback only — Postgres should never be
+      # reachable from another host on the LAN with the dev password.
+      # Backend / pgadmin still reach the db via the docker-compose
+      # network using hostname `db`, not via the host loopback.
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
@@ -34,7 +45,8 @@ services:
       PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
       PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
     ports:
-      - "5050:80"
+      # F-104: pgAdmin web UI bound to loopback only.
+      - "127.0.0.1:5050:80"
     volumes:
       - pgadmin_data:/var/lib/pgadmin
     depends_on:

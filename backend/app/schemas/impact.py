@@ -28,8 +28,8 @@ class ImpactItem(BaseModel):
     entity_title: str = ""
     impact_level: str = "direct"   # "direct" (1 hop), "indirect" (2+ hops)
     hop_count: int = 1
-    relationship_path: List[str] = []   # ["FR-001 →satisfies→ IR-003 →verifies→ VER-005"]
-    link_types_involved: List[str] = []  # ["satisfies", "verifies"]
+    relationship_path: List[str] = Field(default_factory=list)   # ["FR-001 →satisfies→ IR-003 →verifies→ VER-005"]
+    link_types_involved: List[str] = Field(default_factory=list)  # ["satisfies", "verifies"]
     current_status: str = ""
     ai_explanation: str = ""
 
@@ -62,20 +62,20 @@ class AffectedBaseline(BaseModel):
 class ImpactReport(BaseModel):
     """Complete impact analysis result."""
     # Source
-    changed_requirement: Dict[str, Any] = {}
+    changed_requirement: Dict[str, Any] = Field(default_factory=dict)
     change_description: str = ""
 
     # Classified impacts
-    direct_impacts: List[ImpactItem] = []
-    indirect_impacts: List[ImpactItem] = []
+    direct_impacts: List[ImpactItem] = Field(default_factory=list)
+    indirect_impacts: List[ImpactItem] = Field(default_factory=list)
 
     # Affected sub-systems
-    affected_verifications: List[AffectedVerification] = []
-    affected_baselines: List[AffectedBaseline] = []
+    affected_verifications: List[AffectedVerification] = Field(default_factory=list)
+    affected_baselines: List[AffectedBaseline] = Field(default_factory=list)
 
     # Risk assessment
     risk_level: str = "low"     # low, medium, high, critical
-    risk_factors: List[str] = []
+    risk_factors: List[str] = Field(default_factory=list)
 
     # AI-generated summary
     ai_summary: str = ""
@@ -107,14 +107,14 @@ class DependencyNode(BaseModel):
     hop_count: int = 0
     link_type: str = ""          # The link type that connects this to its parent
     link_direction: str = ""     # "upstream" or "downstream"
-    children: List["DependencyNode"] = []
+    children: List["DependencyNode"] = Field(default_factory=list)
 
 
 class DependencyTree(BaseModel):
     """Full dependency chain for a requirement."""
-    root_requirement: Dict[str, Any] = {}
-    upstream: List[DependencyNode] = []     # What this requirement traces TO
-    downstream: List[DependencyNode] = []   # What traces TO this requirement
+    root_requirement: Dict[str, Any] = Field(default_factory=dict)
+    upstream: List[DependencyNode] = Field(default_factory=list)     # What this requirement traces TO
+    downstream: List[DependencyNode] = Field(default_factory=list)   # What traces TO this requirement
     total_upstream: int = 0
     total_downstream: int = 0
     max_depth_up: int = 0
@@ -140,10 +140,10 @@ class WhatIfPreview(BaseModel):
     baseline_impact_count: int = 0
 
     # Details
-    affected_items: List[ImpactItem] = []
+    affected_items: List[ImpactItem] = Field(default_factory=list)
     orphaned_requirements: List[Dict[str, Any]] = []
-    verifications_affected: List[AffectedVerification] = []
-    baselines_affected: List[AffectedBaseline] = []
+    verifications_affected: List[AffectedVerification] = Field(default_factory=list)
+    baselines_affected: List[AffectedBaseline] = Field(default_factory=list)
 
     # Risk
     risk_level: str = "low"
@@ -165,7 +165,7 @@ class StoredImpactReport(BaseModel):
     requirement_id: int
     requirement_identifier: str = ""
     change_description: str = ""
-    report_json: Dict[str, Any] = {}
+    report_json: Dict[str, Any] = Field(default_factory=dict)
     risk_level: str = "low"
     total_affected: int = 0
     created_by_id: Optional[int] = None

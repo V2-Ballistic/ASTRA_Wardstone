@@ -1,27 +1,37 @@
 """
-ASTRA — Auth Router (Lockout Disabled for Dev)
-================================================
+ASTRA — Auth Router
+====================
 File: backend/app/routers/auth.py
+
+Login flow includes account lockout (NIST AC-7) and full audit
+trail for both successful AND failed authentication attempts
+(NIST AU-2). See AUDIT_FINDINGS F-016, F-031, F-124.
 """
 
+import logging
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import User
+from app.models import User, UserRole
 from app.schemas import UserCreate, UserResponse, Token
+from app.services import account_lockout
 from app.services.auth import (
     verify_password, get_password_hash, create_access_token, get_current_user,
 )
 
-# Optional audit integration
+# Optional audit integration. The router REQUIRES audit_service in
+# the success/failure paths below; the shim only protects the import
+# itself for environments that haven't installed audit yet (dev only).
 try:
     from app.services.audit_service import record_event as _audit
 except ImportError:
     def _audit(*a, **kw):
         pass
+
+logger = logging.getLogger("astra.auth")
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -33,6 +43,15 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 @router.post("/register", response_model=UserResponse, status_code=201)
 def register(user_data: UserCreate, request: Request,
              db: Session = Depends(get_db)):
+    """
+    Public self-registration.
+
+    AUDIT_FINDINGS F-015: any `role` field in the request body is IGNORED.
+    Self-registered users always receive UserRole.DEVELOPER. Elevated
+    roles (admin, project_manager, requirements_engineer, reviewer,
+    stakeholder) must be assigned by an existing admin via
+    POST /api/v1/admin/users — never via this endpoint.
+    """
     if db.query(User).filter(User.username == user_data.username).first():
         raise HTTPException(400, "Username already taken")
     if db.query(User).filter(User.email == user_data.email).first():
@@ -43,7 +62,7 @@ def register(user_data: UserCreate, request: Request,
         email=user_data.email,
         hashed_password=get_password_hash(user_data.password),
         full_name=user_data.full_name,
-        role=user_data.role,
+        role=UserRole.DEVELOPER,        # F-015: ignore any role in the body
         department=user_data.department,
     )
     db.add(user)
@@ -53,8 +72,20 @@ def register(user_data: UserCreate, request: Request,
 
 
 # ══════════════════════════════════════
-#  Login (no lockout)
+#  Login (with account lockout + full audit)
 # ══════════════════════════════════════
+
+def _retry_after_seconds(locked_until_iso: str | None) -> str:
+    """Compute a Retry-After header value in seconds from a locked_until ISO string."""
+    if not locked_until_iso:
+        return str(account_lockout.LOCKOUT_MINUTES * 60)
+    try:
+        locked_until = datetime.fromisoformat(locked_until_iso)
+        delta = (locked_until - datetime.utcnow()).total_seconds()
+        return str(max(1, int(delta)))
+    except (ValueError, TypeError):
+        return str(account_lockout.LOCKOUT_MINUTES * 60)
+
 
 @router.post("/login", response_model=Token)
 def login(
@@ -62,8 +93,80 @@ def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
 ):
-    user = db.query(User).filter(User.username == form_data.username).first()
+    """
+    Username + password login.
+
+    AUDIT_FINDINGS:
+      - F-016 (NIST AC-7): account_lockout is checked BEFORE password
+        verification; failed attempts are recorded; reaching
+        MAX_LOGIN_ATTEMPTS locks the account for LOCKOUT_DURATION_MINUTES.
+      - F-031 (NIST AU-2): every failed attempt against a known user
+        emits an `auth.login_failed` audit row; failures against
+        unknown usernames are logged via the stdlib logger (audit_log
+        has user_id FK NOT NULL so we cannot write a row without a
+        valid user — enumeration probes still surface in stdout/syslog).
+      - F-124: removed silent `try/except: pass` around the success-side
+        audit; record_event is now allowed to raise.
+
+    Status codes:
+      200 — success
+      401 — invalid credentials (or unknown user; same response shape
+            to avoid username enumeration)
+      429 — Too Many Requests (account is locked; Retry-After header
+            indicates seconds until auto-unlock)
+    """
+    username = form_data.username
+    ip = request.client.host if request.client else ""
+
+    # ── F-016: lockout check BEFORE any password work ──
+    if account_lockout.is_account_locked(db, username):
+        lock_status = account_lockout.get_lockout_status(db, username)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Account temporarily locked due to repeated failed login attempts",
+            headers={"Retry-After": _retry_after_seconds(lock_status.get("locked_until"))},
+        )
+
+    user = db.query(User).filter(User.username == username).first()
+
     if not user or not verify_password(form_data.password, user.hashed_password):
+        # ── F-016: count this failure ──
+        result = account_lockout.record_failed_attempt(db, username, ip=ip)
+
+        # ── F-031: audit every failed attempt against a known user ──
+        if user is not None:
+            _audit(
+                db, "auth.login_failed", "user", user.id, user.id,
+                {
+                    "ip": ip,
+                    "username": username,
+                    "attempts": result["attempts"],
+                    "locked": result["locked"],
+                },
+                request=request,
+            )
+        else:
+            # Unknown username — audit_log.user_id is FK NOT NULL, so we
+            # cannot write a row. Stdlib logger still surfaces this for
+            # SOC tooling that consumes container stdout / syslog.
+            logger.warning(
+                "auth.login_failed (unknown_user) username=%r ip=%s "
+                "attempts=%d locked=%s",
+                username, ip, result["attempts"], result["locked"],
+            )
+
+        # If this attempt triggered the lockout, prefer 429 over 401 so
+        # the client knows to back off rather than retry with a different
+        # password.
+        if result["locked"]:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Account locked due to repeated failed login attempts",
+                headers={
+                    "Retry-After": _retry_after_seconds(result.get("locked_until")),
+                },
+            )
+
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid credentials",
@@ -75,16 +178,22 @@ def login(
             detail="Account is deactivated",
         )
 
+    # ── Success path ──
+    # F-016: clear the failure counter so a future attempt starts fresh.
+    account_lockout.record_successful_login(db, username)
+
     user.last_login = datetime.utcnow()
     db.commit()
 
     access_token = create_access_token(data={"sub": user.username})
 
-    try:
-        _audit(db, "auth.login_success", "user", user.id, user.id,
-               {"ip": request.client.host if request.client else ""}, request=request)
-    except Exception:
-        pass
+    # F-124: no try/except here. record_event has its own retry / chain
+    # semantics; if it raises, the login surfaces the failure rather
+    # than silently dropping the audit trail.
+    _audit(
+        db, "auth.login_success", "user", user.id, user.id,
+        {"ip": ip}, request=request,
+    )
 
     return {"access_token": access_token, "token_type": "bearer"}
 

@@ -93,6 +93,8 @@ def perform_action(
     comment: str = "",
     ip_address: str = "",
     user_agent: str = "",
+    *,
+    step_up_token: str | None = None,
 ) -> dict:
     """
     Record an approve / reject / review action on the current stage.
@@ -145,16 +147,18 @@ def perform_action(
     # E-signature (if required by stage)
     sig_id = None
     if stage_tmpl.require_signature:
-        if not password:
-            return {"status": "error", "detail": "Password required for electronic signature at this stage"}
+        # F-036: accept either a password or a one-time IdP step-up token.
+        if not password and not step_up_token:
+            return {"status": "error", "detail": "Password or step-up token required for electronic signature at this stage"}
         sig = request_signature(
             db, user_id, instance.entity_type, instance.entity_id,
             action, password,
             statement=f"Stage '{stage_tmpl.name}': {action}",
             ip_address=ip_address, user_agent=user_agent,
+            step_up_token=step_up_token,
         )
         if not sig:
-            return {"status": "error", "detail": "Password verification failed — signature denied"}
+            return {"status": "error", "detail": "Signature credentials rejected"}
         sig_id = sig.id
 
     # Record the action
@@ -314,22 +318,21 @@ def check_timeouts(db: Session) -> list[dict]:
         deadline = ref_time + timedelta(hours=stage.timeout_hours)
 
         if datetime.utcnow() > deadline:
-            if stage.auto_escalate_to_role:
-                escalations.append({
-                    "instance_id": inst.id,
-                    "entity": f"{inst.entity_type}:{inst.entity_id}",
-                    "stage": stage.name,
-                    "escalate_to": stage.auto_escalate_to_role,
-                })
-            else:
-                inst.status = InstanceStatus.TIMED_OUT
-                inst.completed_at = datetime.utcnow()
-                escalations.append({
-                    "instance_id": inst.id,
-                    "entity": f"{inst.entity_type}:{inst.entity_id}",
-                    "stage": stage.name,
-                    "timed_out": True,
-                })
+            # F-065: `stage.auto_escalate_to_role` was removed because
+            # no escalation actually fired — the branch only appended
+            # a dict to the return list. Every timed-out stage now
+            # transitions the instance to TIMED_OUT so callers see a
+            # consistent terminal status. Real escalation (notify a
+            # role, page on-call, etc.) is deferred to a future
+            # workflow-notifications feature.
+            inst.status = InstanceStatus.TIMED_OUT
+            inst.completed_at = datetime.utcnow()
+            escalations.append({
+                "instance_id": inst.id,
+                "entity": f"{inst.entity_type}:{inst.entity_id}",
+                "stage": stage.name,
+                "timed_out": True,
+            })
 
     db.commit()
     return escalations

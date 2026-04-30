@@ -86,14 +86,17 @@ export default function AuditLogPage() {
   const handleExportJSON = async () => {
     setExporting(true);
     try {
+      // F-020: backend now streams NDJSON (application/x-ndjson) — fetch
+      // as a blob and write straight to disk so we don't materialise the
+      // whole audit log in browser memory or call JSON.stringify on it.
       const res = await api.get('/audit/export', {
         params: { project_id: projectId, format: 'json' },
+        responseType: 'blob',
       });
-      const blob = new Blob([JSON.stringify(res.data, null, 2)], { type: 'application/json' });
-      const url = window.URL.createObjectURL(blob);
+      const url = window.URL.createObjectURL(new Blob([res.data]));
       const a = document.createElement('a');
       a.href = url;
-      a.download = `ASTRA_Audit_Log_${projectCode || projectId}.json`;
+      a.download = `ASTRA_Audit_Log_${projectCode || projectId}.ndjson`;
       a.click();
       window.URL.revokeObjectURL(url);
     } catch {}

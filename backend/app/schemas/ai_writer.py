@@ -45,12 +45,12 @@ class ProseConvertRequest(BaseModel):
     domain_hint: str = ""            # e.g., "aerospace", "medical device", "automotive"
 
 class ProseConvertResponse(BaseModel):
-    requirements: List[GeneratedRequirement] = []
+    requirements: List[GeneratedRequirement] = Field(default_factory=list)
     total_extracted: int = 0
     source_type: str = ""            # "meeting_notes", "email", "specification", "general"
     ai_available: bool = True
     model_used: str = ""
-    warnings: List[str] = []         # e.g., "Some statements were too vague to extract"
+    warnings: List[str] = Field(default_factory=list)         # e.g., "Some statements were too vague to extract"
 
 
 # ══════════════════════════════════════
@@ -60,7 +60,7 @@ class ProseConvertResponse(BaseModel):
 class RewriteSuggestion(BaseModel):
     """A single rewrite suggestion for an existing requirement."""
     rewritten_statement: str = ""
-    changes_made: List[str] = []     # ["Removed ambiguous term 'adequate'", "Added measurable threshold"]
+    changes_made: List[str] = Field(default_factory=list)     # ["Removed ambiguous term 'adequate'", "Added measurable threshold"]
     quality_delta: str = ""          # e.g., "+15 estimated quality score"
     explanation: str = ""
 
@@ -68,12 +68,12 @@ class ImproveRequest(BaseModel):
     statement: str = Field(..., min_length=5)
     title: str = ""
     rationale: str = ""
-    issues: List[str] = []           # Quality issues from the checker
+    issues: List[str] = Field(default_factory=list)           # Quality issues from the checker
     domain_context: str = ""
 
 class ImproveResponse(BaseModel):
     original_statement: str = ""
-    suggestions: List[RewriteSuggestion] = []
+    suggestions: List[RewriteSuggestion] = Field(default_factory=list)
     ai_available: bool = True
     model_used: str = ""
 
@@ -94,7 +94,7 @@ class DecomposeResponse(BaseModel):
     parent_statement: str = ""
     parent_level: str = "L1"
     target_level: str = "L2"
-    sub_requirements: List[GeneratedRequirement] = []
+    sub_requirements: List[GeneratedRequirement] = Field(default_factory=list)
     decomposition_rationale: str = ""   # Why this decomposition was chosen
     ai_available: bool = True
     model_used: str = ""
@@ -114,12 +114,12 @@ class VerificationCriteria(BaseModel):
     requirement_statement: str = ""
     method: str = "test"             # test, analysis, inspection, demonstration
     method_justification: str = ""
-    preconditions: List[str] = []
-    steps: List[VerificationStep] = []
+    preconditions: List[str] = Field(default_factory=list)
+    steps: List[VerificationStep] = Field(default_factory=list)
     pass_fail_criteria: str = ""
-    data_to_record: List[str] = []
+    data_to_record: List[str] = Field(default_factory=list)
     estimated_duration: str = ""
-    required_resources: List[str] = []
+    required_resources: List[str] = Field(default_factory=list)
     ai_available: bool = True
     model_used: str = ""
 
@@ -142,7 +142,7 @@ class GenerateRationaleRequest(BaseModel):
 
 class GenerateRationaleResponse(BaseModel):
     rationale: str = ""
-    alternatives_considered: List[str] = []
+    alternatives_considered: List[str] = Field(default_factory=list)
     ai_available: bool = True
     model_used: str = ""
 
@@ -152,13 +152,13 @@ class GenerateRationaleResponse(BaseModel):
 # ══════════════════════════════════════
 
 class SummarizeChangesRequest(BaseModel):
-    changes: List[Dict[str, Any]] = []    # List of {req_id, field, old_value, new_value}
+    changes: List[Dict[str, Any]] = Field(default_factory=list)    # List of {req_id, field, old_value, new_value}
     project_name: str = ""
     board_type: str = "CCB"               # CCB, PRR, CDR, etc.
 
 class SummarizeChangesResponse(BaseModel):
     summary: str = ""
-    key_impacts: List[str] = []
+    key_impacts: List[str] = Field(default_factory=list)
     recommendation: str = ""
     ai_available: bool = True
     model_used: str = ""

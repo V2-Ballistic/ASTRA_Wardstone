@@ -20,7 +20,7 @@ import logging
 from datetime import datetime
 from typing import Optional, List
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -35,6 +35,9 @@ from app.models.interface import (
     UnitEnvironmentalSpec, InterfaceRequirementLink,
 )
 from app.services.auth import get_current_user
+from app.services.security.spreadsheet import (
+    assert_workbook_size_ok, sanitize_filename, validate_upload,
+)
 
 try:
     from app.services.rbac import require_permission
@@ -194,21 +197,21 @@ DATA_FONT_SIZE = 10
 class RowPreview(BaseModel):
     row: int
     valid: bool = True
-    errors: List[str] = []
-    warnings: List[str] = []
-    data: dict = {}
+    errors: List[str] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+    data: dict = Field(default_factory=dict)
 
 
 class ImportPreviewResponse(BaseModel):
     file_name: str
-    sheets_found: List[str] = []
-    units: List[RowPreview] = []
-    connectors: List[RowPreview] = []
-    pins: List[RowPreview] = []
-    buses: List[RowPreview] = []
-    messages: List[RowPreview] = []
-    fields: List[RowPreview] = []
-    summary: dict = {}
+    sheets_found: List[str] = Field(default_factory=list)
+    units: List[RowPreview] = Field(default_factory=list)
+    connectors: List[RowPreview] = Field(default_factory=list)
+    pins: List[RowPreview] = Field(default_factory=list)
+    buses: List[RowPreview] = Field(default_factory=list)
+    messages: List[RowPreview] = Field(default_factory=list)
+    fields: List[RowPreview] = Field(default_factory=list)
+    summary: dict = Field(default_factory=dict)
 
 
 class ImportConfirmResponse(BaseModel):
@@ -221,8 +224,8 @@ class ImportConfirmResponse(BaseModel):
     messages_created: int = 0
     fields_created: int = 0
     env_specs_created: int = 0
-    errors: List[str] = []
-    created_ids: dict = {}
+    errors: List[str] = Field(default_factory=list)
+    created_ids: dict = Field(default_factory=dict)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -280,14 +283,15 @@ def _cell_val(ws, row, col) -> str:
 
 
 def _next_id(db: Session, model, project_id: int, prefix: str, id_field: str) -> str:
-    max_row = db.query(model).filter(model.project_id == project_id).order_by(model.id.desc()).first()
-    if max_row:
-        existing_id = getattr(max_row, id_field, "") or ""
-        match = re.search(r"(\d+)$", existing_id)
-        next_num = (int(match.group(1)) + 1) if match else 1
-    else:
-        next_num = 1
-    return f"{prefix}-{next_num:03d}"
+    """F-074: race-safe per-project ID generation. See routers/interface.py:_next_id."""
+    from app.services.id_sequence import next_human_id
+    return next_human_id(
+        db,
+        project_id=project_id,
+        prefix=prefix,
+        source_model=model,
+        id_field=id_field,
+    )
 
 
 # ══════════════════════════════════════════════════════════════
@@ -592,18 +596,29 @@ async def preview_import(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Parse and validate an uploaded .xlsx — returns preview with errors/warnings."""
+    """
+    Parse and validate an uploaded .xlsx — returns preview with errors/warnings.
+
+    AUDIT_FINDINGS F-018: BodySizeLimitMiddleware rejects oversize bodies
+    upstream; here we additionally validate Content-Type + magic bytes
+    (415), cap sheet/row counts (413), and sanitise the filename.
+    """
     from openpyxl import load_workbook
 
     content = await file.read()
-    if not content:
-        raise HTTPException(400, "Empty file")
 
-    filename = file.filename or "upload.xlsx"
-    if not filename.lower().endswith((".xlsx", ".xls")):
-        raise HTTPException(400, "File must be .xlsx")
+    # F-018: declared MIME + magic-byte sniff. Raises 415/413.
+    validate_upload(
+        content=content,
+        declared_content_type=file.content_type,
+        expected_kind="xlsx",
+    )
+
+    filename = sanitize_filename(file.filename, default="upload.xlsx")
 
     wb = load_workbook(filename=io.BytesIO(content), read_only=True, data_only=True)
+    # F-018: cap sheet count + per-sheet row count. Raises 413.
+    assert_workbook_size_ok(wb)
     sheets_found = wb.sheetnames
 
     result = ImportPreviewResponse(file_name=filename, sheets_found=sheets_found)
@@ -785,13 +800,19 @@ async def preview_import(
 
 @router.post("/import/confirm", response_model=ImportConfirmResponse)
 async def confirm_import(
+    request: Request,
     project_id: int = Query(...),
     file: UploadFile = File(...),
-    request=None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("interfaces.create")),
 ):
-    """Create all entities from validated upload file."""
+    """
+    Create all entities from validated upload file.
+
+    AUDIT_FINDINGS F-018: same Content-Type + size + filename guards
+    as the preview endpoint apply here. F-070 (Phase 3) covers fixing
+    the bare `request=None` default + audit-emit.
+    """
     from openpyxl import load_workbook
 
     project = db.query(Project).filter(Project.id == project_id).first()
@@ -799,7 +820,17 @@ async def confirm_import(
         raise HTTPException(404, "Project not found")
 
     content = await file.read()
+
+    # F-018: declared MIME + magic-byte sniff. Raises 415/413.
+    validate_upload(
+        content=content,
+        declared_content_type=file.content_type,
+        expected_kind="xlsx",
+    )
+
     wb = load_workbook(filename=io.BytesIO(content), read_only=True, data_only=True)
+    # F-018: cap sheet count + per-sheet row count. Raises 413.
+    assert_workbook_size_ok(wb)
 
     resp = ImportConfirmResponse(created_ids={})
     errors: list = []

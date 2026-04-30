@@ -15,8 +15,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.config import settings
+from app.middleware.body_size_limit import BodySizeLimitMiddleware
 
 logger = logging.getLogger("astra")
 
@@ -84,6 +86,9 @@ for _model_path in [
     "app.models.embedding",
     "app.models.impact",
     "app.models.interface",
+    "app.models.report_job",
+    "app.models.step_up_token",
+    "app.models.id_sequence",
 ]:
     try:
         __import__(_model_path)
@@ -150,6 +155,14 @@ app = FastAPI(
 )
 
 # ── Middleware ──
+# F-066: TrustedHostMiddleware enforces ALLOWED_HOSTS so a Host-header
+# attacker can't poison password-reset emails, cache keys, etc. In dev
+# (ALLOWED_HOSTS="*") this is effectively a no-op; in production
+# config.enforce_production_guards refuses "*" outright (also F-066).
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=settings.allowed_hosts_list or ["*"],
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -157,6 +170,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# F-018: BodySizeLimit fires AFTER CORS (so OPTIONS preflights still
+# pass) and BEFORE any router runs. Default 50 MB; override via
+# MAX_UPLOAD_BYTES env var.
+app.add_middleware(BodySizeLimitMiddleware)
 for _name, _cls in _middlewares:
     if _name == "SecurityHeadersMiddleware":
         app.add_middleware(_cls, environment=settings.ENVIRONMENT)

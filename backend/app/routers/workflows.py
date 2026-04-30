@@ -44,6 +44,7 @@ from app.services.workflow_engine import (
 )
 from app.services.signature_service import (
     get_signatures, verify_signature,
+    issue_step_up_token, EXTERNAL_IDP_SENTINEL,
 )
 
 try:
@@ -77,7 +78,7 @@ class StageCreate(BaseModel):
     required_role: Optional[str] = None
     required_count: int = 1
     timeout_hours: int = 0
-    auto_escalate_to_role: Optional[str] = None
+    # F-065: auto_escalate_to_role removed — never honoured.
     can_parallel: bool = False
     require_signature: bool = True
 
@@ -87,7 +88,7 @@ class StageUpdate(BaseModel):
     required_role: Optional[str] = None
     required_count: Optional[int] = None
     timeout_hours: Optional[int] = None
-    auto_escalate_to_role: Optional[str] = None
+    # F-065: auto_escalate_to_role removed — never honoured.
     can_parallel: Optional[bool] = None
     require_signature: Optional[bool] = None
 
@@ -100,6 +101,11 @@ class InstanceStart(BaseModel):
 class ActionPerform(BaseModel):
     action: str = Field(..., pattern="^(approved|rejected|reviewed)$")
     password: str = ""
+    # F-036: step_up_token is an alternative to `password` for users
+    # whose hashed_password is the external-IdP sentinel. Exactly one
+    # of (password, step_up_token) must be set when the stage requires
+    # a signature.
+    step_up_token: Optional[str] = None
     comment: str = ""
 
 
@@ -291,6 +297,7 @@ def action_on_instance(
         db, instance_id, current_user.id,
         data.action, data.password, data.comment,
         ip_address=ip, user_agent=ua,
+        step_up_token=data.step_up_token,
     )
     if result["status"] == "error":
         raise HTTPException(400, result["detail"])
@@ -331,6 +338,47 @@ def verify_sig(
 
 
 # ══════════════════════════════════════
+#  F-036: IdP step-up token issuance
+# ══════════════════════════════════════
+#
+# External-IdP-authenticated users (SAML / OIDC / PIV) carry the
+# sentinel ``hashed_password = "EXTERNAL_IDP_NO_LOCAL_PASSWORD"`` and
+# therefore can't sign via the password path. They call this endpoint
+# to mint a one-time, 5-minute step-up token, then submit that token
+# in place of ``password`` on the next workflow action.
+#
+# In a fully-integrated deployment the caller would have just completed
+# a fresh ``prompt=login`` round-trip against their IdP before reaching
+# here. This MVP does not enforce that — it issues a token to any
+# authenticated IdP user — because the IdP integration layer is
+# Phase 3 work. The token itself is short-lived and one-time-use, so
+# the worst-case window is bounded.
+
+@router.post("/signatures/idp-step-up", status_code=201)
+def issue_idp_step_up(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    F-036: issue a one-time step-up token for the calling external-IdP
+    user. Local-password users are rejected with 400 — they should sign
+    via the password path instead.
+    """
+    if current_user.hashed_password != EXTERNAL_IDP_SENTINEL:
+        raise HTTPException(
+            400,
+            "Step-up tokens are only available for external-IdP users; "
+            "use the password path on the workflow action endpoint.",
+        )
+    token, expires_at = issue_step_up_token(db, current_user)
+    return {
+        "step_up_token": token,
+        "expires_at": expires_at.isoformat(),
+        "ttl_seconds": int((expires_at - __import__("datetime").datetime.utcnow()).total_seconds()),
+    }
+
+
+# ══════════════════════════════════════
 #  Seed: Default 4-Stage Workflow
 # ══════════════════════════════════════
 
@@ -351,18 +399,19 @@ def seed_default_workflow(
     db.add(wf)
     db.flush()
 
+    # F-065: auto_escalate_to_role removed from the seed — the field
+    # was honoured nowhere. Timed-out stages now uniformly transition
+    # to TIMED_OUT.
     stages = [
         {"stage_number": 1, "name": "Engineer Submission",
          "required_role": "requirements_engineer", "required_count": 1,
          "require_signature": False, "timeout_hours": 0},
         {"stage_number": 2, "name": "Peer Review",
          "required_role": "requirements_engineer", "required_count": 1,
-         "require_signature": True, "timeout_hours": 48,
-         "auto_escalate_to_role": "project_manager"},
+         "require_signature": True, "timeout_hours": 48},
         {"stage_number": 3, "name": "PM Approval",
          "required_role": "project_manager", "required_count": 1,
-         "require_signature": True, "timeout_hours": 72,
-         "auto_escalate_to_role": "admin"},
+         "require_signature": True, "timeout_hours": 72},
         {"stage_number": 4, "name": "CCB Approval",
          "required_role": "admin", "required_count": 1,
          "require_signature": True, "timeout_hours": 120},
@@ -403,7 +452,7 @@ def _stage_to_dict(s: WorkflowStage) -> dict:
         "required_role": s.required_role,
         "required_count": s.required_count,
         "timeout_hours": s.timeout_hours,
-        "auto_escalate_to_role": s.auto_escalate_to_role,
+        # F-065: auto_escalate_to_role removed from the surface.
         "can_parallel": s.can_parallel,
         "require_signature": s.require_signature,
     }

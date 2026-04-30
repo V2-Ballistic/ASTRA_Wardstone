@@ -31,13 +31,27 @@ class AuditLog(Base):
     event_type = Column(String(50), nullable=False)       # e.g. "requirement.created"
     entity_type = Column(String(50), nullable=False)      # e.g. "requirement"
     entity_id = Column(Integer, nullable=False)
-    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    # F-076: SET NULL on referent delete so the audit trail survives
+    # even when the original project / user is gone. user_id is now
+    # nullable for the same reason — the AU-9 invariant cares about
+    # the *immutability* of the row, not whether the user FK still
+    # resolves. Migration 0010's append-only triggers continue to
+    # forbid UPDATE / DELETE / TRUNCATE on this table.
+    project_id = Column(
+        Integer,
+        ForeignKey("projects.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     user_ip = Column(String(45), default="")              # IPv6-safe
     user_agent = Column(String(500), default="")
 
     # ── Payload ──
-    action_detail = Column(JSON, default={})
+    action_detail = Column(JSON, default=dict)
     # e.g. {"field": "status", "old": "draft", "new": "approved"}
 
     # ── Tamper-evidence chain ──
@@ -53,4 +67,11 @@ class AuditLog(Base):
         Index("ix_audit_project", "project_id", "timestamp"),
         Index("ix_audit_user", "user_id", "timestamp"),
         Index("ix_audit_seq", "sequence_number"),
+        # Schema-drift sync: these indexes were created by migration
+        # 0002 but never declared in Base.metadata. Declaring them
+        # here keeps `alembic check` clean.
+        Index("ix_audit_entity_lookup", "entity_type", "entity_id", "timestamp"),
+        Index("ix_audit_project_time", "project_id", "timestamp"),
+        Index("ix_audit_user_time", "user_id", "timestamp"),
+        Index("ix_audit_sequence", "sequence_number"),
     )

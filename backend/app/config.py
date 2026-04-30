@@ -114,6 +114,7 @@ class Settings(BaseSettings):
         Checks:
           - SECRET_KEY is not empty / known-weak / too short
           - ENCRYPTION_KEY is not empty / known-weak (covers F-003 + F-067)
+          - ALLOWED_HOSTS is not the wildcard "*" (covers F-066)
         """
         if not self.is_production:
             return
@@ -154,6 +155,21 @@ class Settings(BaseSettings):
             print(
                 "\n"
                 "FATAL: ENCRYPTION_KEY is too short for production (need ≥ 32 chars).\n",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        # ── ALLOWED_HOSTS (F-066) ──
+        # Wildcard ALLOWED_HOSTS in production lets a Host-header
+        # attacker poison password-reset emails / cache keys / etc.
+        # TrustedHostMiddleware (registered in main.py) requires a
+        # concrete host list to be useful.
+        hosts = [h for h in self.allowed_hosts_list if h]
+        if "*" in hosts or not hosts:
+            print(
+                "\n"
+                "FATAL: ALLOWED_HOSTS cannot be \"*\" or empty in production.\n"
+                "Set a concrete host list, e.g. ALLOWED_HOSTS=astra.example.com,api.astra.example.com\n",
                 file=sys.stderr,
             )
             sys.exit(1)

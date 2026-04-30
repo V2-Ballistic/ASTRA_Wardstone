@@ -33,15 +33,17 @@ class RequirementEmbedding(Base):
     __tablename__ = "requirement_embeddings"
 
     id = Column(Integer, primary_key=True, index=True)
+    # `unique=True` removed in favour of an explicitly-named
+    # UniqueConstraint matching the existing PG auto-name. Same
+    # cosmetic-drift fix used for refresh_tokens / account_lockouts.
     requirement_id = Column(
         Integer,
         ForeignKey("requirements.id", ondelete="CASCADE"),
         nullable=False,
-        unique=True,
         index=True,
     )
     # Embedding stored as JSON array of floats (portable, works without pgvector)
-    embedding = Column(JSON, nullable=False, default=[])
+    embedding = Column(JSON, nullable=False, default=list)
     # Embedding dimensionality for validation
     dimensions = Column(Integer, nullable=False, default=384)
     # Which model produced this embedding
@@ -54,6 +56,12 @@ class RequirementEmbedding(Base):
 
     __table_args__ = (
         Index("ix_req_embed_model", "model_version"),
+        # Schema-drift sync: created by migration 0005.
+        Index("ix_req_embed_req_id", "requirement_id"),
+        UniqueConstraint(
+            "requirement_id",
+            name="requirement_embeddings_requirement_id_key",
+        ),
     )
 
 
@@ -84,7 +92,7 @@ class AISuggestion(Base):
     # Human-readable explanation
     explanation = Column(Text, default="")
     # Extra structured data (e.g., verification criteria, similarity details)
-    metadata_json = Column(JSON, default={})
+    metadata_json = Column(JSON, default=dict)
     # Resolution status
     status = Column(String(20), nullable=False, default="pending")  # pending, accepted, rejected, dismissed
     resolved_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)

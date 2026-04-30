@@ -14,6 +14,16 @@ os.environ["ACCESS_TOKEN_EXPIRE_MINUTES"] = "60"
 os.environ["BACKEND_CORS_ORIGINS"] = "http://localhost:3000"
 os.environ["ENVIRONMENT"] = "test"
 
+# Rate-limit middleware reads these at app construction time and the
+# middleware is a singleton on the FastAPI app — buckets are shared
+# across tests in the same pytest session. Bump them to absurdly high
+# values so test sequences never get bucket-throttled. The real
+# rate-limiter behaviour is exercised separately and tracked under
+# F-064 (per-worker token bucket → Redis).
+os.environ["RATE_LIMIT_DEFAULT"] = "100000"
+os.environ["RATE_LIMIT_AUTH"] = "100000"
+os.environ["RATE_LIMIT_IMPORT"] = "100000"
+
 import pytest
 from sqlalchemy import create_engine, event, BigInteger
 from sqlalchemy.orm import sessionmaker
@@ -84,6 +94,19 @@ except ImportError:
     pass
 try:
     from app.models.interface import *                     # noqa: F401, F403, E402
+except ImportError:
+    pass
+# Phase 2C / 2D models the older fixture didn't know about.
+try:
+    from app.models.report_job import ReportJob            # noqa: F401, E402
+except ImportError:
+    pass
+try:
+    from app.models.step_up_token import StepUpToken       # noqa: F401, E402
+except ImportError:
+    pass
+try:
+    from app.models.id_sequence import IdSequence          # noqa: F401, E402
 except ImportError:
     pass
 
@@ -216,8 +239,24 @@ def test_requirement(db_session, test_user, test_project) -> Requirement:
 #  RBAC helper — used by test_rbac.py
 # ══════════════════════════════════════
 
-def make_user(db_session, role: str, username: str | None = None):
-    """Create a user with *role* and return ``(user, headers)``."""
+def make_user(
+    db_session,
+    role: str,
+    username: str | None = None,
+    *,
+    project: "Project | None" = None,
+):
+    """
+    Create a user with *role* and return ``(user, headers)``.
+
+    F-145: when *project* is supplied, the user is also added as a
+    ProjectMember of that project. Required for any test that hits a
+    project-scoped endpoint after F-014 (which rejects non-members
+    with 403, masking the role-based outcome the test wanted to
+    assert). Without *project*, the user is created with no
+    membership — suitable for tests that exercise admin bypass or
+    intentional non-member flows.
+    """
     username = username or f"user_{role}"
     user = User(
         username=username,
@@ -231,5 +270,15 @@ def make_user(db_session, role: str, username: str | None = None):
     db_session.add(user)
     db_session.commit()
     db_session.refresh(user)
+
+    if project is not None:
+        from app.models.project_member import ProjectMember
+        db_session.add(ProjectMember(
+            project_id=project.id,
+            user_id=user.id,
+            added_by_id=project.owner_id,
+        ))
+        db_session.commit()
+
     token = create_access_token(data={"sub": user.username})
     return user, {"Authorization": f"Bearer {token}"}

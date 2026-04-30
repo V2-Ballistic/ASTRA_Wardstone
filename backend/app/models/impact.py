@@ -34,7 +34,7 @@ class ImpactReport(Base):
     )
     change_description = Column(Text, default="")
     action_type = Column(String(20), default="modify")        # modify, delete, what_if
-    report_json = Column(JSON, nullable=False, default={})     # Full ImpactReport as JSON
+    report_json = Column(JSON, nullable=False, default=dict)   # Full ImpactReport as JSON
     risk_level = Column(String(20), nullable=False, default="low")
     total_affected = Column(Integer, default=0)
     dependency_depth = Column(Integer, default=0)

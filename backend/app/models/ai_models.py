@@ -23,7 +23,7 @@ class AIAnalysisCache(Base):
     id = Column(Integer, primary_key=True, index=True)
     requirement_id = Column(Integer, ForeignKey("requirements.id", ondelete="CASCADE"), nullable=False)
     analysis_type = Column(String(30), nullable=False, default="deep")  # "deep" | "batch"
-    result_json = Column(JSON, nullable=False, default={})
+    result_json = Column(JSON, nullable=False, default=dict)
     model_used = Column(String(100), default="")
     prompt_version = Column(String(20), default="")
     analyzed_at = Column(DateTime, default=datetime.utcnow)

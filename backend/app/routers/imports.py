@@ -15,7 +15,7 @@ import logging
 from typing import Optional, List
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -26,6 +26,9 @@ from app.models import Requirement, Project, User, RequirementHistory
 from app.schemas import RequirementResponse
 from app.services.auth import get_current_user
 from app.services.quality_checker import check_requirement_quality, generate_requirement_id
+from app.services.security.spreadsheet import (
+    assert_workbook_size_ok, sanitize_filename, validate_upload,
+)
 
 try:
     from app.services.rbac import require_permission
@@ -88,8 +91,8 @@ class ImportRowPreview(BaseModel):
     parent_req_id: str = ""
     quality_score: float = 0.0
     quality_passed: bool = False
-    warnings: List[str] = []
-    errors: List[str] = []
+    warnings: List[str] = Field(default_factory=list)
+    errors: List[str] = Field(default_factory=list)
     included: bool = True
 
 
@@ -111,7 +114,7 @@ class ImportConfirmResponse(BaseModel):
     created: int
     skipped: int
     errors: List[str]
-    requirements: List[dict] = []
+    requirements: List[dict] = Field(default_factory=list)
 
 
 # ── Parse helpers ──
@@ -133,6 +136,8 @@ def _parse_xlsx(content: bytes) -> tuple[list[str], list[dict]]:
         raise HTTPException(400, "openpyxl not installed — cannot parse XLSX files")
 
     wb = load_workbook(filename=io.BytesIO(content), read_only=True, data_only=True)
+    # F-018 layer 4: cap sheet count + per-sheet row count. Raises 413.
+    assert_workbook_size_ok(wb)
     ws = wb.active
     if ws is None:
         return [], []
@@ -245,6 +250,7 @@ def _validate_row(row: dict, mapping: dict, row_num: int,
 
 @router.post("/requirements", response_model=ImportPreviewResponse)
 async def preview_import(
+    request: Request,
     project_id: int = Query(...),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
@@ -253,6 +259,15 @@ async def preview_import(
     """
     Upload a CSV or XLSX file and get a preview of what will be imported.
     Each row is validated and quality-checked but NOT yet saved.
+
+    AUDIT_FINDINGS F-018:
+      - BodySizeLimitMiddleware (in main.py) rejects bodies above
+        MAX_UPLOAD_BYTES with 413 before this handler runs.
+      - Content-Type allowlist + magic-byte sniff via
+        services.security.spreadsheet.validate_upload (415 on miss).
+      - Sheet- and row-count caps via assert_workbook_size_ok (413 on
+        overflow).
+      - Filename sanitised before being echoed in the response.
     """
     # Validate project
     project = db.query(Project).filter(Project.id == project_id).first()
@@ -261,19 +276,22 @@ async def preview_import(
 
     # Read file
     content = await file.read()
-    if not content:
-        raise HTTPException(400, "Empty file")
 
-    filename = file.filename or "upload"
-    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    # F-018 layer 2-3: declared MIME + magic-byte sniff. Raises 415/413.
+    sniffed_kind = validate_upload(
+        content=content,
+        declared_content_type=file.content_type,
+        expected_kind="csv_or_xlsx",
+    )
 
-    # Parse
-    if ext == "csv":
+    # F-018 layer 5: sanitise filename before echo.
+    filename = sanitize_filename(file.filename, default="upload")
+
+    # Parse — sniffed_kind drives the parser, NOT the user's filename ext.
+    if sniffed_kind == "csv":
         headers, rows = _parse_csv(content)
-    elif ext in ("xlsx", "xls"):
+    else:  # "xlsx"
         headers, rows = _parse_xlsx(content)
-    else:
-        raise HTTPException(400, f"Unsupported file type: .{ext} — use .csv or .xlsx")
 
     if not headers:
         raise HTTPException(400, "No headers found in file")

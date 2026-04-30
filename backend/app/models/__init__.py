@@ -1,7 +1,7 @@
 from datetime import datetime
 from sqlalchemy import (
     Column, Integer, String, Text, DateTime, Boolean, ForeignKey,
-    Enum as SQLEnum, Float, JSON
+    Enum as SQLEnum, Float, JSON, Index, UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -145,9 +145,12 @@ class Project(Base):
     code = Column(String(20), unique=True, nullable=False, index=True)  # e.g., "PROJ-ALPHA"
     name = Column(String(255), nullable=False)
     description = Column(Text)
-    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    # F-076: SET NULL on user delete (audit trail / project history
+    # survives even if the original owner row is removed). Made nullable
+    # so SET NULL is honourable.
+    owner_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     status = Column(String(50), default="active")
-    config = Column(JSON, default={})  # Project-specific settings
+    config = Column(JSON, default=dict)  # Project-specific settings
     auto_req_approval_required = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -192,9 +195,17 @@ class Requirement(Base):
     history = relationship("RequirementHistory", back_populates="requirement", cascade="all, delete-orphan")
     comments = relationship("Comment", back_populates="requirement", cascade="all, delete-orphan")
 
-    # Unique constraint per project
     __table_args__ = (
-        # Each req_id must be unique within a project
+        # F-075: req_id must be unique within a project. Pre-fix this
+        # was just a comment — duplicates could be inserted indefinitely.
+        UniqueConstraint("project_id", "req_id", name="uq_req_per_project"),
+        # F-075: composite indexes for the dashboard / list filters.
+        # The first two are also created by migration 0002; migration
+        # 0017 promotes the (project_id, req_id) one to UNIQUE and adds
+        # the missing (project_id, owner_id) one.
+        Index("ix_req_project_status", "project_id", "status"),
+        Index("ix_req_project_type", "project_id", "req_type"),
+        Index("ix_req_project_owner", "project_id", "owner_id"),
     )
 
 
@@ -208,9 +219,15 @@ class SourceArtifact(Base):
     description = Column(Text)
     file_path = Column(String(500))  # Path to uploaded file
     source_date = Column(DateTime)
-    participants = Column(JSON, default=[])  # List of participant names
-    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
-    created_by_id = Column(Integer, ForeignKey("users.id"))
+    participants = Column(JSON, default=list)  # List of participant names
+    # F-076: artifacts CASCADE on project delete — they have no
+    # standalone meaning outside the project they belong to.
+    project_id = Column(
+        Integer,
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    created_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -223,6 +240,10 @@ class TraceLink(Base):
     __tablename__ = "trace_links"
 
     id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(
+        Integer, ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
     source_type = Column(String(50), nullable=False)  # "requirement", "source_artifact", "verification"
     source_id = Column(Integer, nullable=False)
     target_type = Column(String(50), nullable=False)
@@ -235,16 +256,34 @@ class TraceLink(Base):
 
     # Relationships
     created_by = relationship("User")
+    project = relationship("Project")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "source_type", "source_id", "target_type", "target_id", "link_type",
+            name="uq_trace_link_endpoints",
+        ),
+        Index("ix_trace_links_project", "project_id"),
+        # Source/target pair indexes were created by migration 0002 with
+        # the names below — keep them so alembic check stays clean.
+        Index("ix_tracelink_source", "source_type", "source_id"),
+        Index("ix_tracelink_target", "target_type", "target_id"),
+    )
 
 
 class Verification(Base):
     __tablename__ = "verifications"
 
     id = Column(Integer, primary_key=True, index=True)
-    requirement_id = Column(Integer, ForeignKey("requirements.id"), nullable=False)
+    # F-076: verification rows have no meaning if their requirement is gone.
+    requirement_id = Column(
+        Integer,
+        ForeignKey("requirements.id", ondelete="CASCADE"),
+        nullable=False,
+    )
     method = Column(SQLEnum(VerificationMethod, values_callable=lambda x: [e.value for e in x]), nullable=False)
     status = Column(SQLEnum(VerificationStatus, values_callable=lambda x: [e.value for e in x]), nullable=False, default=VerificationStatus.PLANNED)
-    responsible_id = Column(Integer, ForeignKey("users.id"))
+    responsible_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
     evidence = Column(Text)  # Reference to test results, analysis docs, etc.
     criteria = Column(Text)  # Pass/fail criteria
     completed_at = Column(DateTime)
@@ -260,7 +299,13 @@ class RequirementHistory(Base):
     __tablename__ = "requirement_history"
 
     id = Column(Integer, primary_key=True, index=True)
-    requirement_id = Column(Integer, ForeignKey("requirements.id"), nullable=False)
+    # F-076: history rows are meaningful only alongside the parent
+    # requirement; CASCADE on parent delete.
+    requirement_id = Column(
+        Integer,
+        ForeignKey("requirements.id", ondelete="CASCADE"),
+        nullable=False,
+    )
     version = Column(Integer, nullable=False)
     field_changed = Column(String(100), nullable=False)
     old_value = Column(Text)
@@ -272,6 +317,11 @@ class RequirementHistory(Base):
     # Relationships
     requirement = relationship("Requirement", back_populates="history")
     changed_by = relationship("User")
+
+    __table_args__ = (
+        # Schema-drift sync: created by 0002 but not declared on the model.
+        Index("ix_reqhistory_req_time", "requirement_id", "changed_at"),
+    )
 
 
 class Baseline(Base):
@@ -289,6 +339,11 @@ class Baseline(Base):
     project = relationship("Project", back_populates="baselines")
     created_by = relationship("User")
     requirements = relationship("BaselineRequirement", back_populates="baseline", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        # Schema-drift sync: created by 0002.
+        Index("ix_baseline_project_time", "project_id", "created_at"),
+    )
 
 
 class BaselineRequirement(Base):
@@ -331,3 +386,8 @@ class Comment(Base):
     requirement = relationship("Requirement", back_populates="comments")
     author = relationship("User", back_populates="comments")
     parent = relationship("Comment", remote_side=[id], backref="replies")
+
+    __table_args__ = (
+        # Schema-drift sync: created by 0002.
+        Index("ix_comment_req_created", "requirement_id", "created_at"),
+    )

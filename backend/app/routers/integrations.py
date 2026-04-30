@@ -7,11 +7,14 @@ CRUD for integration configs, manual sync triggers, sync history,
 and webhook receivers for Jira and Azure DevOps.
 """
 
+import base64
+import hashlib
+import hmac
 import json
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -59,8 +62,8 @@ class IntegrationCreate(BaseModel):
     project_id: int
     integration_type: str = Field(..., pattern="^(jira|azure_devops|doors)$")
     display_name: str = ""
-    config: dict = {}                   # raw connection config (will be encrypted)
-    field_mapping: dict = {}
+    config: dict = Field(default_factory=dict)        # raw connection config (will be encrypted)
+    field_mapping: dict = Field(default_factory=dict)
     external_project: str = ""
     sync_direction: str = Field("import", pattern="^(import|export|bidirectional)$")
     sync_schedule: str = ""
@@ -96,6 +99,94 @@ def _get_connector(ic: IntegrationConfig):
     config = _decrypt_config(ic)
     config["field_mapping"] = ic.field_mapping or {}
     return cls(config)
+
+
+# ══════════════════════════════════════
+#  Webhook auth helpers (AUDIT_FINDINGS F-017)
+# ══════════════════════════════════════
+#
+# Webhook secrets live inside the encrypted config blob under the key
+# ``webhook_secret`` so we don't need a schema migration. Set it the
+# same way you set any other connector field:
+#
+#     POST /api/v1/integrations/
+#     {
+#       "project_id": 1,
+#       "integration_type": "jira",
+#       "config": {"url": "...", "api_token": "...", "webhook_secret": "..."}
+#     }
+#
+# Webhook providers should be configured to deliver events to:
+#
+#   POST /api/v1/integrations/{config_id}/jira/webhook
+#       header: X-Webhook-Signature: sha256=<hmac-sha256(secret, raw_body)>
+#
+#   POST /api/v1/integrations/{config_id}/azure/webhook
+#       header: Authorization: Basic <base64("anything:<webhook_secret>")>
+#       (Azure DevOps Service Hooks call this "Basic Auth username/password".
+#        We ignore the username and only compare the password.)
+
+
+def _load_webhook_config(
+    db: Session, config_id: int, expected_type: str,
+) -> tuple[IntegrationConfig, str]:
+    """
+    Load an IntegrationConfig + return its decrypted webhook_secret.
+
+    Raises 401 if the config is missing, the integration_type doesn't
+    match, the config is inactive, or no webhook_secret is configured —
+    all four cases return 401 with the SAME message so the caller can't
+    enumerate which configs exist or which have webhook auth disabled.
+    """
+    generic_401 = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Webhook authentication failed",
+    )
+
+    ic = db.query(IntegrationConfig).filter(
+        IntegrationConfig.id == config_id,
+    ).first()
+    if not ic or ic.integration_type != expected_type or not ic.is_active:
+        raise generic_401
+
+    cfg = _decrypt_config(ic)
+    secret = cfg.get("webhook_secret") or ""
+    if not secret:
+        raise generic_401
+    return ic, secret
+
+
+def _verify_jira_signature(raw_body: bytes, secret: str, header: str | None) -> bool:
+    """
+    Validate `X-Webhook-Signature: sha256=<hex>` against
+    HMAC-SHA256(secret, raw_body). Constant-time comparison.
+    """
+    if not header or not header.startswith("sha256="):
+        return False
+    provided = header.split("=", 1)[1].strip().lower()
+    expected = hmac.new(
+        secret.encode("utf-8"), raw_body, hashlib.sha256,
+    ).hexdigest()
+    return hmac.compare_digest(provided, expected)
+
+
+def _verify_azure_basic(secret: str, header: str | None) -> bool:
+    """
+    Validate `Authorization: Basic <base64(user:pass)>` where the
+    decoded password matches the configured webhook_secret. Username
+    is ignored. Constant-time comparison.
+    """
+    if not header or not header.lower().startswith("basic "):
+        return False
+    try:
+        encoded = header.split(" ", 1)[1].strip()
+        decoded = base64.b64decode(encoded).decode("utf-8", errors="strict")
+    except (ValueError, UnicodeDecodeError):
+        return False
+    if ":" not in decoded:
+        return False
+    _, _, provided = decoded.partition(":")
+    return hmac.compare_digest(provided, secret)
 
 
 def _config_to_dict(ic: IntegrationConfig, hide_secrets: bool = True) -> dict:
@@ -376,21 +467,44 @@ def get_sync_logs(
 #  Webhooks
 # ══════════════════════════════════════
 
-@router.post("/jira/webhook")
-async def jira_webhook(request: Request, db: Session = Depends(get_db)):
-    """Receive Jira webhook events.  Jira sends issue events here."""
+@router.post("/{config_id}/jira/webhook")
+async def jira_webhook(
+    config_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """
+    Receive Jira webhook events for a specific IntegrationConfig.
+
+    AUDIT_FINDINGS F-017:
+      - integration_config_id is now resolved from the URL path, not
+        hardcoded to 0.
+      - HMAC-SHA256 signature in the `X-Webhook-Signature: sha256=...`
+        header is validated against the per-config `webhook_secret`
+        BEFORE any DB write. 401 on miss.
+      - Failure paths return a generic 401 to prevent config enumeration.
+    """
+    ic, secret = _load_webhook_config(db, config_id, "jira")
+
+    raw_body = await request.body()
+    sig_header = request.headers.get("x-webhook-signature")
+    if not _verify_jira_signature(raw_body, secret, sig_header):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Webhook authentication failed",
+        )
+
     try:
-        payload = await request.json()
-    except Exception:
+        payload = json.loads(raw_body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
         raise HTTPException(400, "Invalid JSON payload")
 
     from app.services.integrations.jira import JiraConnector
-    connector = JiraConnector({})
+    connector = JiraConnector(_decrypt_config(ic))
     summary = connector.receive_webhook(payload)
 
-    # Log the webhook
     log = SyncLog(
-        integration_config_id=0,  # generic — no specific config
+        integration_config_id=ic.id,        # F-017: real id, not 0
         direction="import",
         status="success",
         details={"webhook": summary},
@@ -401,20 +515,42 @@ async def jira_webhook(request: Request, db: Session = Depends(get_db)):
     return {"status": "received", "summary": summary}
 
 
-@router.post("/azure/webhook")
-async def azure_webhook(request: Request, db: Session = Depends(get_db)):
-    """Receive Azure DevOps Service Hook events."""
+@router.post("/{config_id}/azure/webhook")
+async def azure_webhook(
+    config_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """
+    Receive Azure DevOps Service Hook events for a specific
+    IntegrationConfig.
+
+    AUDIT_FINDINGS F-017:
+      - integration_config_id is resolved from the URL path.
+      - HTTP Basic Auth password (Azure DevOps's standard webhook
+        scheme) is matched against the per-config `webhook_secret`
+        BEFORE any DB write. 401 on miss.
+    """
+    ic, secret = _load_webhook_config(db, config_id, "azure_devops")
+
+    auth_header = request.headers.get("authorization")
+    if not _verify_azure_basic(secret, auth_header):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Webhook authentication failed",
+        )
+
     try:
         payload = await request.json()
     except Exception:
         raise HTTPException(400, "Invalid JSON payload")
 
     from app.services.integrations.azure_devops import AzureDevOpsConnector
-    connector = AzureDevOpsConnector({})
+    connector = AzureDevOpsConnector(_decrypt_config(ic))
     summary = connector.receive_webhook(payload)
 
     log = SyncLog(
-        integration_config_id=0,
+        integration_config_id=ic.id,
         direction="import",
         status="success",
         details={"webhook": summary},
