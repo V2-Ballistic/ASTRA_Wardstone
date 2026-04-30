@@ -200,9 +200,18 @@ export default function AutoRequirementsPage() {
   // Inline edit
   const [editingId, setEditingId]   = useState<number | null>(null);
 
-  // Toast
-  const [toast, setToast]           = useState('');
-  const flash = (m: string) => { setToast(m); setTimeout(() => setToast(''), 4000); };
+  // F-090: explicit toast severity. Pre-fix the toast banner inferred
+  // severity from `toast.includes('fail')` — fragile and locale-bound.
+  // The state now carries an explicit severity field; flash() takes it
+  // as a second argument, defaulting to 'info' so a missing call site
+  // surfaces as neutral rather than misclassifying.
+  type ToastSeverity = 'success' | 'error' | 'info';
+  type ToastState = { message: string; severity: ToastSeverity } | null;
+  const [toast, setToast] = useState<ToastState>(null);
+  const flash = (message: string, severity: ToastSeverity = 'info') => {
+    setToast({ message, severity });
+    setTimeout(() => setToast(null), 4000);
+  };
 
   // ── Fetch data ──
   const fetchData = useCallback(async () => {
@@ -341,18 +350,18 @@ export default function AutoRequirementsPage() {
   const approveSingle = async (reqId: number) => {
     try {
       await api.post('/interfaces/auto-requirements/approve', { requirement_ids: [reqId] });
-      flash('Requirement approved — trace links created');
+      flash('Requirement approved — trace links created', 'success');
       fetchData();
-    } catch (e: any) { flash(e?.response?.data?.detail || 'Approve failed'); }
+    } catch (e: any) { flash(e?.response?.data?.detail || 'Approve failed', 'error'); }
   };
 
   // ── Reject single ──
   const rejectSingle = async (reqId: number) => {
     try {
       await api.post('/interfaces/auto-requirements/reject', { requirement_ids: [reqId] });
-      flash('Requirement rejected');
+      flash('Requirement rejected', 'success');
       fetchData();
-    } catch (e: any) { flash(e?.response?.data?.detail || 'Reject failed'); }
+    } catch (e: any) { flash(e?.response?.data?.detail || 'Reject failed', 'error'); }
   };
 
   // ── Bulk approve ──
@@ -361,10 +370,10 @@ export default function AutoRequirementsPage() {
     setBulkLoading(true);
     try {
       const res = await api.post('/interfaces/auto-requirements/approve', { requirement_ids: [...selected] });
-      flash(`${res.data.approved} approved, ${res.data.trace_links_created} trace links created`);
+      flash(`${res.data.approved} approved, ${res.data.trace_links_created} trace links created`, 'success');
       setSelected(new Set());
       fetchData();
-    } catch (e: any) { flash(e?.response?.data?.detail || 'Bulk approve failed'); }
+    } catch (e: any) { flash(e?.response?.data?.detail || 'Bulk approve failed', 'error'); }
     setBulkLoading(false);
   };
 
@@ -374,10 +383,10 @@ export default function AutoRequirementsPage() {
     setBulkLoading(true);
     try {
       const res = await api.post('/interfaces/auto-requirements/reject', { requirement_ids: [...selected] });
-      flash(`${res.data.rejected} rejected`);
+      flash(`${res.data.rejected} rejected`, 'success');
       setSelected(new Set());
       fetchData();
-    } catch (e: any) { flash(e?.response?.data?.detail || 'Bulk reject failed'); }
+    } catch (e: any) { flash(e?.response?.data?.detail || 'Bulk reject failed', 'error'); }
     setBulkLoading(false);
   };
 
@@ -396,11 +405,11 @@ export default function AutoRequirementsPage() {
       const parts = [`${deleted} deleted`];
       if (skipped_already_deleted) parts.push(`${skipped_already_deleted} already deleted`);
       if (not_found) parts.push(`${not_found} not found`);
-      flash(parts.join(', '));
+      flash(parts.join(', '), 'success');
       setSelected(new Set());
       fetchData();
     } catch (e: any) {
-      flash(e?.response?.data?.detail || 'Bulk delete failed');
+      flash(e?.response?.data?.detail || 'Bulk delete failed', 'error');
     }
     setBulkLoading(false);
   };
@@ -436,11 +445,24 @@ export default function AutoRequirementsPage() {
         </button>
       </div>
 
-      {/* Toast */}
+      {/* Toast — F-090: classes/icon driven by explicit severity, not
+          string inspection. */}
       {toast && (
-        <div className={clsx('mb-4 rounded-lg border px-3 py-2 text-xs flex items-center gap-2',
-          toast.includes('fail') ? 'border-red-500/20 bg-red-500/10 text-red-400' : 'border-emerald-500/20 bg-emerald-500/10 text-emerald-400')}>
-          {toast.includes('fail') ? <AlertTriangle className="h-3.5 w-3.5" /> : <CheckCircle className="h-3.5 w-3.5" />} {toast}
+        <div
+          role={toast.severity === 'error' ? 'alert' : 'status'}
+          className={clsx(
+            'mb-4 rounded-lg border px-3 py-2 text-xs flex items-center gap-2',
+            toast.severity === 'error' && 'border-red-500/20 bg-red-500/10 text-red-400',
+            toast.severity === 'success' && 'border-emerald-500/20 bg-emerald-500/10 text-emerald-400',
+            toast.severity === 'info' && 'border-blue-500/20 bg-blue-500/10 text-blue-300',
+          )}
+        >
+          {toast.severity === 'error' ? (
+            <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
+          ) : (
+            <CheckCircle className="h-3.5 w-3.5" aria-hidden="true" />
+          )}
+          {toast.message}
         </div>
       )}
 
