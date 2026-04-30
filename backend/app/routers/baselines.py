@@ -78,26 +78,58 @@ def create_baseline(
                         project_id=data.project_id,
                         requirements_count=len(reqs),
                         created_by_id=current_user.id)
-    db.add(baseline)
-    db.flush()
 
-    for req in reqs:
-        snap = BaselineRequirement(
-            baseline_id=baseline.id, requirement_id=req.id,
-            req_id_snapshot=req.req_id, title_snapshot=req.title,
-            statement_snapshot=req.statement, rationale_snapshot=req.rationale,
-            status_snapshot=req.status.value if hasattr(req.status, "value") else str(req.status),
-            level_snapshot=req.level.value if hasattr(req.level, "value") else str(req.level) if req.level else "L1",
-            type_snapshot=req.req_type.value if hasattr(req.req_type, "value") else str(req.req_type),
-            priority_snapshot=req.priority.value if hasattr(req.priority, "value") else str(req.priority),
-            quality_score_snapshot=req.quality_score or 0.0,
-            version_snapshot=req.version or 1,
-            parent_id_snapshot=req.parent_id,
-        )
-        db.add(snap)
-
-    db.commit()
+    # F-059: explicit transaction safety. Pre-fix the snapshot loop
+    # could partially flush before raising; if a downstream layer
+    # caught the exception the parent Baseline + some snapshots
+    # would persist in a half-baked state. Wrap in try/except with
+    # rollback, then verify the count post-commit so a divergence
+    # between requested rows and persisted rows is loud.
+    expected_count = len(reqs)
+    try:
+        db.add(baseline)
+        db.flush()
+        for req in reqs:
+            snap = BaselineRequirement(
+                baseline_id=baseline.id, requirement_id=req.id,
+                req_id_snapshot=req.req_id, title_snapshot=req.title,
+                statement_snapshot=req.statement, rationale_snapshot=req.rationale,
+                status_snapshot=req.status.value if hasattr(req.status, "value") else str(req.status),
+                level_snapshot=req.level.value if hasattr(req.level, "value") else str(req.level) if req.level else "L1",
+                type_snapshot=req.req_type.value if hasattr(req.req_type, "value") else str(req.req_type),
+                priority_snapshot=req.priority.value if hasattr(req.priority, "value") else str(req.priority),
+                quality_score_snapshot=req.quality_score or 0.0,
+                version_snapshot=req.version or 1,
+                parent_id_snapshot=req.parent_id,
+            )
+            db.add(snap)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     db.refresh(baseline)
+
+    # Post-commit count check — alarm + 500 on mismatch (the mismatch
+    # would imply a SAVEPOINT promotion bug or an out-of-band delete
+    # racing the commit). The parent's stored requirements_count is
+    # what it advertised at create time; the actual snapshot count is
+    # the truth of what got persisted.
+    actual_count = (
+        db.query(BaselineRequirement)
+        .filter(BaselineRequirement.baseline_id == baseline.id)
+        .count()
+    )
+    if actual_count != expected_count:
+        import logging
+        logging.getLogger("astra").error(
+            "create_baseline count mismatch: baseline_id=%s expected=%s actual=%s",
+            baseline.id, expected_count, actual_count,
+        )
+        raise HTTPException(
+            500,
+            f"Baseline snapshot count mismatch ({actual_count}/{expected_count}); "
+            "the partial baseline has been preserved for inspection.",
+        )
     creator = db.query(User).filter(User.id == baseline.created_by_id).first()
 
     record_event(db, "baseline.created", "baseline", baseline.id, current_user.id,
