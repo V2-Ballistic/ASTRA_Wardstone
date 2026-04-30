@@ -68,7 +68,10 @@ class ApprovalWorkflow(Base):
     name = Column(String(255), nullable=False)
     description = Column(Text, default="")
     project_id = Column(Integer, ForeignKey("projects.id"), nullable=False, index=True)
-    status = Column(SQLEnum(WorkflowStatus), default=WorkflowStatus.ACTIVE)
+    status = Column(
+        SQLEnum(WorkflowStatus, values_callable=lambda x: [e.value for e in x]),
+        default=WorkflowStatus.ACTIVE,
+    )
     entity_type = Column(String(50), default="requirement")   # what this workflow governs
     created_by_id = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -120,7 +123,10 @@ class WorkflowInstance(Base):
     entity_type = Column(String(50), nullable=False)        # "requirement", "baseline", …
     entity_id = Column(Integer, nullable=False)
     project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
-    status = Column(SQLEnum(InstanceStatus), default=InstanceStatus.PENDING)
+    status = Column(
+        SQLEnum(InstanceStatus, values_callable=lambda x: [e.value for e in x]),
+        default=InstanceStatus.PENDING,
+    )
     current_stage_number = Column(Integer, default=1)
     submitted_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     submitted_at = Column(DateTime, default=datetime.utcnow)
@@ -172,7 +178,8 @@ class ElectronicSignature(Base):
     entity_type = Column(String(50), nullable=False)
     entity_id = Column(Integer, nullable=False)
     signature_meaning = Column(
-        SQLEnum(SignatureMeaning), nullable=False,
+        SQLEnum(SignatureMeaning, values_callable=lambda x: [e.value for e in x]),
+        nullable=False,
     )
     statement = Column(
         Text, nullable=False,
@@ -184,6 +191,13 @@ class ElectronicSignature(Base):
     timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
     signature_hash = Column(String(64), nullable=False, unique=True)
 
+    # AUDIT_FINDINGS F-008 (21 CFR Part 11 §11.70): SHA-256 of the
+    # signed entity's content at sign time. Verified at read time so
+    # signatures cannot survive a silent edit of the underlying record.
+    # Nullable for now — pre-F-008 rows (none expected, see F-002) stay
+    # null; the signing path always populates it going forward.
+    record_hash = Column(String(64), nullable=True)
+
     user = relationship("User")
 
     __table_args__ = (
@@ -194,6 +208,18 @@ class ElectronicSignature(Base):
     def compute_hash(
         user_id: int, entity_type: str, entity_id: int,
         meaning: str, timestamp_iso: str,
+        record_hash: str = "",
     ) -> str:
-        payload = f"{user_id}|{entity_type}|{entity_id}|{meaning}|{timestamp_iso}"
+        """
+        Build the signature_hash payload.
+
+        F-008: record_hash now binds the signature to the signed
+        entity's content at sign time. Older callers passing only the
+        first five args still work — record_hash defaults to "" so the
+        hash remains stable for the legacy two-row schema.
+        """
+        payload = (
+            f"{user_id}|{entity_type}|{entity_id}|{meaning}|"
+            f"{timestamp_iso}|{record_hash}"
+        )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
