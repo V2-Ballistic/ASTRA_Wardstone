@@ -226,8 +226,24 @@ def test_requirement(db_session, test_user, test_project) -> Requirement:
 #  RBAC helper — used by test_rbac.py
 # ══════════════════════════════════════
 
-def make_user(db_session, role: str, username: str | None = None):
-    """Create a user with *role* and return ``(user, headers)``."""
+def make_user(
+    db_session,
+    role: str,
+    username: str | None = None,
+    *,
+    project: "Project | None" = None,
+):
+    """
+    Create a user with *role* and return ``(user, headers)``.
+
+    F-145: when *project* is supplied, the user is also added as a
+    ProjectMember of that project. Required for any test that hits a
+    project-scoped endpoint after F-014 (which rejects non-members
+    with 403, masking the role-based outcome the test wanted to
+    assert). Without *project*, the user is created with no
+    membership — suitable for tests that exercise admin bypass or
+    intentional non-member flows.
+    """
     username = username or f"user_{role}"
     user = User(
         username=username,
@@ -241,5 +257,15 @@ def make_user(db_session, role: str, username: str | None = None):
     db_session.add(user)
     db_session.commit()
     db_session.refresh(user)
+
+    if project is not None:
+        from app.models.project_member import ProjectMember
+        db_session.add(ProjectMember(
+            project_id=project.id,
+            user_id=user.id,
+            added_by_id=project.owner_id,
+        ))
+        db_session.commit()
+
     token = create_access_token(data={"sub": user.username})
     return user, {"Authorization": f"Bearer {token}"}
