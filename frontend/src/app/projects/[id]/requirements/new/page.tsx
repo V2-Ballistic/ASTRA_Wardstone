@@ -95,6 +95,10 @@ export default function NewRequirementPage() {
   const [reqType, setReqType] = useState<RequirementType>('functional');
   const [priority, setPriority] = useState<Priority>('medium');
   const [level, setLevel] = useState<RequirementLevel>('L1');
+  // F-100: track whether the user picked the level explicitly so the
+  // parent-driven auto-suggest doesn't keep overriding their choice.
+  // Set to true the moment a user clicks a level button.
+  const [levelManuallyChosen, setLevelManuallyChosen] = useState(false);
   const [parentId, setParentId] = useState<number | null>(null);
 
   // Project
@@ -158,7 +162,12 @@ export default function NewRequirementPage() {
   }, [statement, projectId, title]);
 
   // ── Auto-suggest level from parent ──
+  // F-100: skip the override if the user has explicitly chosen a
+  // level. Pre-fix this useEffect ran every time `parentId` changed
+  // (or the requirements list reloaded), clobbering the user's
+  // selection back to parent.level + 1.
   useEffect(() => {
+    if (levelManuallyChosen) return;
     if (parentId) {
       const parent = allRequirements.find((r) => r.id === parentId);
       if (parent?.level) {
@@ -166,7 +175,7 @@ export default function NewRequirementPage() {
         if (num < 5) setLevel(`L${num + 1}` as RequirementLevel);
       }
     }
-  }, [parentId, allRequirements]);
+  }, [parentId, allRequirements, levelManuallyChosen]);
 
   // ── Generate rationale ──
   const handleGenerateRationale = async () => {
@@ -242,7 +251,7 @@ export default function NewRequirementPage() {
               <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wider text-slate-500">Level</label>
               <div className="flex gap-1.5">
                 {(['L1', 'L2', 'L3', 'L4', 'L5'] as RequirementLevel[]).map((l) => (
-                  <button key={l} onClick={() => setLevel(l)}
+                  <button key={l} onClick={() => { setLevel(l); setLevelManuallyChosen(true); }}
                     className={`flex-1 rounded-lg py-2 text-xs font-bold transition-all ${
                       level === l ? 'text-white shadow-lg' : 'border border-astra-border bg-astra-surface text-slate-400 hover:border-blue-500/30'
                     }`}
