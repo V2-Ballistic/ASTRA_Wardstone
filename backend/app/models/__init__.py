@@ -192,9 +192,17 @@ class Requirement(Base):
     history = relationship("RequirementHistory", back_populates="requirement", cascade="all, delete-orphan")
     comments = relationship("Comment", back_populates="requirement", cascade="all, delete-orphan")
 
-    # Unique constraint per project
     __table_args__ = (
-        # Each req_id must be unique within a project
+        # F-075: req_id must be unique within a project. Pre-fix this
+        # was just a comment — duplicates could be inserted indefinitely.
+        UniqueConstraint("project_id", "req_id", name="uq_req_per_project"),
+        # F-075: composite indexes for the dashboard / list filters.
+        # The first two are also created by migration 0002; migration
+        # 0017 promotes the (project_id, req_id) one to UNIQUE and adds
+        # the missing (project_id, owner_id) one.
+        Index("ix_req_project_status", "project_id", "status"),
+        Index("ix_req_project_type", "project_id", "req_type"),
+        Index("ix_req_project_owner", "project_id", "owner_id"),
     )
 
 
