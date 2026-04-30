@@ -318,22 +318,21 @@ def check_timeouts(db: Session) -> list[dict]:
         deadline = ref_time + timedelta(hours=stage.timeout_hours)
 
         if datetime.utcnow() > deadline:
-            if stage.auto_escalate_to_role:
-                escalations.append({
-                    "instance_id": inst.id,
-                    "entity": f"{inst.entity_type}:{inst.entity_id}",
-                    "stage": stage.name,
-                    "escalate_to": stage.auto_escalate_to_role,
-                })
-            else:
-                inst.status = InstanceStatus.TIMED_OUT
-                inst.completed_at = datetime.utcnow()
-                escalations.append({
-                    "instance_id": inst.id,
-                    "entity": f"{inst.entity_type}:{inst.entity_id}",
-                    "stage": stage.name,
-                    "timed_out": True,
-                })
+            # F-065: `stage.auto_escalate_to_role` was removed because
+            # no escalation actually fired — the branch only appended
+            # a dict to the return list. Every timed-out stage now
+            # transitions the instance to TIMED_OUT so callers see a
+            # consistent terminal status. Real escalation (notify a
+            # role, page on-call, etc.) is deferred to a future
+            # workflow-notifications feature.
+            inst.status = InstanceStatus.TIMED_OUT
+            inst.completed_at = datetime.utcnow()
+            escalations.append({
+                "instance_id": inst.id,
+                "entity": f"{inst.entity_type}:{inst.entity_id}",
+                "stage": stage.name,
+                "timed_out": True,
+            })
 
     db.commit()
     return escalations

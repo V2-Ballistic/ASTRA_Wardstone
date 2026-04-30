@@ -78,7 +78,7 @@ class StageCreate(BaseModel):
     required_role: Optional[str] = None
     required_count: int = 1
     timeout_hours: int = 0
-    auto_escalate_to_role: Optional[str] = None
+    # F-065: auto_escalate_to_role removed — never honoured.
     can_parallel: bool = False
     require_signature: bool = True
 
@@ -88,7 +88,7 @@ class StageUpdate(BaseModel):
     required_role: Optional[str] = None
     required_count: Optional[int] = None
     timeout_hours: Optional[int] = None
-    auto_escalate_to_role: Optional[str] = None
+    # F-065: auto_escalate_to_role removed — never honoured.
     can_parallel: Optional[bool] = None
     require_signature: Optional[bool] = None
 
@@ -399,18 +399,19 @@ def seed_default_workflow(
     db.add(wf)
     db.flush()
 
+    # F-065: auto_escalate_to_role removed from the seed — the field
+    # was honoured nowhere. Timed-out stages now uniformly transition
+    # to TIMED_OUT.
     stages = [
         {"stage_number": 1, "name": "Engineer Submission",
          "required_role": "requirements_engineer", "required_count": 1,
          "require_signature": False, "timeout_hours": 0},
         {"stage_number": 2, "name": "Peer Review",
          "required_role": "requirements_engineer", "required_count": 1,
-         "require_signature": True, "timeout_hours": 48,
-         "auto_escalate_to_role": "project_manager"},
+         "require_signature": True, "timeout_hours": 48},
         {"stage_number": 3, "name": "PM Approval",
          "required_role": "project_manager", "required_count": 1,
-         "require_signature": True, "timeout_hours": 72,
-         "auto_escalate_to_role": "admin"},
+         "require_signature": True, "timeout_hours": 72},
         {"stage_number": 4, "name": "CCB Approval",
          "required_role": "admin", "required_count": 1,
          "require_signature": True, "timeout_hours": 120},
@@ -451,7 +452,7 @@ def _stage_to_dict(s: WorkflowStage) -> dict:
         "required_role": s.required_role,
         "required_count": s.required_count,
         "timeout_hours": s.timeout_hours,
-        "auto_escalate_to_role": s.auto_escalate_to_role,
+        # F-065: auto_escalate_to_role removed from the surface.
         "can_parallel": s.can_parallel,
         "require_signature": s.require_signature,
     }

@@ -103,7 +103,11 @@ class WorkflowStage(Base):
     required_role = Column(String(50), nullable=True)       # UserRole value or None for any
     required_count = Column(Integer, default=1)             # how many approvals needed
     timeout_hours = Column(Integer, default=0)              # 0 = no timeout
-    auto_escalate_to_role = Column(String(50), nullable=True)  # role to notify on timeout
+    # F-065: `auto_escalate_to_role` was removed in migration 0015.
+    # The field was read but never honoured (no notification sent, no
+    # role flag set, no DB record written) and so behaved as a footgun.
+    # When a real escalation feature lands it should bring its own
+    # column with a defined contract.
     can_parallel = Column(Boolean, default=False)           # run in parallel with next stage
     require_signature = Column(Boolean, default=True)       # require e-sig at this stage
     created_at = Column(DateTime, default=datetime.utcnow)
