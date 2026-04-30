@@ -119,12 +119,18 @@ def create_baseline(
 def list_baselines(project_id: int, db: Session = Depends(get_db),
                    current_user: User = Depends(get_current_user),
                    project: Project = Depends(project_member_required)):
-    baselines = db.query(Baseline).filter(
-        Baseline.project_id == project_id
-    ).order_by(Baseline.created_at.desc()).all()
+    """F-043: previously emitted one User query per baseline. Replaced
+    with a single LEFT JOIN — query count is constant regardless of
+    how many baselines a project has."""
+    rows = (
+        db.query(Baseline, User)
+        .outerjoin(User, User.id == Baseline.created_by_id)
+        .filter(Baseline.project_id == project_id)
+        .order_by(Baseline.created_at.desc())
+        .all()
+    )
     results = []
-    for b in baselines:
-        creator = db.query(User).filter(User.id == b.created_by_id).first() if b.created_by_id else None
+    for b, creator in rows:
         results.append({
             "id": b.id, "name": b.name, "description": b.description,
             "project_id": b.project_id,
