@@ -239,19 +239,19 @@ def create_verification(
 #  Create  (Tier 1 sync + Tier 2 background)
 # ══════════════════════════════════════
 
-def _run_background_ai(db_url: str, req_id: int):
+def _run_background_ai(req_id: int):
     """Background task: run Tier 2 AI analysis and cache the result.
 
-    F-054: pre-fix this opened a SessionLocal, called cache_analysis,
-    and closed without an explicit commit — relying on cache_analysis
-    to commit internally. If cache_analysis ever changed to defer
-    its commit (or raised mid-flush), the cached row would silently
-    roll back. Using `with SessionLocal() as db:` and an explicit
-    `db.commit()` makes the persistence intent obvious and survives
-    a future cache_analysis refactor.
+    F-054: SessionLocal context manager + explicit db.commit() so
+    persistence doesn't depend on cache_analysis committing internally.
 
-    The `db_url` parameter is unused (F-030 — a separate finding —
-    will retire it); SessionLocal pulls from settings directly.
+    F-030: pre-fix this took a `db_url: str` first positional argument
+    that was unused — SessionLocal pulls from settings directly. The
+    callers in create_requirement / update_requirement extracted
+    `settings.DATABASE_URL.get_secret_value()` and passed it as a
+    positional arg, so on any task exception the URL (with embedded
+    password) ended up in the BackgroundTasks traceback / logger
+    context. Removing the parameter retires the leak surface.
     """
     if not is_ai_available():
         return
@@ -311,12 +311,10 @@ def create_requirement(
         pass
 
     # Background: run Tier 2 AI analysis (non-blocking)
+    # F-030: no DATABASE_URL passthrough — _run_background_ai opens
+    # its own SessionLocal from app.database / settings.
     if is_ai_available():
-        from app.config import settings
-        db_url = settings.DATABASE_URL
-        if hasattr(db_url, "get_secret_value"):
-            db_url = db_url.get_secret_value()
-        background_tasks.add_task(_run_background_ai, str(db_url), req.id)
+        background_tasks.add_task(_run_background_ai, req.id)
 
     return req
 
@@ -383,12 +381,9 @@ def update_requirement(
         pass
 
     # Re-run background AI on content changes
+    # F-030: no DATABASE_URL passthrough.
     if quality_recalc and is_ai_available():
-        from app.config import settings
-        db_url = settings.DATABASE_URL
-        if hasattr(db_url, "get_secret_value"):
-            db_url = db_url.get_secret_value()
-        background_tasks.add_task(_run_background_ai, str(db_url), req.id)
+        background_tasks.add_task(_run_background_ai, req.id)
 
     return req
 
