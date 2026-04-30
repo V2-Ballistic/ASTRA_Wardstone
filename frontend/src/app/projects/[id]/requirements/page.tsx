@@ -28,6 +28,7 @@ import {
   type RequirementStatus, type RequirementLevel, type Priority, type Requirement,
 } from '@/lib/types';
 import api, { requirementsAPI, projectsAPI, baselinesAPI } from '@/lib/api';
+import VirtualList from '@/components/VirtualList';
 
 // F-084: replaced runtime require() shim with normal typed import.
 import { aiAPI } from '@/lib/ai-api';
@@ -768,22 +769,33 @@ export default function ProjectRequirementsPage() {
                 <span>Status</span><span>Type</span><span>Priority</span><span>Quality</span>
               </div>
 
-              {loading ? (
-                <div className="flex items-center justify-center py-16">
-                  <Loader2 className="h-6 w-6 animate-spin text-blue-500" />
-                </div>
-              ) : filtered.length === 0 ? (
-                <div className="py-16 text-center">
-                  <div className="text-sm text-slate-500">No requirements match your filters</div>
-                  <p className="mt-1 text-xs text-slate-600">Try adjusting your search or filters</p>
-                </div>
-              ) : (
-                filtered.map((req) => {
+              {(() => {
+                if (loading) {
+                  return (
+                    <div className="flex items-center justify-center py-16">
+                      <Loader2 className="h-6 w-6 animate-spin text-blue-500" />
+                    </div>
+                  );
+                }
+                if (filtered.length === 0) {
+                  return (
+                    <div className="py-16 text-center">
+                      <div className="text-sm text-slate-500">No requirements match your filters</div>
+                      <p className="mt-1 text-xs text-slate-600">Try adjusting your search or filters</p>
+                    </div>
+                  );
+                }
+                // F-098: gate virtualization on >100 rows. Below the
+                // threshold, the constant overhead of the windowed
+                // bookkeeping isn't worth it. Above it, rendering
+                // 500 unique React elements per keystroke in the
+                // search box made the input visibly laggy.
+                const renderRow = (req: typeof filtered[number]) => {
                   const sc = STATUS_COLORS[req.status as RequirementStatus];
                   return (
-                    <div key={req.id}
-                      className="group grid grid-cols-[30px_100px_40px_1fr_100px_90px_70px_60px] items-center border-b border-astra-border px-4 py-3 transition-colors last:border-0 hover:bg-astra-surface-hover">
-                      {/* Checkbox */}
+                    <div
+                      className="group grid grid-cols-[30px_100px_40px_1fr_100px_90px_70px_60px] items-center border-b border-astra-border px-4 py-3 transition-colors hover:bg-astra-surface-hover"
+                    >
                       <button onClick={() => toggleSelect(req.id)}>
                         {selected.has(req.id) ? (
                           <CheckSquare className="h-4 w-4 text-blue-400" />
@@ -791,7 +803,6 @@ export default function ProjectRequirementsPage() {
                           <Square className="h-4 w-4 text-slate-600 group-hover:text-slate-400" />
                         )}
                       </button>
-                      {/* Row data — clickable */}
                       <span className="font-mono text-xs font-semibold text-blue-400 cursor-pointer"
                         onClick={() => navigateToReq(req.id)}>{req.req_id}</span>
                       <LevelBadge level={req.level} />
@@ -808,8 +819,24 @@ export default function ProjectRequirementsPage() {
                       <QualityDot score={req.quality_score} />
                     </div>
                   );
-                })
-              )}
+                };
+
+                if (filtered.length <= 100) {
+                  return filtered.map(req => (
+                    <div key={req.id}>{renderRow(req)}</div>
+                  ));
+                }
+                return (
+                  <VirtualList
+                    items={filtered}
+                    rowHeight={66}
+                    containerHeight={600}
+                    overscan={6}
+                    keyOf={req => req.id}
+                    renderRow={renderRow}
+                  />
+                );
+              })()}
             </div>
           )}
 
