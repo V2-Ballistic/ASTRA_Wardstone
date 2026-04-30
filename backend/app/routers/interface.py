@@ -2387,6 +2387,29 @@ def batch_create_wires(
                         Pin.pin_number == lru_pin.pin_number)
                 .first())
 
+    # F-142: per-pin connector lookup so we can enforce that the wire's
+    # from_pin sits on the wire's "from" side of the harness and to_pin on
+    # the "to" side. Pre-fetch all pin → connector_id mappings for this
+    # batch so we don't re-query inside the loop.
+    pin_ids_in_batch = {wd.from_pin_id for wd in data.wires} | {wd.to_pin_id for wd in data.wires}
+    pin_to_connector: dict[int, int] = {
+        pid: cid for pid, cid in (
+            db.query(Pin.id, Pin.connector_id)
+              .filter(Pin.id.in_(pin_ids_in_batch))
+              .all()
+        )
+    }
+    # `legacy_two_endpoint` is true when the harness uses the 2-endpoint
+    # (from_connector_id / to_connector_id) layout and has at most 2
+    # HarnessEndpoint rows. In that case strict from/to matching applies.
+    # 3+ endpoint harnesses can wire across any two LRU connectors, so we
+    # only enforce the cross-connector rule there.
+    legacy_two_endpoint = (
+        harness.from_connector_id is not None
+        and harness.to_connector_id is not None
+        and len(endpoint_rows) <= 2
+    )
+
     created = []
     for wd in data.wires:
         # Validate both pins live on this harness's endpoint LRUs
@@ -2404,6 +2427,41 @@ def batch_create_wires(
             )
         if wd.from_pin_id == wd.to_pin_id:
             raise HTTPException(400, "A wire cannot connect a pin to itself")
+
+        # F-142: from/to connector consistency. Pins must be on different
+        # connectors (a wire crosses connectors, doesn't stay within one),
+        # AND for legacy 2-endpoint harnesses each pin must be on the
+        # connector its end of the wire is named after.
+        from_conn_id = pin_to_connector.get(wd.from_pin_id)
+        to_conn_id = pin_to_connector.get(wd.to_pin_id)
+        if from_conn_id is None or to_conn_id is None:
+            # Should be impossible — both pins were already in valid_pin_ids
+            # above, which is built from a Pin query — but be defensive.
+            raise HTTPException(
+                400, f"Could not resolve connector for pins on wire {wd.wire_number}",
+            )
+        if from_conn_id == to_conn_id:
+            raise HTTPException(
+                400,
+                f"Wire {wd.wire_number}: from_pin and to_pin live on the same "
+                "connector; a wire must cross between two connectors.",
+            )
+        if legacy_two_endpoint:
+            if from_conn_id != harness.from_connector_id:
+                raise HTTPException(
+                    400,
+                    f"Wire {wd.wire_number}: from_pin {wd.from_pin_id} is on "
+                    f"connector {from_conn_id}, but the harness's from-side "
+                    f"connector is {harness.from_connector_id}. Either swap the "
+                    "pins on the wire or use a multi-endpoint harness.",
+                )
+            if to_conn_id != harness.to_connector_id:
+                raise HTTPException(
+                    400,
+                    f"Wire {wd.wire_number}: to_pin {wd.to_pin_id} is on "
+                    f"connector {to_conn_id}, but the harness's to-side "
+                    f"connector is {harness.to_connector_id}.",
+                )
 
         if wd.wire_number in existing_numbers:
             raise HTTPException(409, f"Wire number '{wd.wire_number}' already exists in harness")

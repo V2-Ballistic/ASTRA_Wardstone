@@ -1540,9 +1540,16 @@ class WireHarness(Base):
     mil_spec = Column(String(100), nullable=True)
 
 
-    __table_args__ = (
-        UniqueConstraint("from_connector_id", "to_connector_id", name="uq_harness_connectors"),
-    )
+    # F-078 / F-143: the legacy
+    #     UniqueConstraint("from_connector_id", "to_connector_id",
+    #                      name="uq_harness_connectors")
+    # was dropped in migration 0013. It pre-dated the HarnessEndpoint
+    # model and prevented multiple harnesses (e.g. one for power, one
+    # for signal) between the same LRU pair. Uniqueness of "this LRU
+    # connector belongs to exactly one harness" is now enforced by the
+    # UNIQUE on harness_endpoints.lru_connector_id (installed in
+    # migration 0007).
+    __table_args__ = ()
 
 
 # ── 10. Wire ──
