@@ -20,7 +20,7 @@ import logging
 from datetime import datetime
 from typing import Optional, List
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -35,6 +35,9 @@ from app.models.interface import (
     UnitEnvironmentalSpec, InterfaceRequirementLink,
 )
 from app.services.auth import get_current_user
+from app.services.security.spreadsheet import (
+    assert_workbook_size_ok, sanitize_filename, validate_upload,
+)
 
 try:
     from app.services.rbac import require_permission
@@ -592,18 +595,29 @@ async def preview_import(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Parse and validate an uploaded .xlsx — returns preview with errors/warnings."""
+    """
+    Parse and validate an uploaded .xlsx — returns preview with errors/warnings.
+
+    AUDIT_FINDINGS F-018: BodySizeLimitMiddleware rejects oversize bodies
+    upstream; here we additionally validate Content-Type + magic bytes
+    (415), cap sheet/row counts (413), and sanitise the filename.
+    """
     from openpyxl import load_workbook
 
     content = await file.read()
-    if not content:
-        raise HTTPException(400, "Empty file")
 
-    filename = file.filename or "upload.xlsx"
-    if not filename.lower().endswith((".xlsx", ".xls")):
-        raise HTTPException(400, "File must be .xlsx")
+    # F-018: declared MIME + magic-byte sniff. Raises 415/413.
+    validate_upload(
+        content=content,
+        declared_content_type=file.content_type,
+        expected_kind="xlsx",
+    )
+
+    filename = sanitize_filename(file.filename, default="upload.xlsx")
 
     wb = load_workbook(filename=io.BytesIO(content), read_only=True, data_only=True)
+    # F-018: cap sheet count + per-sheet row count. Raises 413.
+    assert_workbook_size_ok(wb)
     sheets_found = wb.sheetnames
 
     result = ImportPreviewResponse(file_name=filename, sheets_found=sheets_found)
@@ -785,13 +799,19 @@ async def preview_import(
 
 @router.post("/import/confirm", response_model=ImportConfirmResponse)
 async def confirm_import(
+    request: Request,
     project_id: int = Query(...),
     file: UploadFile = File(...),
-    request=None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("interfaces.create")),
 ):
-    """Create all entities from validated upload file."""
+    """
+    Create all entities from validated upload file.
+
+    AUDIT_FINDINGS F-018: same Content-Type + size + filename guards
+    as the preview endpoint apply here. F-070 (Phase 3) covers fixing
+    the bare `request=None` default + audit-emit.
+    """
     from openpyxl import load_workbook
 
     project = db.query(Project).filter(Project.id == project_id).first()
@@ -799,7 +819,17 @@ async def confirm_import(
         raise HTTPException(404, "Project not found")
 
     content = await file.read()
+
+    # F-018: declared MIME + magic-byte sniff. Raises 415/413.
+    validate_upload(
+        content=content,
+        declared_content_type=file.content_type,
+        expected_kind="xlsx",
+    )
+
     wb = load_workbook(filename=io.BytesIO(content), read_only=True, data_only=True)
+    # F-018: cap sheet count + per-sheet row count. Raises 413.
+    assert_workbook_size_ok(wb)
 
     resp = ImportConfirmResponse(created_ids={})
     errors: list = []

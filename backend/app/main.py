@@ -18,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.config import settings
+from app.middleware.body_size_limit import BodySizeLimitMiddleware
 
 logger = logging.getLogger("astra")
 
@@ -166,6 +167,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# F-018: BodySizeLimit fires AFTER CORS (so OPTIONS preflights still
+# pass) and BEFORE any router runs. Default 50 MB; override via
+# MAX_UPLOAD_BYTES env var.
+app.add_middleware(BodySizeLimitMiddleware)
 for _name, _cls in _middlewares:
     if _name == "SecurityHeadersMiddleware":
         app.add_middleware(_cls, environment=settings.ENVIRONMENT)
