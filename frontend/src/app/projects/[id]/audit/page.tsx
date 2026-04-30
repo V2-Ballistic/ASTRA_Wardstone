@@ -17,6 +17,8 @@ import {
   Filter, Download, PackageCheck, CheckCircle, AlertTriangle,
 } from 'lucide-react';
 import api from '@/lib/api';
+// F-092: typed state for the chain-verify response.
+import type { AuditChainVerifyResult } from '@/lib/types';
 import { projectsAPI } from '@/lib/api';
 
 export default function AuditLogPage() {
@@ -30,7 +32,7 @@ export default function AuditLogPage() {
   const [page, setPage] = useState(0);
   const [entityType, setEntityType] = useState('');
   const [eventType, setEventType] = useState('');
-  const [verifyResult, setVerifyResult] = useState<any>(null);
+  const [verifyResult, setVerifyResult] = useState<AuditChainVerifyResult | null>(null);
   const [verifying, setVerifying] = useState(false);
   const [exporting, setExporting] = useState(false);
 

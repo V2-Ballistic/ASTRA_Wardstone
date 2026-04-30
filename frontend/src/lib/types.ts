@@ -94,6 +94,71 @@ export interface QualityCheckResult {
   suggestions: string[];
 }
 
+// ── F-092: typed dashboard / coverage / baseline / audit responses ──
+//
+// These mirror the shapes the backend returns for the listed
+// endpoints. Pre-fix the corresponding pages used `useState<any>(null)`
+// and bled un-validated `res.data` into JSX. With these types in
+// place TS catches contract drift between backend and frontend at
+// compile time.
+
+export interface DashboardStats {
+  total_requirements: number;
+  by_status: Record<string, number>;
+  by_type: Record<string, number>;
+  by_level: Record<string, number>;
+  verified_count: number;
+  avg_quality_score: number;
+  total_trace_links: number;
+  orphan_count: number;
+  recent_activity: Array<{
+    req_id: string;
+    field: string;
+    old_value: string | null;
+    new_value: string | null;
+    description: string;
+    user: string;
+    timestamp: string | null;
+  }>;
+}
+
+export interface CoverageReport {
+  total_requirements: number;
+  with_source: number;
+  with_children: number;
+  with_verification: number;
+  orphans: number;
+  source_pct: number;
+  children_pct: number;
+  verification_pct: number;
+  orphan_pct: number;
+}
+
+export interface BaselineDetail {
+  id: number;
+  name: string;
+  description: string;
+  project_id: number;
+  requirements_count: number;
+  created_by: string;
+  created_at: string | null;
+}
+
+export interface BaselineCompareResult {
+  baseline_a: BaselineDetail;
+  baseline_b: BaselineDetail;
+  added: Array<Record<string, unknown>>;
+  removed: Array<Record<string, unknown>>;
+  modified: Array<Record<string, unknown>>;
+}
+
+export interface AuditChainVerifyResult {
+  is_valid: boolean;
+  verified_count?: number;
+  error?: string;
+  first_invalid_seq?: number | null;
+}
+
 // ── Enums ──
 
 export type RequirementType =

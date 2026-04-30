@@ -54,7 +54,11 @@ export type ConnectorType =
   | 'jst_sh' | 'jst_gh' | 'jst_zh'
   // ── Modular interop ──
   | 'qwiic_stemma_qt'
-  | 'custom' | string;
+  | 'custom';
+// F-123: dropped trailing `| string` — adding `string` to a union
+// of literals collapses the union back to `string` and defeats the
+// type-check. Use the existing `connector_type_custom?: string`
+// field on Connector for the free-form fallback case.
 
 export type ConnectorGender = 'male_pin' | 'female_socket' | 'hermaphroditic' | 'genderless';
 
@@ -119,7 +123,10 @@ export type BusProtocol =
   | 'ethernet_100base_tx' | 'ethernet_1000base_t' | 'ethernet_10gbase_t'
   | 'arinc_429' | 'arinc_664_part7' | 'usb_2_0' | 'usb_3_0'
   | 'jtag' | 'swd' | 'ccsds_tm' | 'ccsds_tc'
-  | 'analog_4_20ma' | 'discrete_28v' | 'discrete_5v' | 'custom' | string;
+  | 'analog_4_20ma' | 'discrete_28v' | 'discrete_5v' | 'custom';
+// F-123: dropped trailing `| string` for the same reason as
+// ConnectorType. Use `protocol_custom?: string` on the BusDefinition
+// payload for the free-form case.
 
 export type BusRole =
   | 'bus_controller' | 'remote_terminal' | 'bus_monitor'
@@ -808,6 +815,11 @@ export interface Wire {
   wire_color_tertiary?: string;
   wire_type: WireType;
   wire_type_custom?: string;
+  // F-093: backend payload includes the wire's logical signal_type
+  // (resolved from its from_pin or via override). Pre-fix the TS
+  // interface omitted this and PinMapSvg used `(w as any).signal_type`
+  // casts to read it.
+  signal_type?: SignalType;
   wire_spec?: string;
   wire_material?: string;
   insulation_material?: string;

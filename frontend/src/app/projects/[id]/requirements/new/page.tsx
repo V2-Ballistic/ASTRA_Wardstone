@@ -25,11 +25,9 @@ import {
 } from '@/lib/types';
 import { requirementsAPI, projectsAPI } from '@/lib/api';
 
-// Optional AI
-let aiAPI: any = null;
-let aiWriterAPI: any = null;
-try { aiAPI = require('@/lib/ai-api').aiAPI; } catch {}
-try { aiWriterAPI = require('@/lib/ai-writer-api').aiWriterAPI; } catch {}
+// F-084: runtime require() shims replaced with normal typed imports.
+import { aiAPI } from '@/lib/ai-api';
+import { aiWriterAPI } from '@/lib/ai-writer-api';
 
 // ── Score ring ──
 function ScoreRing({ score, size = 70 }: { score: number; size?: number }) {

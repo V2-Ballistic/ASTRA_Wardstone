@@ -13,7 +13,11 @@ import { useParams, useRouter } from 'next/navigation';
 import { Archive, Clock, Loader2, RefreshCw, Plus, ArrowLeftRight, ChevronRight, Trash2, X, GitBranch, FileText, CheckCircle, AlertTriangle, Minus, Edit3 } from 'lucide-react';
 import clsx from 'clsx';
 import { baselinesAPI, projectsAPI } from '@/lib/api';
-import { STATUS_COLORS, STATUS_LABELS, LEVEL_COLORS, type RequirementStatus, type RequirementLevel } from '@/lib/types';
+import {
+  STATUS_COLORS, STATUS_LABELS, LEVEL_COLORS,
+  type RequirementStatus, type RequirementLevel,
+  type BaselineDetail, type BaselineCompareResult,
+} from '@/lib/types';
 
 export default function BaselinesPage() {
   const params = useParams();
@@ -21,15 +25,20 @@ export default function BaselinesPage() {
   const projectId = Number(params.id);
 
   const [projectCode, setProjectCode] = useState('');
-  const [baselines, setBaselines] = useState<any[]>([]);
+  // F-092: typed state. The compared / detail responses also have
+  // looser shapes than BaselineDetail (snapshots, diff arrays) — for
+  // the page-level state the high-level types are enough; per-row
+  // fields stay accessed loosely until the backend exposes them via
+  // a typed schema.
+  const [baselines, setBaselines] = useState<BaselineDetail[]>([]);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<'list' | 'detail' | 'compare'>('list');
-  const [selected, setSelected] = useState<any>(null);
+  const [selected, setSelected] = useState<BaselineDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
 
   const [compareA, setCompareA] = useState<number | null>(null);
   const [compareB, setCompareB] = useState<number | null>(null);
-  const [compareResult, setCompareResult] = useState<any>(null);
+  const [compareResult, setCompareResult] = useState<BaselineCompareResult | null>(null);
   const [comparing, setComparing] = useState(false);
 
   const [showCreate, setShowCreate] = useState(false);

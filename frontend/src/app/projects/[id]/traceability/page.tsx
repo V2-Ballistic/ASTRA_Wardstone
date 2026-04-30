@@ -22,11 +22,11 @@ import ForceGraph from '@/components/traceability/ForceGraph';
 import {
   STATUS_COLORS, STATUS_LABELS, LEVEL_COLORS,
   type RequirementStatus, type RequirementLevel,
+  type CoverageReport,
 } from '@/lib/types';
 
-// Optional AI
-let aiAPI: any = null;
-try { aiAPI = require('@/lib/ai-api').aiAPI; } catch {}
+// F-084: runtime require() shim replaced with normal typed import.
+import { aiAPI } from '@/lib/ai-api';
 
 // ── Coverage bar ──
 function CoverageBar({ label, value, pct, total, color }: {
@@ -108,7 +108,7 @@ export default function TraceabilityPage() {
 
   // Data
   const [matrixData, setMatrixData] = useState<any[]>([]);
-  const [coverage, setCoverage] = useState<any>(null);
+  const [coverage, setCoverage] = useState<CoverageReport | null>(null);
   const [graphData, setGraphData] = useState<{ nodes: any[]; edges: any[] }>({ nodes: [], edges: [] });
 
   // AI Suggestions

@@ -29,9 +29,8 @@ import {
 } from '@/lib/types';
 import api, { requirementsAPI, projectsAPI, baselinesAPI } from '@/lib/api';
 
-// Optional AI API
-let aiAPI: any = null;
-try { aiAPI = require('@/lib/ai-api').aiAPI; } catch {}
+// F-084: replaced runtime require() shim with normal typed import.
+import { aiAPI } from '@/lib/ai-api';
 
 // ══════════════════════════════════════
 //  Shared Small Components

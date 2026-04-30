@@ -26,11 +26,9 @@ import {
   type RequirementStatus, type RequirementLevel, type Priority,
 } from '@/lib/types';
 
-// Optional AI APIs — graceful if not present
-let aiAPI: any = null;
-let aiWriterAPI: any = null;
-try { aiAPI = require('@/lib/ai-api').aiAPI; } catch {}
-try { aiWriterAPI = require('@/lib/ai-writer-api').aiWriterAPI; } catch {}
+// F-084: runtime require() shims replaced with normal typed imports.
+import { aiAPI } from '@/lib/ai-api';
+import { aiWriterAPI } from '@/lib/ai-writer-api';
 
 // ══════════════════════════════════════
 //  Status transitions

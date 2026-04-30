@@ -128,4 +128,30 @@ export const aiAPI = {
   // Stats
   getStats: (projectId?: number) =>
     api.get<AIStats>('/ai/stats', { params: { project_id: projectId } }),
+
+  /**
+   * F-084: runtime availability check. Pre-fix the codebase loaded
+   * this module via `require()` inside a try/catch and used
+   * truthiness of the resolved aiAPI as a feature flag — but
+   * webpack/turbopack always bundle the module, so the catch never
+   * fired and the flag was always true. The real signal lives in
+   * the backend's `/ai/stats` response (`ai_available`). Cached for
+   * 60s so navigation between pages doesn't hammer the endpoint.
+   */
+  isAvailable: (() => {
+    let cached: { value: boolean; until: number } | null = null;
+    return async (projectId?: number): Promise<boolean> => {
+      const now = Date.now();
+      if (cached && cached.until > now) return cached.value;
+      try {
+        const res = await api.get<AIStats>('/ai/stats', { params: { project_id: projectId } });
+        const ok = Boolean(res.data?.ai_available);
+        cached = { value: ok, until: now + 60_000 };
+        return ok;
+      } catch {
+        cached = { value: false, until: now + 30_000 };
+        return false;
+      }
+    };
+  })(),
 };

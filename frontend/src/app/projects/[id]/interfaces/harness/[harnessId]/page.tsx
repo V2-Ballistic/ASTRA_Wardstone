@@ -126,8 +126,8 @@ function PinMapSvg({
   const legend = useMemo(() => {
     const seen = new Map<string, string>();
     for (const w of wires) {
-      const key = w.signal_name && (w as any).signal_type ? (w as any).signal_type : w.wire_type;
-      if (!seen.has(key)) seen.set(key, wireColor((w as any).signal_type, w.wire_type));
+      const key = w.signal_name && w.signal_type ? w.signal_type : w.wire_type;
+      if (!seen.has(key)) seen.set(key, wireColor(w.signal_type, w.wire_type));
     }
     return [...seen.entries()];
   }, [wires]);
@@ -174,7 +174,7 @@ function PinMapSvg({
                 x={leftBodyX + 10} y={y - pinBoxH / 2}
                 width={pinBoxW} height={pinBoxH} rx={3}
                 fill={isHover ? '#0F172A' : '#0B1220'}
-                stroke={isHover ? wireColor((w as any).signal_type, w.wire_type) : '#334155'}
+                stroke={isHover ? wireColor(w.signal_type, w.wire_type) : '#334155'}
                 strokeWidth={isHover ? 1.5 : 1}
               />
               <text x={leftBodyX + 10 + pinBoxW / 2} y={y + 3} textAnchor="middle"
@@ -188,7 +188,7 @@ function PinMapSvg({
               </text>
               {/* Contact nub (where wire exits body) */}
               <circle cx={leftBodyX + connectorWidth} cy={y} r={3.5}
-                fill={wireColor((w as any).signal_type, w.wire_type)} />
+                fill={wireColor(w.signal_type, w.wire_type)} />
             </g>
           );
         })}
@@ -201,12 +201,12 @@ function PinMapSvg({
             <g key={`R-${w.id}`} onMouseEnter={() => onHover(w.id)} onMouseLeave={() => onHover(null)}
               style={{ cursor: 'pointer' }}>
               <circle cx={rightBodyX} cy={y} r={3.5}
-                fill={wireColor((w as any).signal_type, w.wire_type)} />
+                fill={wireColor(w.signal_type, w.wire_type)} />
               <rect
                 x={rightBodyX + connectorWidth - pinBoxW - 10} y={y - pinBoxH / 2}
                 width={pinBoxW} height={pinBoxH} rx={3}
                 fill={isHover ? '#0F172A' : '#0B1220'}
-                stroke={isHover ? wireColor((w as any).signal_type, w.wire_type) : '#334155'}
+                stroke={isHover ? wireColor(w.signal_type, w.wire_type) : '#334155'}
                 strokeWidth={isHover ? 1.5 : 1}
               />
               <text x={rightBodyX + connectorWidth - 10 - pinBoxW / 2} y={y + 3} textAnchor="middle"
@@ -227,7 +227,7 @@ function PinMapSvg({
           const x1 = leftBodyX + connectorWidth;
           const x2 = rightBodyX;
           const midX = (x1 + x2) / 2;
-          const color = wireColor((w as any).signal_type, w.wire_type);
+          const color = wireColor(w.signal_type, w.wire_type);
           const isHover = hoveredWireId === w.id;
           // Slight vertical jitter to avoid overlap when many wires share a row
           const dy = 0;
@@ -1866,7 +1866,7 @@ export default function HarnessDetailPage() {
                     <td className="px-3 py-2 font-semibold text-slate-200">{w.signal_name}</td>
                     <td className="px-3 py-2">
                       <div className="flex items-center gap-1.5">
-                        <WireColor type={w.wire_type} signalType={(w as any).signal_type} />
+                        <WireColor type={w.wire_type} signalType={w.signal_type} />
                         <span className="text-slate-400 text-[11px]">{labelize(w.wire_type)}</span>
                       </div>
                     </td>

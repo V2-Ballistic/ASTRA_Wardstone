@@ -26,11 +26,17 @@ import { projectsAPI, dashboardAPI, traceabilityAPI, requirementsAPI, devAPI, ba
 import {
   LEVEL_COLORS, LEVEL_LABELS, STATUS_COLORS, STATUS_LABELS,
   type RequirementLevel, type RequirementStatus,
+  type Project, type Requirement, type DashboardStats,
+  type CoverageReport, type BaselineDetail,
 } from '@/lib/types';
+import type { AIStats } from '@/lib/ai-api';
 
-// Optional AI API
-let aiAPI: any = null;
-try { aiAPI = require('@/lib/ai-api').aiAPI; } catch {}
+// F-084: runtime require() shim replaced with a normal typed import.
+// The catch never fired anyway — webpack/turbopack always bundle the
+// module — and the resulting `aiAPI: any` defeated type-checking.
+// Whether AI is actually available at runtime is a separate question
+// answered by `aiAPI.isAvailable()` (cached, hits /ai/stats).
+import { aiAPI } from '@/lib/ai-api';
 
 // ══════════════════════════════════════
 //  Helpers
@@ -346,12 +352,14 @@ export default function ProjectDashboard() {
   const router = useRouter();
   const projectId = Number(params.id);
 
-  const [project, setProject] = useState<any>(null);
-  const [stats, setStats] = useState<any>(null);
-  const [coverage, setCoverage] = useState<any>(null);
-  const [requirements, setRequirements] = useState<any[]>([]);
-  const [baselines, setBaselines] = useState<any[]>([]);
-  const [aiStats, setAiStats] = useState<any>(null);
+  // F-092: typed state replaces useState<any>(null) so contract drift
+  // between backend and frontend surfaces at compile time.
+  const [project, setProject] = useState<Project | null>(null);
+  const [stats, setStats] = useState<DashboardStats | null>(null);
+  const [coverage, setCoverage] = useState<CoverageReport | null>(null);
+  const [requirements, setRequirements] = useState<Requirement[]>([]);
+  const [baselines, setBaselines] = useState<BaselineDetail[]>([]);
+  const [aiStats, setAiStats] = useState<AIStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [seeding, setSeeding] = useState(false);
