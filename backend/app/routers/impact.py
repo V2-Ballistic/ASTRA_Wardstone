@@ -19,7 +19,7 @@ from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from sqlalchemy import desc, func
 
 from app.database import get_db
 from app.dependencies.project_access import (
@@ -241,6 +241,7 @@ def get_impact_history(
 @router.get("/project-risk")
 def get_project_risk(
     project_id: int = Query(..., description="Project to analyze"),
+    limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     project: Project = Depends(project_member_required),
@@ -249,8 +250,11 @@ def get_project_risk(
     Quick project-level risk overview: which requirements are
     highest-impact if changed?
 
-    Computes fan-out count for each requirement without running
-    full impact analysis (for performance).
+    F-041: replaces 3N per-row count queries (one outbound + one
+    inbound TraceLink count + one child-Requirement count per
+    requirement) with three GROUP BY queries. Net query count is
+    constant (4) regardless of project size. Server-enforced
+    `limit` (default 50, max 200) bounds the response.
     """
     from app.models import TraceLink
 
@@ -265,32 +269,42 @@ def get_project_risk(
     if not reqs:
         return {"project_id": project_id, "requirements": [], "total": 0}
 
-    req_ids = {r.id for r in reqs}
+    req_ids = [r.id for r in reqs]
 
-    # Count outbound links per requirement (fan-out as risk proxy)
+    # F-041: three GROUP BY queries replace 3N per-row count queries.
+    outbound_by_req = dict(
+        db.query(TraceLink.source_id, func.count(TraceLink.id))
+        .filter(
+            TraceLink.source_type == "requirement",
+            TraceLink.source_id.in_(req_ids),
+        )
+        .group_by(TraceLink.source_id)
+        .all()
+    )
+    inbound_by_req = dict(
+        db.query(TraceLink.target_id, func.count(TraceLink.id))
+        .filter(
+            TraceLink.target_type == "requirement",
+            TraceLink.target_id.in_(req_ids),
+        )
+        .group_by(TraceLink.target_id)
+        .all()
+    )
+    child_by_parent = dict(
+        db.query(Requirement.parent_id, func.count(Requirement.id))
+        .filter(
+            Requirement.parent_id.in_(req_ids),
+            Requirement.status != "deleted",
+        )
+        .group_by(Requirement.parent_id)
+        .all()
+    )
+
     risk_items = []
     for req in reqs:
-        outbound = (
-            db.query(TraceLink)
-            .filter(
-                TraceLink.source_type == "requirement",
-                TraceLink.source_id == req.id,
-            )
-            .count()
-        )
-        inbound = (
-            db.query(TraceLink)
-            .filter(
-                TraceLink.target_type == "requirement",
-                TraceLink.target_id == req.id,
-            )
-            .count()
-        )
-        child_count = (
-            db.query(Requirement)
-            .filter(Requirement.parent_id == req.id)
-            .count()
-        )
+        outbound = int(outbound_by_req.get(req.id, 0))
+        inbound = int(inbound_by_req.get(req.id, 0))
+        child_count = int(child_by_parent.get(req.id, 0))
 
         fan_out = outbound + child_count
         level = req.level.value if hasattr(req.level, "value") else str(req.level) if req.level else "L1"
@@ -314,5 +328,5 @@ def get_project_risk(
     return {
         "project_id": project_id,
         "total": len(risk_items),
-        "requirements": risk_items[:50],
+        "requirements": risk_items[:limit],
     }
