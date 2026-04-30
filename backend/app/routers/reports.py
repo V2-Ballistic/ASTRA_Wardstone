@@ -1,24 +1,40 @@
 """
 ASTRA — Reports Router
 ========================
-File: backend/app/routers/reports.py   ← NEW
+File: backend/app/routers/reports.py
 
-Endpoints for every report type, plus report generation history
-and a custom template save/load mechanism.
+Endpoints for every report type plus a persistent job/history surface.
 
-All endpoints return a streaming file download with the correct
-Content-Disposition header so browsers trigger "Save As".
+Two paths to a report:
+
+  1. **Synchronous** (existing GET endpoints, kept for the existing
+     frontend download flow): the generator runs in-request, the file
+     streams back, AND a COMPLETED row is written to ``report_jobs``
+     so the same row that powers ``/reports/history`` lands for sync
+     calls too.
+
+  2. **Async** (F-019 fix for long-running reports): POST
+     ``/reports/{report_type}/jobs`` enqueues a BackgroundTask, returns
+     ``{job_id}`` immediately. Clients poll
+     ``GET /reports/jobs/{id}`` and download via
+     ``GET /reports/jobs/{id}/download``. Long-running PDF / DOCX
+     generations no longer time out the worker pool.
+
+The history list (``GET /reports/history``) is now backed by the
+``report_jobs`` table — durable across restarts, shared across
+workers, and project-membership-scoped (F-032).
 """
 
+import io
 import json
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import (
+    APIRouter, BackgroundTasks, Depends, HTTPException, Query,
+)
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-import io
 
 from app.database import get_db
 from app.dependencies.project_access import (
@@ -26,8 +42,12 @@ from app.dependencies.project_access import (
     project_member_required,
 )
 from app.models import Project, User
+from app.models.report_job import ReportJob, ReportJobStatus
 from app.services.auth import get_current_user
 from app.services.reports import REPORT_REGISTRY, ReportOutput
+from app.services.reports.jobs import (
+    create_pending_job, get_job_for_user, record_completed, run_job,
+)
 
 # Optional audit hook
 try:
@@ -38,9 +58,10 @@ except ImportError:
 
 router = APIRouter(prefix="/reports", tags=["Reports"])
 
-# ── In-memory report history (swap for DB table in production) ──
-_report_history: list[dict] = []
-_MAX_HISTORY = 200
+
+# ══════════════════════════════════════
+#  Helpers
+# ══════════════════════════════════════
 
 
 def _stream(output: ReportOutput) -> StreamingResponse:
@@ -55,25 +76,44 @@ def _stream(output: ReportOutput) -> StreamingResponse:
     )
 
 
-def _log_generation(report_type: str, project_id: int, fmt: str,
-                    user: User, meta: dict) -> None:
-    """Record in the history log."""
-    _report_history.insert(0, {
-        "report_type": report_type,
-        "project_id": project_id,
-        "format": fmt,
-        "user_id": user.id,
-        "username": user.username,
-        "user_full_name": user.full_name,
-        "generated_at": datetime.utcnow().isoformat(),
-        "metadata": meta,
-    })
-    if len(_report_history) > _MAX_HISTORY:
-        _report_history.pop()
+def _stream_job(job: ReportJob) -> StreamingResponse:
+    """Stream the persisted blob from a COMPLETED job."""
+    if job.status != ReportJobStatus.COMPLETED or not job.result_blob:
+        raise HTTPException(
+            409, f"Job {job.id} is not downloadable (status={job.status.value if hasattr(job.status, 'value') else job.status})",
+        )
+    return StreamingResponse(
+        io.BytesIO(job.result_blob),
+        media_type=job.result_content_type or "application/octet-stream",
+        headers={
+            "Content-Disposition": f'attachment; filename="{job.result_filename or "report.bin"}"',
+            "X-Report-Metadata": json.dumps(job.result_metadata or {}, default=str),
+        },
+    )
+
+
+def _persist_sync(
+    db: Session, *, project_id: int, report_type: str, fmt: str,
+    options: dict, user: User, output: ReportOutput,
+) -> None:
+    """Record a synchronous run as a COMPLETED report_jobs row."""
+    record_completed(
+        db,
+        project_id=project_id,
+        report_type=report_type,
+        fmt=fmt,
+        options=options,
+        requested_by=user,
+        output=output,
+    )
+    _audit(
+        db, "report.generated", "project", project_id, user.id,
+        {"report": report_type, "format": fmt}, project_id=project_id,
+    )
 
 
 # ══════════════════════════════════════
-#  Traceability Matrix
+#  Synchronous report endpoints (existing frontend flow)
 # ══════════════════════════════════════
 
 @router.get("/traceability-matrix")
@@ -84,17 +124,12 @@ def report_traceability_matrix(
     current_user: User = Depends(get_current_user),
     project: Project = Depends(project_member_required),
 ):
-    gen = REPORT_REGISTRY["traceability-matrix"]()
-    output = gen.generate(project_id, db, {"format": format})
-    _log_generation("traceability-matrix", project_id, format, current_user, output.metadata)
-    _audit(db, "report.generated", "project", project_id, current_user.id,
-           {"report": "traceability-matrix", "format": format}, project_id=project_id)
+    opts = {"format": format}
+    output = REPORT_REGISTRY["traceability-matrix"]().generate(project_id, db, opts)
+    _persist_sync(db, project_id=project_id, report_type="traceability-matrix",
+                  fmt=format, options=opts, user=current_user, output=output)
     return _stream(output)
 
-
-# ══════════════════════════════════════
-#  Requirements Specification
-# ══════════════════════════════════════
 
 @router.get("/requirements-spec")
 def report_requirements_spec(
@@ -104,17 +139,12 @@ def report_requirements_spec(
     current_user: User = Depends(get_current_user),
     project: Project = Depends(project_member_required),
 ):
-    gen = REPORT_REGISTRY["requirements-spec"]()
-    output = gen.generate(project_id, db, {"format": format})
-    _log_generation("requirements-spec", project_id, format, current_user, output.metadata)
-    _audit(db, "report.generated", "project", project_id, current_user.id,
-           {"report": "requirements-spec", "format": format}, project_id=project_id)
+    opts = {"format": format}
+    output = REPORT_REGISTRY["requirements-spec"]().generate(project_id, db, opts)
+    _persist_sync(db, project_id=project_id, report_type="requirements-spec",
+                  fmt=format, options=opts, user=current_user, output=output)
     return _stream(output)
 
-
-# ══════════════════════════════════════
-#  Quality Report
-# ══════════════════════════════════════
 
 @router.get("/quality")
 def report_quality(
@@ -124,17 +154,12 @@ def report_quality(
     current_user: User = Depends(get_current_user),
     project: Project = Depends(project_member_required),
 ):
-    gen = REPORT_REGISTRY["quality"]()
-    output = gen.generate(project_id, db, {"format": format})
-    _log_generation("quality", project_id, format, current_user, output.metadata)
-    _audit(db, "report.generated", "project", project_id, current_user.id,
-           {"report": "quality", "format": format}, project_id=project_id)
+    opts = {"format": format}
+    output = REPORT_REGISTRY["quality"]().generate(project_id, db, opts)
+    _persist_sync(db, project_id=project_id, report_type="quality",
+                  fmt=format, options=opts, user=current_user, output=output)
     return _stream(output)
 
-
-# ══════════════════════════════════════
-#  Compliance Matrix
-# ══════════════════════════════════════
 
 @router.get("/compliance")
 def report_compliance(
@@ -145,21 +170,15 @@ def report_compliance(
     current_user: User = Depends(get_current_user),
     project: Project = Depends(project_member_required),
 ):
-    gen = REPORT_REGISTRY["compliance"]()
+    opts = {"format": format, "framework": framework}
     try:
-        output = gen.generate(project_id, db, {"format": format, "framework": framework})
+        output = REPORT_REGISTRY["compliance"]().generate(project_id, db, opts)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
-    _log_generation("compliance", project_id, format, current_user, output.metadata)
-    _audit(db, "report.generated", "project", project_id, current_user.id,
-           {"report": "compliance", "framework": framework, "format": format},
-           project_id=project_id)
+    _persist_sync(db, project_id=project_id, report_type="compliance",
+                  fmt=format, options=opts, user=current_user, output=output)
     return _stream(output)
 
-
-# ══════════════════════════════════════
-#  Status Dashboard
-# ══════════════════════════════════════
 
 @router.get("/status-dashboard")
 def report_status_dashboard(
@@ -168,17 +187,12 @@ def report_status_dashboard(
     current_user: User = Depends(get_current_user),
     project: Project = Depends(project_member_required),
 ):
-    gen = REPORT_REGISTRY["status-dashboard"]()
-    output = gen.generate(project_id, db, {"format": "pdf"})
-    _log_generation("status-dashboard", project_id, "pdf", current_user, output.metadata)
-    _audit(db, "report.generated", "project", project_id, current_user.id,
-           {"report": "status-dashboard"}, project_id=project_id)
+    opts = {"format": "pdf"}
+    output = REPORT_REGISTRY["status-dashboard"]().generate(project_id, db, opts)
+    _persist_sync(db, project_id=project_id, report_type="status-dashboard",
+                  fmt="pdf", options=opts, user=current_user, output=output)
     return _stream(output)
 
-
-# ══════════════════════════════════════
-#  Change History
-# ══════════════════════════════════════
 
 @router.get("/change-history")
 def report_change_history(
@@ -188,50 +202,22 @@ def report_change_history(
     date_to: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    project: Project = Depends(project_member_required),
 ):
     opts: dict = {"format": format}
     if date_from:
         opts["date_from"] = datetime.fromisoformat(date_from)
     if date_to:
         opts["date_to"] = datetime.fromisoformat(date_to)
-
-    gen = REPORT_REGISTRY["change-history"]()
-    output = gen.generate(project_id, db, opts)
-    _log_generation("change-history", project_id, format, current_user, output.metadata)
-    _audit(db, "report.generated", "project", project_id, current_user.id,
-           {"report": "change-history", "format": format}, project_id=project_id)
+    output = REPORT_REGISTRY["change-history"]().generate(project_id, db, opts)
+    # Strip non-JSON-serialisable datetimes from options for the record
+    persisted_opts = {
+        k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in opts.items()
+    }
+    _persist_sync(db, project_id=project_id, report_type="change-history",
+                  fmt=format, options=persisted_opts, user=current_user, output=output)
     return _stream(output)
 
-
-# ══════════════════════════════════════
-#  Report History
-# ══════════════════════════════════════
-
-@router.get("/history")
-def get_report_history(
-    project_id: Optional[int] = None,
-    skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=200),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """
-    Return the log of recently generated reports.
-
-    AUDIT_FINDINGS F-014 + F-032: project_id is now required (no more
-    cross-project leakage), and the caller must be a member of that
-    project. The in-memory _report_history persistence problem is
-    tracked separately as F-032 (Phase 2 §4.21).
-    """
-    if project_id is None:
-        raise HTTPException(400, "project_id query parameter is required")
-    _check_membership(db, project_id, current_user)
-
-    items = [h for h in _report_history if h.get("project_id") == project_id]
-    return {
-        "total": len(items),
-        "items": items[skip : skip + limit],
-    }
 
 @router.get("/icd")
 def report_icd(
@@ -240,15 +226,134 @@ def report_icd(
     current_user: User = Depends(get_current_user),
     project: Project = Depends(project_member_required),
 ):
-    gen = REPORT_REGISTRY["icd"]()
-    output = gen.generate(project_id, db, {"format": "xlsx"})
-    _log_generation("icd", project_id, "xlsx", current_user, output.metadata)
-    _audit(db, "report.generated", "project", project_id, current_user.id,
-           {"report": "icd", "format": "xlsx"}, project_id=project_id)
+    opts = {"format": "xlsx"}
+    output = REPORT_REGISTRY["icd"]().generate(project_id, db, opts)
+    _persist_sync(db, project_id=project_id, report_type="icd",
+                  fmt="xlsx", options=opts, user=current_user, output=output)
     return _stream(output)
 
+
 # ══════════════════════════════════════
-#  Available Reports (for frontend catalog)
+#  Async job pattern (F-019)
+# ══════════════════════════════════════
+
+@router.post("/{report_type}/jobs", status_code=202)
+def enqueue_report_job(
+    report_type: str,
+    project_id: int = Query(...),
+    format: Optional[str] = Query(None),
+    framework: Optional[str] = Query(None),
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    background_tasks: BackgroundTasks = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Enqueue a report generation job. Returns ``{job_id}`` immediately;
+    the generator runs in a BackgroundTask. Poll
+    ``GET /reports/jobs/{job_id}`` for status.
+    """
+    if report_type not in REPORT_REGISTRY:
+        raise HTTPException(404, f"Unknown report type: {report_type}")
+
+    _check_membership(db, project_id, current_user)
+
+    # Default format per report type — mirrors the GET endpoints above.
+    default_formats = {
+        "requirements-spec": "docx",
+        "status-dashboard": "pdf",
+        "icd": "xlsx",
+    }
+    fmt = format or default_formats.get(report_type, "xlsx")
+
+    options: dict = {"format": fmt}
+    if framework:
+        options["framework"] = framework
+    if date_from:
+        options["date_from"] = date_from
+    if date_to:
+        options["date_to"] = date_to
+
+    job = create_pending_job(
+        db,
+        project_id=project_id,
+        report_type=report_type,
+        fmt=fmt,
+        options=options,
+        requested_by=current_user,
+    )
+    db.commit()  # ensure the row is visible before BackgroundTask runs
+    job_id = job.id
+
+    if background_tasks is not None:
+        background_tasks.add_task(run_job, job_id)
+    else:  # safety net for any caller passing background_tasks=None
+        run_job(job_id)
+
+    _audit(
+        db, "report.enqueued", "project", project_id, current_user.id,
+        {"report": report_type, "format": fmt, "job_id": job_id},
+        project_id=project_id,
+    )
+
+    return {"job_id": job_id, "status": "pending"}
+
+
+@router.get("/jobs/{job_id}")
+def get_report_job(
+    job_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    job = get_job_for_user(db, job_id, current_user)
+    return job.to_summary()
+
+
+@router.get("/jobs/{job_id}/download")
+def download_report_job(
+    job_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    job = get_job_for_user(db, job_id, current_user)
+    return _stream_job(job)
+
+
+# ══════════════════════════════════════
+#  Persistent history (F-032)
+# ══════════════════════════════════════
+
+@router.get("/history")
+def get_report_history(
+    project_id: int = Query(...),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Return the project-scoped report-generation log. Backed by the
+    ``report_jobs`` table — survives restarts and is consistent across
+    workers (F-032). Membership is enforced (F-014).
+    """
+    _check_membership(db, project_id, current_user)
+
+    base_q = (
+        db.query(ReportJob)
+        .filter(ReportJob.project_id == project_id)
+        .order_by(ReportJob.created_at.desc())
+    )
+    total = base_q.count()
+    rows = base_q.offset(skip).limit(limit).all()
+    return {
+        "total": total,
+        "items": [r.to_summary() for r in rows],
+    }
+
+
+# ══════════════════════════════════════
+#  Available reports (for frontend catalog)
 # ══════════════════════════════════════
 
 @router.get("/catalog")

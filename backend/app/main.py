@@ -86,6 +86,7 @@ for _model_path in [
     "app.models.embedding",
     "app.models.impact",
     "app.models.interface",
+    "app.models.report_job",
 ]:
     try:
         __import__(_model_path)
