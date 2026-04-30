@@ -197,15 +197,26 @@ def add_project_member(project_id: int, data: ProjectMemberAdd, request: Request
             dependencies=[Depends(require_any_role(UserRole.ADMIN, UserRole.PROJECT_MANAGER))])
 def list_project_members(project_id: int, db: Session = Depends(get_db),
                          current_user: User = Depends(get_current_user)):
+    """F-042: previously issued TWO User queries per member inside the
+    response builder. Replaced with a single LEFT OUTER JOIN so the
+    query count is 1 regardless of project size."""
     if not ProjectMember:
         return []
-    members = db.query(ProjectMember).filter(ProjectMember.project_id == project_id).all()
-    return [ProjectMemberResponse(
-        id=m.id, project_id=m.project_id, user_id=m.user_id,
-        role_override=m.role_override, added_at=m.added_at,
-        username=(db.query(User).filter(User.id == m.user_id).first() or User(username="?")).username,
-        full_name=(db.query(User).filter(User.id == m.user_id).first() or User(full_name="?")).full_name,
-    ) for m in members]
+    rows = (
+        db.query(ProjectMember, User)
+        .outerjoin(User, User.id == ProjectMember.user_id)
+        .filter(ProjectMember.project_id == project_id)
+        .all()
+    )
+    return [
+        ProjectMemberResponse(
+            id=m.id, project_id=m.project_id, user_id=m.user_id,
+            role_override=m.role_override, added_at=m.added_at,
+            username=u.username if u else "?",
+            full_name=u.full_name if u else "?",
+        )
+        for m, u in rows
+    ]
 
 
 @router.delete("/projects/{project_id}/members/{user_id}", status_code=204,
