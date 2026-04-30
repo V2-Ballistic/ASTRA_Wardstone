@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/lib/auth';
 import { Loader2, Shield, KeyRound, Globe, CreditCard } from 'lucide-react';
 import api from '@/lib/api';
@@ -10,20 +10,40 @@ type AuthStep = 'provider' | 'local' | 'mfa';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
 
-export default function LoginPage() {
-  const { login } = useAuth();
-  const searchParams = useSearchParams();
+// F-027 helper: SSR-safe token persistence shared by all non-username
+// /password paths (SSO callback, MFA verify, PIV). The username/
+// password path goes through useAuth().login() instead.
+function _persistTokens(access: string, refresh?: string) {
+  if (typeof window === 'undefined') return;
+  localStorage.setItem('astra_token', access);
+  if (refresh) localStorage.setItem('astra_refresh', refresh);
+}
 
-  // Check for SSO callback tokens in URL
+export default function LoginPage() {
+  const { login, refresh } = useAuth();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  // F-101: honour ?next= on success — push the requested path
+  // instead of always landing on '/'.
+  const nextParam = searchParams.get('next') || '/';
+
+  // F-027: SSO callback. Pre-fix this set localStorage and then did
+  // `window.location.href = '/'` — which (a) full-page-reloaded,
+  // discarding any in-flight state, and (b) the URL still showed
+  // `?token=...` in the browser history. Now we use
+  // `router.replace(nextParam)` so the URL is rewritten without a
+  // history entry, scrubbing the token from the address bar.
   useEffect(() => {
     const token = searchParams.get('token');
-    const refresh = searchParams.get('refresh');
+    const refreshTok = searchParams.get('refresh');
     if (token) {
-      localStorage.setItem('astra_token', token);
-      if (refresh) localStorage.setItem('astra_refresh', refresh);
-      window.location.href = '/';
+      _persistTokens(token, refreshTok || undefined);
+      // Refresh the auth context so AuthGate sees the new user.
+      refresh().finally(() => {
+        router.replace(nextParam);
+      });
     }
-  }, [searchParams]);
+  }, [searchParams, router, refresh, nextParam]);
 
   const [step, setStep] = useState<AuthStep>('local');
   const [providers, setProviders] = useState<string[]>(['local']);
@@ -55,6 +75,12 @@ export default function LoginPage() {
     setError('');
     setLoading(true);
     try {
+      // F-027: peek at /auth/login first to detect mfa_required,
+      // because useAuth().login() doesn't expose that branch. If the
+      // response is a clean token, hand off to the auth context's
+      // login() so its refresh() runs and the AuthGate flips
+      // immediately. If MFA is required, capture the partial token
+      // and switch UI to the MFA step.
       const res = await api.post('/auth/login',
         new URLSearchParams({ username, password }),
         { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
@@ -63,11 +89,9 @@ export default function LoginPage() {
         setPartialToken(res.data.access_token);
         setStep('mfa');
       } else {
-        localStorage.setItem('astra_token', res.data.access_token);
-        if (res.data.refresh_token) {
-          localStorage.setItem('astra_refresh', res.data.refresh_token);
-        }
-        window.location.href = '/';
+        // Use the auth context so the user state updates synchronously.
+        await login(username, password);
+        router.push(nextParam);
       }
     } catch (err: any) {
       setError(err.response?.data?.detail || 'Invalid credentials');
@@ -86,11 +110,9 @@ export default function LoginPage() {
         { headers: { Authorization: `Bearer ${partialToken}` } }
       );
       if (res.data.access_token) {
-        localStorage.setItem('astra_token', res.data.access_token);
-        if (res.data.refresh_token) {
-          localStorage.setItem('astra_refresh', res.data.refresh_token);
-        }
-        window.location.href = '/';
+        _persistTokens(res.data.access_token, res.data.refresh_token);
+        await refresh();  // tell the auth context
+        router.push(nextParam);
       }
     } catch (err: any) {
       setError(err.response?.data?.detail || 'Invalid MFA token');
@@ -100,6 +122,9 @@ export default function LoginPage() {
   };
 
   const handleSSO = (type: 'saml' | 'oidc') => {
+    // External redirect — leaves the SPA. window.location is the
+    // correct shape here (router.push won't trigger a full-page
+    // navigation to a non-Next.js URL).
     window.location.href = `${API_BASE}/auth/${type}/login`;
   };
 
@@ -108,11 +133,9 @@ export default function LoginPage() {
     setLoading(true);
     try {
       const res = await api.post('/auth/piv/authenticate');
-      localStorage.setItem('astra_token', res.data.access_token);
-      if (res.data.refresh_token) {
-        localStorage.setItem('astra_refresh', res.data.refresh_token);
-      }
-      window.location.href = '/';
+      _persistTokens(res.data.access_token, res.data.refresh_token);
+      await refresh();
+      router.push(nextParam);
     } catch (err: any) {
       setError(err.response?.data?.detail || 'CAC/PIV authentication failed. Ensure your smart card is inserted.');
     } finally {
