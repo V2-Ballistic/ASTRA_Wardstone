@@ -225,15 +225,40 @@ def list_systems(
         query = query.filter(System.parent_system_id.is_(None))
 
     systems = query.order_by(System.name).all()
+    if not systems:
+        return []
+
+    # F-039: replace 2N per-row count queries with two GROUP BY queries.
+    sys_ids = [s.id for s in systems]
+    unit_counts = dict(
+        db.query(Unit.system_id, func.count(Unit.id))
+          .filter(Unit.system_id.in_(sys_ids))
+          .group_by(Unit.system_id)
+          .all()
+    )
+    # An Interface row counts toward each system it touches, so we sum
+    # both source and target counts in one round trip via UNION ALL.
+    iface_src = (
+        db.query(Interface.source_system_id.label("sid"), func.count(Interface.id).label("c"))
+          .filter(Interface.source_system_id.in_(sys_ids))
+          .group_by(Interface.source_system_id)
+    )
+    iface_tgt = (
+        db.query(Interface.target_system_id.label("sid"), func.count(Interface.id).label("c"))
+          .filter(Interface.target_system_id.in_(sys_ids))
+          .group_by(Interface.target_system_id)
+    )
+    iface_counts: dict[int, int] = {}
+    for sid, c in iface_src.all():
+        iface_counts[sid] = iface_counts.get(sid, 0) + c
+    for sid, c in iface_tgt.all():
+        iface_counts[sid] = iface_counts.get(sid, 0) + c
+
     results = []
     for s in systems:
-        unit_count = db.query(func.count(Unit.id)).filter(Unit.system_id == s.id).scalar()
-        iface_count = db.query(func.count(Interface.id)).filter(
-            (Interface.source_system_id == s.id) | (Interface.target_system_id == s.id)
-        ).scalar()
         resp = SystemResponse.model_validate(s)
-        resp.unit_count = unit_count
-        resp.interface_count = iface_count
+        resp.unit_count = unit_counts.get(s.id, 0)
+        resp.interface_count = iface_counts.get(s.id, 0)
         results.append(resp)
     return results
 
@@ -401,13 +426,29 @@ def list_units(
         )
 
     units = query.order_by(Unit.designation).offset(skip).limit(limit).all()
+    if not units:
+        return []
+
+    # F-039: replace 2N per-row count queries with two GROUP BY queries.
+    unit_ids = [u.id for u in units]
+    conn_counts = dict(
+        db.query(Connector.unit_id, func.count(Connector.id))
+          .filter(Connector.unit_id.in_(unit_ids))
+          .group_by(Connector.unit_id)
+          .all()
+    )
+    bus_counts = dict(
+        db.query(BusDefinition.unit_id, func.count(BusDefinition.id))
+          .filter(BusDefinition.unit_id.in_(unit_ids))
+          .group_by(BusDefinition.unit_id)
+          .all()
+    )
+
     results = []
     for u in units:
-        conn_count = db.query(func.count(Connector.id)).filter(Connector.unit_id == u.id).scalar()
-        bus_count = db.query(func.count(BusDefinition.id)).filter(BusDefinition.unit_id == u.id).scalar()
         s = UnitSummary.model_validate(u)
-        s.connector_count = conn_count
-        s.bus_count = bus_count
+        s.connector_count = conn_counts.get(u.id, 0)
+        s.bus_count = bus_counts.get(u.id, 0)
         results.append(s)
     return results
 
@@ -467,60 +508,160 @@ def get_unit(
         raise HTTPException(404, "Unit not found")
     _assert_member_for_entity(db, current_user, unit)
 
-    # Connectors with pins
-    connectors = db.query(Connector).filter(Connector.unit_id == unit.id).order_by(Connector.designator).all()
+    # F-039: previously this section issued O(connectors) + O(pins) +
+    # O(messages) + O(pin_assignments) + O(pin_assignments × 2)
+    # per-row queries. The rewrite below pre-fetches each child
+    # collection in a single query and uses dict lookups in the loops.
+    # Net query count is now ~10 regardless of unit size.
+
+    # ── Connectors + their pins + their pin-bus assignments ──
+    connectors = (
+        db.query(Connector)
+        .filter(Connector.unit_id == unit.id)
+        .order_by(Connector.designator)
+        .all()
+    )
+    connector_ids = [c.id for c in connectors]
+
+    pins_by_conn: dict[int, list[Pin]] = {cid: [] for cid in connector_ids}
+    all_pins: list[Pin] = []
+    if connector_ids:
+        for p in (
+            db.query(Pin)
+            .filter(Pin.connector_id.in_(connector_ids))
+            .order_by(Pin.pin_number)
+            .all()
+        ):
+            pins_by_conn.setdefault(p.connector_id, []).append(p)
+            all_pins.append(p)
+
+    pin_ids = [p.id for p in all_pins]
+    assignments_by_pin: dict[int, PinBusAssignment] = {}
+    if pin_ids:
+        for a in (
+            db.query(PinBusAssignment)
+            .filter(PinBusAssignment.pin_id.in_(pin_ids))
+            .all()
+        ):
+            # If multiple assignments somehow exist on a pin, prefer the
+            # latest by id — matches the "first()" behaviour pre-fix.
+            existing = assignments_by_pin.get(a.pin_id)
+            if existing is None or a.id > existing.id:
+                assignments_by_pin[a.pin_id] = a
+
+    assigned_count_by_conn: dict[int, int] = dict(
+        db.query(Pin.connector_id, func.count(PinBusAssignment.id))
+        .join(PinBusAssignment, PinBusAssignment.pin_id == Pin.id)
+        .filter(Pin.connector_id.in_(connector_ids))
+        .group_by(Pin.connector_id)
+        .all()
+    ) if connector_ids else {}
+
+    # F-039: pre-fetch every mating Unit referenced by any pin so the
+    # per-pin _populate_pin_mating call can use an in-memory dict
+    # instead of issuing one Unit query per pin.
+    mating_unit_ids = list({
+        getattr(p, "mating_unit_id", None) for p in all_pins
+        if getattr(p, "mating_unit_id", None) is not None
+    })
+    mating_unit_by_id: dict[int, Unit] = {}
+    if mating_unit_ids:
+        for u in db.query(Unit).filter(Unit.id.in_(mating_unit_ids)).all():
+            mating_unit_by_id[u.id] = u
+
+    def _populate_pin_mating_cached(pr: PinResponse, p: Pin) -> None:
+        mid = getattr(p, "mating_unit_id", None)
+        if not mid:
+            return
+        mu = mating_unit_by_id.get(mid)
+        if mu:
+            pr.mating_unit_designation = mu.designation
+            pr.mating_unit_name = mu.name
+
     connector_list = []
     total_pin_count = 0
     for c in connectors:
-        pins = db.query(Pin).filter(Pin.connector_id == c.id).order_by(Pin.pin_number).all()
+        pins = pins_by_conn.get(c.id, [])
         pin_responses = []
         for p in pins:
             pr = PinResponse.model_validate(p)
-            # Load bus assignment if exists
-            assignment = db.query(PinBusAssignment).filter(PinBusAssignment.pin_id == p.id).first()
+            assignment = assignments_by_pin.get(p.id)
             if assignment:
                 pr.bus_assignment = PinBusAssignmentResponse.model_validate(assignment)
-            _populate_pin_mating(db, pr, p)
+            _populate_pin_mating_cached(pr, p)
             pin_responses.append(pr)
         total_pin_count += len(pin_responses)
-
-        assigned_count = db.query(func.count(PinBusAssignment.id)).join(Pin).filter(
-            Pin.connector_id == c.id
-        ).scalar()
 
         cwp = ConnectorWithPins.model_validate(c)
         cwp.pins = pin_responses
         cwp.pin_count = len(pin_responses)
-        cwp.assigned_pin_count = assigned_count
+        cwp.assigned_pin_count = assigned_count_by_conn.get(c.id, 0)
         connector_list.append(cwp)
 
-    # Bus definitions with messages
+    # ── Bus definitions + messages + assignments + assigned-pin/connector lookups ──
     bus_defs = db.query(BusDefinition).filter(BusDefinition.unit_id == unit.id).all()
+    bus_def_ids = [bd.id for bd in bus_defs]
+
+    messages_by_bus: dict[int, list[MessageDefinition]] = {bid: [] for bid in bus_def_ids}
+    all_messages: list[MessageDefinition] = []
+    if bus_def_ids:
+        for m in (
+            db.query(MessageDefinition)
+            .filter(MessageDefinition.bus_def_id.in_(bus_def_ids))
+            .all()
+        ):
+            messages_by_bus.setdefault(m.bus_def_id, []).append(m)
+            all_messages.append(m)
+
+    field_counts_by_msg: dict[int, int] = dict(
+        db.query(MessageField.message_id, func.count(MessageField.id))
+        .filter(MessageField.message_id.in_([m.id for m in all_messages]))
+        .group_by(MessageField.message_id)
+        .all()
+    ) if all_messages else {}
+
+    pa_by_bus: dict[int, list[PinBusAssignment]] = {bid: [] for bid in bus_def_ids}
+    all_pas: list[PinBusAssignment] = []
+    if bus_def_ids:
+        for pa in (
+            db.query(PinBusAssignment)
+            .filter(PinBusAssignment.bus_def_id.in_(bus_def_ids))
+            .all()
+        ):
+            pa_by_bus.setdefault(pa.bus_def_id, []).append(pa)
+            all_pas.append(pa)
+
+    # Pre-fetch pin + connector for every assignment in this unit.
+    pa_pin_ids = list({pa.pin_id for pa in all_pas})
+    pin_by_id: dict[int, Pin] = {}
+    conn_by_id: dict[int, Connector] = {}
+    if pa_pin_ids:
+        for p in db.query(Pin).filter(Pin.id.in_(pa_pin_ids)).all():
+            pin_by_id[p.id] = p
+        conn_id_set = {p.connector_id for p in pin_by_id.values() if p.connector_id}
+        if conn_id_set:
+            for cn in db.query(Connector).filter(Connector.id.in_(conn_id_set)).all():
+                conn_by_id[cn.id] = cn
+
     bus_list = []
     total_msg_count = 0
     for bd in bus_defs:
-        messages = db.query(MessageDefinition).filter(MessageDefinition.bus_def_id == bd.id).all()
+        messages = messages_by_bus.get(bd.id, [])
         msg_summaries = []
         for m in messages:
-            field_count = db.query(func.count(MessageField.id)).filter(
-                MessageField.message_id == m.id
-            ).scalar()
             ms = MessageSummary.model_validate(m)
-            ms.field_count = field_count
+            ms.field_count = field_counts_by_msg.get(m.id, 0)
             msg_summaries.append(ms)
         total_msg_count += len(msg_summaries)
 
-        pin_assignments = db.query(PinBusAssignment).filter(
-            PinBusAssignment.bus_def_id == bd.id
-        ).all()
         pa_list = []
-        for pa in pin_assignments:
+        for pa in pa_by_bus.get(bd.id, []):
             par = PinBusAssignmentResponse.model_validate(pa)
-            pin = db.query(Pin).filter(Pin.id == pa.pin_id).first()
+            pin = pin_by_id.get(pa.pin_id)
             if pin:
                 par.pin_number = pin.pin_number
                 par.signal_name = pin.signal_name
-                conn = db.query(Connector).filter(Connector.id == pin.connector_id).first()
+                conn = conn_by_id.get(pin.connector_id)
                 if conn:
                     par.connector_designator = conn.designator
             pa_list.append(par)
