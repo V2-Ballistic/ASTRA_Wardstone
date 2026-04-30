@@ -120,25 +120,41 @@ def list_trace_links(
     project_id: int,
     source_type: Optional[str] = None, target_type: Optional[str] = None,
     link_type: Optional[str] = None,
+    skip: int = 0,
+    limit: int = 200,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     project: Project = Depends(project_member_required),
 ):
-    req_ids = [r.id for r in db.query(Requirement.id).filter(Requirement.project_id == project_id).all()]
-    art_ids = [a.id for a in db.query(SourceArtifact.id).filter(SourceArtifact.project_id == project_id).all()]
-    query = db.query(TraceLink).filter(
-        ((TraceLink.source_type == "requirement") & (TraceLink.source_id.in_(req_ids))) |
-        ((TraceLink.target_type == "requirement") & (TraceLink.target_id.in_(req_ids))) |
-        ((TraceLink.source_type == "source_artifact") & (TraceLink.source_id.in_(art_ids))) |
-        ((TraceLink.target_type == "source_artifact") & (TraceLink.target_id.in_(art_ids)))
-    )
+    """F-044: pre-fix this loaded all Requirement.id and
+    SourceArtifact.id for the project into Python, then sent two
+    OR'd IN-clauses (4 IN expressions total) to TraceLink — risking
+    Postgres parameter limits on large projects and returning unbounded
+    rows.
+
+    F-035 added `trace_links.project_id`, so the filter is now one
+    indexed column comparison plus optional secondary filters.
+    Pagination is enforced server-side (default 200, hard cap 200 per
+    the platform standard)."""
+    if limit > 200:
+        limit = 200
+    if skip < 0:
+        skip = 0
+
+    query = db.query(TraceLink).filter(TraceLink.project_id == project_id)
     if source_type:
         query = query.filter(TraceLink.source_type == source_type)
     if target_type:
         query = query.filter(TraceLink.target_type == target_type)
     if link_type:
         query = query.filter(TraceLink.link_type == link_type)
-    return query.all()
+
+    return (
+        query.order_by(TraceLink.id)
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
 
 
 def _resolve_entity_project(db: Session, entity_type: str, entity_id: int) -> int | None:
