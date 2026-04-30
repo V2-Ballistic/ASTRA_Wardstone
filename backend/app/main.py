@@ -87,6 +87,7 @@ for _model_path in [
     "app.models.impact",
     "app.models.interface",
     "app.models.report_job",
+    "app.models.step_up_token",
 ]:
     try:
         __import__(_model_path)

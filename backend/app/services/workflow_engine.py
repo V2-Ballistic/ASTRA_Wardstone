@@ -93,6 +93,8 @@ def perform_action(
     comment: str = "",
     ip_address: str = "",
     user_agent: str = "",
+    *,
+    step_up_token: str | None = None,
 ) -> dict:
     """
     Record an approve / reject / review action on the current stage.
@@ -145,16 +147,18 @@ def perform_action(
     # E-signature (if required by stage)
     sig_id = None
     if stage_tmpl.require_signature:
-        if not password:
-            return {"status": "error", "detail": "Password required for electronic signature at this stage"}
+        # F-036: accept either a password or a one-time IdP step-up token.
+        if not password and not step_up_token:
+            return {"status": "error", "detail": "Password or step-up token required for electronic signature at this stage"}
         sig = request_signature(
             db, user_id, instance.entity_type, instance.entity_id,
             action, password,
             statement=f"Stage '{stage_tmpl.name}': {action}",
             ip_address=ip_address, user_agent=user_agent,
+            step_up_token=step_up_token,
         )
         if not sig:
-            return {"status": "error", "detail": "Password verification failed — signature denied"}
+            return {"status": "error", "detail": "Signature credentials rejected"}
         sig_id = sig.id
 
     # Record the action

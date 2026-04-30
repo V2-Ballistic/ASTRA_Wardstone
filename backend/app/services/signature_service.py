@@ -14,16 +14,28 @@ record-binding).  A subsequent edit of the signed entity invalidates
 the signature on verify.
 """
 
+import hashlib
 import logging
-from datetime import datetime
+import secrets
+from datetime import datetime, timedelta
 from typing import Any, Callable, Dict
 
 from sqlalchemy.orm import Session
 
 from app.models import User
+from app.models.step_up_token import StepUpToken
 from app.models.workflow import ElectronicSignature, SignatureMeaning
 from app.services.auth import verify_password
 from app.services.security.record_hash import compute_record_hash
+
+
+# F-036: external-IdP users carry this sentinel as their `hashed_password`.
+EXTERNAL_IDP_SENTINEL = "EXTERNAL_IDP_NO_LOCAL_PASSWORD"
+
+# Step-up tokens are short-lived. 5 minutes is long enough for a user
+# to click the sign button after re-auth, short enough to bound the
+# damage window if a token is stolen.
+STEP_UP_TOKEN_TTL = timedelta(minutes=5)
 
 # Optional audit hook
 try:
@@ -73,6 +85,71 @@ def _load_entity(db: Session, entity_type: str, entity_id: int):
 # ══════════════════════════════════════
 
 
+def _hash_token(token: str) -> str:
+    """SHA-256 hex of a step-up token. Stored; never reversed."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def issue_step_up_token(db: Session, user: User) -> tuple[str, datetime]:
+    """
+    F-036: issue a one-time, short-lived step-up token for an external-IdP
+    user. Returns the (plaintext_token, expires_at) tuple — only the hash
+    is persisted. Caller is responsible for the actual fresh-IdP-auth
+    check before calling this.
+
+    Raises ValueError if the user is NOT external-IdP-sourced — local
+    users have a real password and should sign via the password path.
+    """
+    if user.hashed_password != EXTERNAL_IDP_SENTINEL:
+        raise ValueError(
+            "Step-up tokens are only issued to external-IdP users; "
+            "local-password users must sign via the password path."
+        )
+    issued_at = datetime.utcnow()
+    expires_at = issued_at + STEP_UP_TOKEN_TTL
+    token = secrets.token_urlsafe(32)
+    row = StepUpToken(
+        user_id=user.id,
+        token_hash=_hash_token(token),
+        issued_at=issued_at,
+        expires_at=expires_at,
+    )
+    db.add(row)
+    db.commit()
+    return token, expires_at
+
+
+def _consume_step_up_token(db: Session, user_id: int, token: str) -> bool:
+    """
+    Validate and one-time-consume a step-up token. Returns True if the
+    token belongs to *user_id*, has not been consumed, and has not
+    expired. Marks the row as consumed on success — even on
+    near-simultaneous calls the SELECT/UPDATE happens within a single
+    transaction, so the second consume sees consumed_at != NULL and
+    returns False.
+    """
+    if not token:
+        return False
+    row = (
+        db.query(StepUpToken)
+        .filter(
+            StepUpToken.token_hash == _hash_token(token),
+            StepUpToken.user_id == user_id,
+        )
+        .first()
+    )
+    if row is None:
+        return False
+    now = datetime.utcnow()
+    if row.consumed_at is not None:
+        return False
+    if row.expires_at <= now:
+        return False
+    row.consumed_at = now
+    db.commit()
+    return True
+
+
 def request_signature(
     db: Session,
     user_id: int,
@@ -83,12 +160,23 @@ def request_signature(
     statement: str = "I have reviewed and approve this change.",
     ip_address: str = "",
     user_agent: str = "",
+    *,
+    step_up_token: str | None = None,
 ) -> ElectronicSignature | None:
     """
-    Create a password-verified electronic signature.
+    Create a password-verified (or step-up-token-verified) electronic
+    signature.
 
-    Returns the ElectronicSignature record on success, or None if
-    the password check fails OR the entity cannot be located OR no
+    Two authentication paths:
+
+      1. Local-password path: ``password`` is supplied and matches
+         ``user.hashed_password``.
+      2. F-036 step-up path: ``step_up_token`` is supplied AND the
+         user is an external-IdP user (sentinel hashed_password). The
+         token is consumed atomically; further attempts fail.
+
+    Returns the ElectronicSignature record on success, or None if no
+    auth path succeeded OR the entity cannot be located OR no
     record-hasher is registered for the entity_type. The latter two
     are F-008 hard requirements: signing without a content hash would
     leave the signature unbound and indistinguishable from a tampered
@@ -98,9 +186,21 @@ def request_signature(
     if not user:
         return None
 
-    # ── Non-repudiation: re-verify password ──
-    if not verify_password(password, user.hashed_password):
-        return None
+    # ── Non-repudiation: at least one secondary-auth path must succeed ──
+    if step_up_token is not None:
+        if user.hashed_password != EXTERNAL_IDP_SENTINEL:
+            # Local users may not bypass the password path with a token.
+            return None
+        if not _consume_step_up_token(db, user_id, step_up_token):
+            return None
+    else:
+        # F-036: IdP users have no real password — reject the password
+        # path cleanly rather than letting verify_password raise on the
+        # non-bcrypt sentinel.
+        if user.hashed_password == EXTERNAL_IDP_SENTINEL:
+            return None
+        if not verify_password(password, user.hashed_password):
+            return None
 
     # ── F-008: bind to record state ──
     entity = _load_entity(db, entity_type, entity_id)
