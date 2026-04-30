@@ -376,6 +376,11 @@ def confirm_import(
             skipped += 1
             continue
 
+        # F-055: per-row SAVEPOINT so a failure inside this row's
+        # add+flush+history block rolls back ONLY this row, not the
+        # whole batch. Pre-fix the outer try/except left orphan
+        # objects in the session that could taint subsequent rows.
+        sp = db.begin_nested()
         try:
             # Generate req_id
             count = db.query(func.count(Requirement.id)).filter(
@@ -421,6 +426,8 @@ def confirm_import(
                 changed_at=datetime.utcnow(),
             )
             db.add(history)
+            db.flush()
+            sp.commit()  # release savepoint — row's writes are durable on outer commit
 
             # Track for parent resolution of subsequent rows
             req_id_to_pk[req_id] = req.id
@@ -434,6 +441,7 @@ def confirm_import(
             created += 1
 
         except Exception as exc:
+            sp.rollback()  # F-055: roll back this row only
             errors.append(f"Row {row.row_number}: {str(exc)}")
             skipped += 1
 
