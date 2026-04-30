@@ -145,7 +145,10 @@ class Project(Base):
     code = Column(String(20), unique=True, nullable=False, index=True)  # e.g., "PROJ-ALPHA"
     name = Column(String(255), nullable=False)
     description = Column(Text)
-    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    # F-076: SET NULL on user delete (audit trail / project history
+    # survives even if the original owner row is removed). Made nullable
+    # so SET NULL is honourable.
+    owner_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     status = Column(String(50), default="active")
     config = Column(JSON, default=dict)  # Project-specific settings
     auto_req_approval_required = Column(Boolean, default=True)
@@ -217,8 +220,14 @@ class SourceArtifact(Base):
     file_path = Column(String(500))  # Path to uploaded file
     source_date = Column(DateTime)
     participants = Column(JSON, default=list)  # List of participant names
-    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
-    created_by_id = Column(Integer, ForeignKey("users.id"))
+    # F-076: artifacts CASCADE on project delete — they have no
+    # standalone meaning outside the project they belong to.
+    project_id = Column(
+        Integer,
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    created_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -264,10 +273,15 @@ class Verification(Base):
     __tablename__ = "verifications"
 
     id = Column(Integer, primary_key=True, index=True)
-    requirement_id = Column(Integer, ForeignKey("requirements.id"), nullable=False)
+    # F-076: verification rows have no meaning if their requirement is gone.
+    requirement_id = Column(
+        Integer,
+        ForeignKey("requirements.id", ondelete="CASCADE"),
+        nullable=False,
+    )
     method = Column(SQLEnum(VerificationMethod, values_callable=lambda x: [e.value for e in x]), nullable=False)
     status = Column(SQLEnum(VerificationStatus, values_callable=lambda x: [e.value for e in x]), nullable=False, default=VerificationStatus.PLANNED)
-    responsible_id = Column(Integer, ForeignKey("users.id"))
+    responsible_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
     evidence = Column(Text)  # Reference to test results, analysis docs, etc.
     criteria = Column(Text)  # Pass/fail criteria
     completed_at = Column(DateTime)
@@ -283,7 +297,13 @@ class RequirementHistory(Base):
     __tablename__ = "requirement_history"
 
     id = Column(Integer, primary_key=True, index=True)
-    requirement_id = Column(Integer, ForeignKey("requirements.id"), nullable=False)
+    # F-076: history rows are meaningful only alongside the parent
+    # requirement; CASCADE on parent delete.
+    requirement_id = Column(
+        Integer,
+        ForeignKey("requirements.id", ondelete="CASCADE"),
+        nullable=False,
+    )
     version = Column(Integer, nullable=False)
     field_changed = Column(String(100), nullable=False)
     old_value = Column(Text)
