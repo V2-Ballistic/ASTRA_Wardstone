@@ -3778,10 +3778,21 @@ def get_interface_coverage(
         Interface.project_id == project_id
     ).scalar()
 
-    # Interfaces with at least one requirement link
-    linked_ifaces = db.query(func.count(func.distinct(InterfaceRequirementLink.entity_id))).filter(
-        InterfaceRequirementLink.entity_type == "interface",
-    ).scalar()
+    # F-051: scope `linked_ifaces` by joining through Interface so the
+    # count only includes interface-typed links whose target Interface
+    # belongs to *this* project. The pre-fix query returned the global
+    # count of distinct entity_ids — a project's coverage % was
+    # contaminated by every other project's interfaces.
+    linked_ifaces = (
+        db.query(func.count(func.distinct(InterfaceRequirementLink.entity_id)))
+        .join(
+            Interface,
+            (Interface.id == InterfaceRequirementLink.entity_id)
+            & (InterfaceRequirementLink.entity_type == "interface"),
+        )
+        .filter(Interface.project_id == project_id)
+        .scalar()
+    )
 
     # Units with env specs
     units_total = db.query(func.count(Unit.id)).filter(Unit.project_id == project_id).scalar()
@@ -3789,18 +3800,31 @@ def get_interface_coverage(
         Unit.project_id == project_id
     ).scalar()
 
-    # Auto-generated link stats
-    auto_total = db.query(func.count(InterfaceRequirementLink.id)).filter(
-        InterfaceRequirementLink.auto_generated.is_(True),
-    ).scalar()
-    auto_approved = db.query(func.count(InterfaceRequirementLink.id)).filter(
-        InterfaceRequirementLink.auto_generated.is_(True),
+    # F-051: auto-generated link stats — InterfaceRequirementLink carries
+    # `requirement_id` which points at a Requirement with project_id.
+    # Join through Requirement to scope the counts.
+    auto_base = (
+        db.query(func.count(InterfaceRequirementLink.id))
+        .join(Requirement, Requirement.id == InterfaceRequirementLink.requirement_id)
+        .filter(
+            Requirement.project_id == project_id,
+            InterfaceRequirementLink.auto_generated.is_(True),
+        )
+    )
+    auto_total = auto_base.scalar()
+    auto_approved = auto_base.filter(
         InterfaceRequirementLink.status == "approved",
     ).scalar()
-    auto_pending = db.query(func.count(InterfaceRequirementLink.id)).filter(
-        InterfaceRequirementLink.auto_generated.is_(True),
-        InterfaceRequirementLink.status == "pending_review",
-    ).scalar()
+    auto_pending = (
+        db.query(func.count(InterfaceRequirementLink.id))
+        .join(Requirement, Requirement.id == InterfaceRequirementLink.requirement_id)
+        .filter(
+            Requirement.project_id == project_id,
+            InterfaceRequirementLink.auto_generated.is_(True),
+            InterfaceRequirementLink.status == "pending_review",
+        )
+        .scalar()
+    )
 
     coverage_pct = round(linked_ifaces / total_interfaces * 100, 1) if total_interfaces > 0 else 0.0
 
