@@ -13,7 +13,7 @@
  *   - Recent activity with relative timestamps, user initials, action colors
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
   Loader2, LayoutDashboard, Database, FileText, CheckCircle,
@@ -365,6 +365,14 @@ export default function ProjectDashboard() {
   const [seeding, setSeeding] = useState(false);
   const [seedResult, setSeedResult] = useState<string | null>(null);
 
+  // F-102: AbortController for the AI stats fetch so a navigation
+  // away mid-flight doesn't trigger setState on an unmounted
+  // component. Pre-fix the aiAPI.getStats(...).then(setAiStats) call
+  // had no abort hook — switching projects fast enough produced
+  // "Can't perform a React state update on an unmounted component"
+  // warnings + occasional stale data flicker.
+  const aiAbortRef = useRef<AbortController | null>(null);
+
   const fetchAll = useCallback(async () => {
     if (!projectId) return;
     setLoading(true);
@@ -383,11 +391,17 @@ export default function ProjectDashboard() {
       setRequirements(Array.isArray(reqsRes?.data) ? reqsRes.data : []);
       setBaselines(blRes?.data?.baselines || blRes?.data || []);
 
-      if (aiAPI) {
-        aiAPI.getStats(projectId)
-          .then((res: any) => setAiStats(res.data))
-          .catch(() => setAiStats(null));
-      }
+      // F-102: cancel any in-flight aiStats fetch before starting a new one.
+      aiAbortRef.current?.abort();
+      const ctl = new AbortController();
+      aiAbortRef.current = ctl;
+      aiAPI.getStats(projectId)
+        .then((res) => {
+          if (!ctl.signal.aborted) setAiStats(res.data);
+        })
+        .catch(() => {
+          if (!ctl.signal.aborted) setAiStats(null);
+        });
     } catch (e: any) {
       setError(e.response?.data?.detail || 'Failed to load dashboard');
     }

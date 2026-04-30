@@ -195,8 +195,14 @@ export default function DashboardPage() {
   const totalReqs = projects.reduce((sum, p) => sum + (p.stats?.total_requirements || 0), 0);
   const totalOrphans = projects.reduce((sum, p) => sum + (p.stats?.orphan_count || 0), 0);
   const totalVerified = projects.reduce((sum, p) => sum + (p.stats?.verified_count || 0), 0);
-  const avgQuality = projects.length > 0
-    ? projects.reduce((sum, p) => sum + (p.stats?.avg_quality_score || 0), 0) / projects.filter(p => p.stats).length
+  // F-103: guard against divide-by-zero. Pre-fix:
+  //   ... / projects.filter(p => p.stats).length
+  // returned NaN when no project had stats yet (which is the common
+  // case immediately after creating the first project). The header
+  // then rendered "NaN%" until the first dashboard fetch completed.
+  const projectsWithStats = projects.filter(p => p.stats);
+  const avgQuality = projectsWithStats.length > 0
+    ? projectsWithStats.reduce((sum, p) => sum + (p.stats?.avg_quality_score || 0), 0) / projectsWithStats.length
     : 0;
 
   return (
