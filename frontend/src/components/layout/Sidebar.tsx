@@ -22,7 +22,7 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useAuth } from '@/lib/auth';
-import { projectsAPI, requirementsAPI } from '@/lib/api';
+import { projectsAPI, dashboardAPI } from '@/lib/api';
 
 // ══════════════════════════════════════
 //  Types
@@ -133,10 +133,17 @@ export default function Sidebar() {
         setProject(r.data);
       }).catch(() => setProject(null));
 
-      // Fetch requirement count
-      requirementsAPI.list(projectId, { limit: 1 }).then(r => {
-        // The API returns an array; we just need the total
-        setCounts(prev => ({ ...prev, requirements: Array.isArray(r.data) ? r.data.length : 0 }));
+      // F-026: pull the requirement count from /dashboard/stats — the
+      // GROUP BY total there is a single COUNT(*) query against the DB.
+      // Pre-fix this called requirementsAPI.list(limit: 1) and counted
+      // r.data.length, which always returned ≤ 1 — the sidebar badge
+      // never reflected the real count, just whether ≥1 requirement
+      // existed.
+      dashboardAPI.getStats(projectId).then(r => {
+        setCounts(prev => ({
+          ...prev,
+          requirements: Number(r.data?.total_requirements ?? 0),
+        }));
       }).catch(() => {});
     } else {
       setProject(null);
