@@ -13,6 +13,10 @@ import { useParams, useRouter } from 'next/navigation';
 import { Archive, Clock, Loader2, RefreshCw, Plus, ArrowLeftRight, ChevronRight, Trash2, X, GitBranch, FileText, CheckCircle, AlertTriangle, Minus, Edit3 } from 'lucide-react';
 import clsx from 'clsx';
 import { baselinesAPI, projectsAPI } from '@/lib/api';
+// F-091: replace native confirm() with the in-app modal so the
+// dialog matches the styling of every other action and is keyboard
+// + screen-reader accessible.
+import ConfirmDialog from '@/components/ConfirmDialog';
 import {
   STATUS_COLORS, STATUS_LABELS, LEVEL_COLORS,
   type RequirementStatus, type RequirementLevel,
@@ -77,8 +81,15 @@ export default function BaselinesPage() {
     setCreating(false);
   };
 
-  const handleDelete = async (id: number) => {
-    if (!confirm('Delete this baseline?')) return;
+  // F-091: confirm-via-modal. Pre-fix `if (!confirm(...))` blocked
+  // the main thread, looked like a system dialog, and was unstyled.
+  const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
+
+  const requestDelete = (id: number) => setPendingDeleteId(id);
+  const handleDelete = async () => {
+    if (pendingDeleteId == null) return;
+    const id = pendingDeleteId;
+    setPendingDeleteId(null);
     try { await baselinesAPI.delete(id); await fetchBaselines(); setView('list'); } catch {}
   };
 
@@ -129,7 +140,7 @@ export default function BaselinesPage() {
                     <button onClick={() => setCompareB(bl.id)} className="rounded-lg border border-astra-border px-2 py-1 text-[10px] text-slate-400 hover:text-slate-200">
                       {compareB === bl.id ? 'B ✓' : 'Set B'}
                     </button>
-                    <button onClick={() => handleDelete(bl.id)} className="rounded-lg border border-red-500/20 p-1 text-red-400/50 hover:text-red-400"><Trash2 className="h-3 w-3" /></button>
+                    <button onClick={() => requestDelete(bl.id)} className="rounded-lg border border-red-500/20 p-1 text-red-400/50 hover:text-red-400" aria-label={`Delete baseline ${bl.name}`}><Trash2 className="h-3 w-3" /></button>
                   </div>
                 </div>
               ))}
@@ -261,6 +272,17 @@ export default function BaselinesPage() {
           </div>
         </div>
       )}
+
+      {/* F-091: in-app delete confirmation modal. */}
+      <ConfirmDialog
+        open={pendingDeleteId != null}
+        title="Delete this baseline?"
+        message="The baseline row will be removed; the requirements it snapshots are not affected."
+        confirmLabel="Delete"
+        destructive
+        onCancel={() => setPendingDeleteId(null)}
+        onConfirm={handleDelete}
+      />
     </div>
   );
 }
