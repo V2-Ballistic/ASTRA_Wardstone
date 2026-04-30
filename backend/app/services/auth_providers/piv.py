@@ -106,33 +106,101 @@ def extract_cert_info(pem_cert: str) -> dict | None:
     }
 
 
-def validate_cert_chain(pem_cert: str) -> bool:
+def _load_ca_bundle(ca_bundle_path: str):
     """
-    Validate the client certificate against the DoD CA bundle.
-    Returns True if the chain is valid.
-
-    NOTE: Full OCSP / CRL checking is controlled by env vars.
-    In production this should call out to an OCSP responder.
+    Parse a PEM CA bundle into a list of x509.Certificate objects.
+    Returns None on read or parse failure.
     """
-    ca_bundle = os.getenv("PIV_CA_BUNDLE_PATH", "")
-    if not ca_bundle or not os.path.isfile(ca_bundle):
-        # No CA bundle configured — accept in dev, reject in prod
-        if os.getenv("ENVIRONMENT") == "production":
-            return False
-        return True
+    from cryptography import x509
+    from cryptography.hazmat.backends import default_backend
 
     try:
-        from cryptography import x509
-        from cryptography.hazmat.backends import default_backend
+        with open(ca_bundle_path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return None
 
+    # Split PEM file into individual certificate blocks; load each.
+    cas: list = []
+    blocks = re.findall(
+        rb"-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----",
+        data,
+    )
+    for block in blocks:
+        try:
+            cas.append(x509.load_pem_x509_certificate(block, default_backend()))
+        except Exception:
+            continue
+    return cas or None
+
+
+def validate_cert_chain(pem_cert: str) -> bool:
+    """
+    F-037: Validate the client certificate against the configured CA bundle
+    using ``cryptography.x509.verification.PolicyBuilder`` (cryptography
+    >= 42). The validator walks the chain, verifies signatures, checks
+    NotBefore / NotAfter, and enforces the basic Web PKI server-auth
+    profile (which is also adequate for client-cert chains for our
+    purposes — the PIV CN structure is checked separately in
+    ``extract_cert_info``).
+
+    Behavior:
+      * No CA bundle configured (PIV_CA_BUNDLE_PATH unset / missing
+        file) — refuse in production (ENVIRONMENT=production), accept
+        in dev. Dev acceptance is bounded by ``ENVIRONMENT`` because
+        F-037's intent is "no silent prod fallback to expiry-only."
+      * CA bundle empty / unparseable — always refuse.
+      * Chain validation fails (signature mismatch, untrusted root,
+        expired) — refuse.
+      * Chain validation succeeds — accept.
+
+    OCSP / CRL is NOT covered here; F-037's scope is chain validation.
+    OCSP is tracked separately under PIV_REQUIRE_OCSP for a follow-up.
+    """
+    from cryptography import x509
+    from cryptography.hazmat.backends import default_backend
+
+    is_prod = os.getenv("ENVIRONMENT") == "production"
+
+    ca_bundle_path = os.getenv("PIV_CA_BUNDLE_PATH", "")
+    if not ca_bundle_path or not os.path.isfile(ca_bundle_path):
+        # In production we refuse — no CA bundle means no chain validation.
+        # In dev we accept so local round-trips work without a real PKI.
+        return not is_prod
+
+    cas = _load_ca_bundle(ca_bundle_path)
+    if not cas:
+        # File exists but no valid certs in it — always refuse.
+        return False
+
+    try:
         cert = x509.load_pem_x509_certificate(pem_cert.encode(), default_backend())
-        # Load trusted CAs
-        with open(ca_bundle, "rb") as f:
-            bundle_pem = f.read()
-        # Basic expiry check (real chain validation needs pyOpenSSL or certvalidator)
-        if cert.not_valid_after_utc < datetime.now(timezone.utc):
-            return False
+    except Exception:
+        return False
+
+    # Use the PolicyBuilder verifier when available (cryptography >= 42).
+    try:
+        from cryptography.x509.verification import PolicyBuilder, Store
+
+        store = Store(cas)
+        # ClientVerifier is the right shape for client-cert authentication
+        # (CAC / PIV); falls back to ServerVerifier on older releases.
+        builder = PolicyBuilder().store(store)
+        verifier = (
+            builder.build_client_verifier()
+            if hasattr(builder, "build_client_verifier")
+            else builder.build_server_verifier(x509.DNSName("localhost"))
+        )
+        # Returns chain on success, raises VerificationError on failure.
+        verifier.verify(cert, [])
         return True
+    except ImportError:
+        # Cryptography < 42 — refuse in production rather than silently
+        # falling back to expiry-only.
+        if is_prod:
+            return False
+        # Dev fallback: expiry check only.
+        return cert.not_valid_after_utc >= datetime.now(timezone.utc)
     except Exception:
         return False
 
