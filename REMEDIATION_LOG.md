@@ -47,8 +47,12 @@
 
 ## Phase status
 
-- [~] Phase 1 — Critical Foundation (6/6 Critical fixes applied; F-006 history rewrite pending Mason's coordination; F-014 verification test written but pending Docker run before Phase 1 can be merged to main)
-- [ ] Phase 2 — Security Hardening + Compliance
+- [x] Phase 1 — Critical Foundation (merged to main as `c9b59c0`; F-006 fully resolved including history rewrite; F-014 verification test 47/47 green)
+- [~] Phase 2 — Security Hardening + Compliance (branch `fix/phase-2-security`)
+  - [x] 2A — Auth & access surface (F-015, F-016+F-031+F-124, F-017, F-021+F-104, F-066) — 22/22 tests green
+  - [x] 2B — Compliance integrity (F-007+F-008 cluster, F-013, F-022, F-009) — 20/20 tests green + manual psql triggers verified
+  - [ ] 2C — Reliability & availability (F-018, F-019, F-020, F-032)
+  - [ ] 2D — Hardening + sweep (F-010, F-011, F-012, F-024, F-025, F-026, F-027, F-028, F-029, F-030, F-033 onwards as scoped)
 - [ ] Phase 3 — Medium Severity
 - [ ] Phase 4 — Low Severity & Cleanup
 - [ ] Phase 5 — Info & Follow-ups
