@@ -91,6 +91,17 @@ function StatusBadge({ status }: { status: string }) {
 //  above each trace. Hover highlights an individual trace.
 // ══════════════════════════════════════════════════════════════
 
+// F-129: paginate when wire count exceeds this threshold. Below it,
+// the SVG renders the full set the way it always has. Above, the
+// component renders a 200-wire window plus a "Showing wires X..Y of N"
+// header with previous/next controls. SVG-aware viewport-based
+// virtualization would be cleaner but requires the parent scroll
+// container to be on the SVG itself; the harness page lets the
+// page-level scroll do the work today, so paged chunks are the
+// simpler bounded fix. Canvas would scale further but is a
+// substantial rewrite — defer until 1000+ wires becomes common.
+const PIN_MAP_PAGE_SIZE = 200;
+
 function PinMapSvg({
   harness,
   hoveredWireId,
@@ -100,7 +111,12 @@ function PinMapSvg({
   hoveredWireId: number | null;
   onHover: (id: number | null) => void;
 }) {
-  const wires = harness.wires;
+  const allWires = harness.wires;
+  const [page, setPage] = useState(0);
+  const totalPages = Math.max(1, Math.ceil(allWires.length / PIN_MAP_PAGE_SIZE));
+  const wires = allWires.length > PIN_MAP_PAGE_SIZE
+    ? allWires.slice(page * PIN_MAP_PAGE_SIZE, (page + 1) * PIN_MAP_PAGE_SIZE)
+    : allWires;
 
   // Layout constants
   const rowHeight = 36;
@@ -134,6 +150,41 @@ function PinMapSvg({
 
   return (
     <div>
+      {/* F-129: pagination strip when wire count exceeds the page size. */}
+      {allWires.length > PIN_MAP_PAGE_SIZE && (
+        <div className="mb-3 flex items-center justify-between rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-[11px] text-amber-200">
+          <span>
+            Showing wires {page * PIN_MAP_PAGE_SIZE + 1}–
+            {Math.min((page + 1) * PIN_MAP_PAGE_SIZE, allWires.length)} of {allWires.length}
+            <span className="ml-2 text-amber-300/70">
+              (paginated for performance — use the Wires table for the full list)
+            </span>
+          </span>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setPage(p => Math.max(0, p - 1))}
+              disabled={page === 0}
+              className="rounded-md border border-amber-500/30 px-2 py-1 text-[10px] font-medium text-amber-200 hover:bg-amber-500/10 disabled:opacity-40"
+              aria-label="Previous page of wires"
+            >
+              ◀
+            </button>
+            <span className="px-1 text-[10px] text-amber-200/80">
+              Page {page + 1} of {totalPages}
+            </span>
+            <button
+              type="button"
+              onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
+              disabled={page >= totalPages - 1}
+              className="rounded-md border border-amber-500/30 px-2 py-1 text-[10px] font-medium text-amber-200 hover:bg-amber-500/10 disabled:opacity-40"
+              aria-label="Next page of wires"
+            >
+              ▶
+            </button>
+          </div>
+        </div>
+      )}
       <svg viewBox={`0 0 ${width} ${height}`} className="w-full" preserveAspectRatio="xMidYMid meet">
         <defs>
           <linearGradient id="pinmap-body" x1="0" y1="0" x2="0" y2="1">
