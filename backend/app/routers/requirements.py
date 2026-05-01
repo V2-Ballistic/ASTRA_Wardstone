@@ -311,11 +311,18 @@ def create_requirement(
     project: Project = Depends(project_member_required),
 ):
 
-    count = db.query(func.count(Requirement.id)).filter(
-        Requirement.project_id == project_id,
-        Requirement.req_type == req_data.req_type,
-    ).scalar()
-    req_id = generate_requirement_id(project.code, req_data.req_type, count + 1)
+    # F-203: next_human_id replaces the race-prone `count + 1` pattern.
+    # The id_sequences row is locked FOR UPDATE inside the helper so
+    # two concurrent POSTs serialize and produce distinct req_ids.
+    from app.services.id_sequence import next_human_id
+    _PREFIX = generate_requirement_id(project.code, req_data.req_type, 1).rsplit("-", 1)[0]
+    req_id = next_human_id(
+        db,
+        project_id=project_id,
+        prefix=_PREFIX,
+        source_model=Requirement,
+        id_field="req_id",
+    )
     quality = check_requirement_quality(req_data.statement, req_data.title, req_data.rationale or "")
 
     req = Requirement(
@@ -572,10 +579,18 @@ def clone_requirement(req_id: int, request: Request = None,
         raise HTTPException(404, "Source requirement not found")
     project = db.query(Project).filter(Project.id == source.project_id).first()
     req_type_str = _ev(source.req_type)
-    count = db.query(func.count(Requirement.id)).filter(
-        Requirement.project_id == source.project_id, Requirement.req_type == source.req_type,
-    ).scalar()
-    new_req_id = generate_requirement_id(project.code if project else "PROJ", req_type_str, count + 1)
+    # F-203: next_human_id replaces the race-prone `count + 1` for clone too.
+    from app.services.id_sequence import next_human_id
+    _PREFIX = generate_requirement_id(
+        project.code if project else "PROJ", req_type_str, 1
+    ).rsplit("-", 1)[0]
+    new_req_id = next_human_id(
+        db,
+        project_id=source.project_id,
+        prefix=_PREFIX,
+        source_model=Requirement,
+        id_field="req_id",
+    )
     title = f"[CLONE] {source.title}"
     quality = check_requirement_quality(source.statement or "", title, source.rationale or "")
     level_str = _ev(source.level) if hasattr(source, "level") and source.level else "L1"

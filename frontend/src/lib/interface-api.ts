@@ -73,8 +73,8 @@ export const interfaceAPI = {
   updateUnit: (id: number, data: Partial<Unit>) =>
     api.patch<Unit>(`${BASE}/units/${id}`, data),
 
-  deleteUnit: (id: number, confirm = false) =>
-    api.delete(`${BASE}/units/${id}`, { params: { confirm } }),
+  deleteUnit: (id: number, force = false) =>
+    api.delete(`${BASE}/units/${id}`, { params: { force } }),
 
   getUnitSpecs: (id: number) =>
     api.get(`${BASE}/units/${id}/specifications`),
@@ -136,8 +136,8 @@ export const interfaceAPI = {
   updateBus: (id: number, data: Partial<BusDefinition>) =>
     api.patch<BusDefinition>(`${BASE}/buses/${id}`, data),
 
-  deleteBus: (id: number, confirm = false) =>
-    api.delete(`${BASE}/buses/${id}`, { params: { confirm } }),
+  deleteBus: (id: number, force = false) =>
+    api.delete(`${BASE}/buses/${id}`, { params: { force } }),
 
   assignPins: (busId: number, assignments: { pin_id: number; pin_role: string; notes?: string }[]) =>
     api.post<PinBusAssignment[]>(`${BASE}/buses/${busId}/pin-assignments`, assignments),
@@ -164,8 +164,8 @@ export const interfaceAPI = {
   updateMessage: (id: number, data: Partial<MessageDefinition>) =>
     api.patch<MessageDefinition>(`${BASE}/messages/${id}`, data),
 
-  deleteMessage: (id: number, confirm = false) =>
-    api.delete(`${BASE}/messages/${id}`, { params: { confirm } }),
+  deleteMessage: (id: number, force = false) =>
+    api.delete(`${BASE}/messages/${id}`, { params: { force } }),
 
   getByteMap: (id: number) =>
     api.get<ByteMapLayout>(`${BASE}/messages/${id}/byte-map`),
@@ -199,8 +199,8 @@ export const interfaceAPI = {
   updateHarness: (id: number, data: Partial<WireHarness>) =>
     api.patch<WireHarness>(`${BASE}/harnesses/${id}`, data),
 
-  deleteHarness: (id: number, confirm = false) =>
-    api.delete(`${BASE}/harnesses/${id}`, { params: { confirm } }),
+  deleteHarness: (id: number, force = false) =>
+    api.delete(`${BASE}/harnesses/${id}`, { params: { force } }),
 
   // ══════════════════════════════════════
   //  Wires
@@ -236,8 +236,8 @@ export const interfaceAPI = {
   updateWire: (id: number, data: Partial<Wire>) =>
     api.patch<Wire>(`${BASE}/wires/${id}`, data),
 
-  deleteWire: (id: number, confirm = false) =>
-    api.delete(`${BASE}/wires/${id}`, { params: { confirm } }),
+  deleteWire: (id: number, force = false) =>
+    api.delete(`${BASE}/wires/${id}`, { params: { force } }),
 
   searchWires: (projectId: number, signalName: string) =>
     api.get<Wire[]>(`${BASE}/wires/search`, { params: { project_id: projectId, signal_name: signalName } }),
@@ -398,10 +398,10 @@ export const interfaceAPI = {
   }) => api.patch<HarnessEndpoint>(`${BASE}/endpoints/${endpointId}`, data),
 
   /** Delete an endpoint. Cascades to its mating connector, mating pins,
-   *  and any wires touching those mating pins. Requires confirm=true if
+   *  and any wires touching those mating pins. Requires force=true if
    *  wires will be removed. */
-  deleteHarnessEndpoint: (endpointId: number, confirm = false) =>
-    api.delete(`${BASE}/endpoints/${endpointId}`, { params: { confirm } }),
+  deleteHarnessEndpoint: (endpointId: number, force = false) =>
+    api.delete(`${BASE}/endpoints/${endpointId}`, { params: { force } }),
 
   // ══════════════════════════════════════
   //  INTF-002 Phase 4 — Connection Builder (§9.5)

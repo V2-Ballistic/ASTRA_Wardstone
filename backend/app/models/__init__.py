@@ -197,7 +197,11 @@ class Requirement(Base):
 
     # Hierarchy
     level = Column(SQLEnum(RequirementLevel, values_callable=lambda x: [e.value for e in x]), nullable=False, default=RequirementLevel.L1)
-    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    # F-205: ondelete=CASCADE so a raw-SQL DELETE FROM projects (admin
+    # tooling, retention sweep) drops the project's requirements
+    # instead of raising a constraint violation. The ORM cascade on
+    # Project.requirements only fires for ORM-mediated deletes.
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
     parent_id = Column(Integer, ForeignKey("requirements.id"), nullable=True)
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
 
@@ -360,7 +364,9 @@ class Baseline(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(255), nullable=False)  # e.g., "PDR Baseline v1.0"
     description = Column(Text)
-    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    # F-205: ondelete=CASCADE — see Requirement.project_id above for
+    # the rationale (raw-SQL project deletes must drop baselines too).
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
     requirements_count = Column(Integer, default=0)
     created_by_id = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime, default=datetime.utcnow)
