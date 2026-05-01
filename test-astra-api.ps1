@@ -1,9 +1,35 @@
 ########################################
 # ASTRA Full Backend API Test Suite
-# Fixed: $PID conflict, -UseBasicParsing
+#
+# F-111: credentials are read from env vars instead of being baked
+# into the script. Refuses to run if $BASE looks like prod (substring
+# match against 'prod' / 'production') so a misclick can't fire 50+
+# requests at the production cluster. Required env vars:
+#
+#   $env:ASTRA_TEST_USER     — username to log in as
+#   $env:ASTRA_TEST_PASSWORD — password
+#   $env:ASTRA_TEST_BASE     — optional, defaults to localhost:8000
 ########################################
 
-$BASE = "http://localhost:8000/api/v1"
+$BASE = if ($env:ASTRA_TEST_BASE) { $env:ASTRA_TEST_BASE } else { "http://localhost:8000/api/v1" }
+
+# F-111: prod safety guard. The substring match is intentionally
+# permissive — anything that hints at production (prod.example.com,
+# api-production-blue, .prod.cluster.local) trips the refusal.
+if ($BASE -match 'prod' -or $BASE -match 'production') {
+    Write-Host "REFUSING TO RUN: \$BASE='$BASE' looks like a production endpoint." -ForegroundColor Red
+    Write-Host "If this is intentional, set ASTRA_TEST_BASE to a value that does not contain 'prod'." -ForegroundColor Red
+    exit 2
+}
+
+$ASTRA_USER = $env:ASTRA_TEST_USER
+$ASTRA_PASS = $env:ASTRA_TEST_PASSWORD
+if (-not $ASTRA_USER -or -not $ASTRA_PASS) {
+    Write-Host "REFUSING TO RUN: set \$env:ASTRA_TEST_USER and \$env:ASTRA_TEST_PASSWORD before invoking." -ForegroundColor Red
+    Write-Host "Example: \$env:ASTRA_TEST_USER='mason'; \$env:ASTRA_TEST_PASSWORD='your-dev-pwd'" -ForegroundColor Yellow
+    exit 2
+}
+
 $pass = 0
 $fail = 0
 $skip = 0
@@ -75,10 +101,14 @@ Write-Host "--- Health ---" -ForegroundColor Yellow
 Do-Test -Method GET -Url "http://localhost:8000/health" -Label "Health check"
 
 # ── Auth Login ──
+# F-111: creds come from env vars (validated above), no hardcoded
+# fallback chain. The fallback used to try a second password if the
+# first failed, which masked credential drift in dev — better to fail
+# loud and have the operator fix the env.
 Write-Host "`n--- Auth ---" -ForegroundColor Yellow
 $token = $null
 try {
-    $loginBody = "username=mason&password=Admin123!"
+    $loginBody = "username=$ASTRA_USER&password=$ASTRA_PASS"
     $lr = Invoke-WebRequest -Method POST -Uri "$BASE/auth/login" `
         -ContentType "application/x-www-form-urlencoded" `
         -Body $loginBody -ErrorAction Stop -UseBasicParsing
@@ -86,22 +116,11 @@ try {
     Write-Host "  PASS  Login -> 200" -ForegroundColor Green
     $pass++
 } catch {
-    # Try alternate password
-    try {
-        $loginBody = "username=mason&password=password123"
-        $lr = Invoke-WebRequest -Method POST -Uri "$BASE/auth/login" `
-            -ContentType "application/x-www-form-urlencoded" `
-            -Body $loginBody -ErrorAction Stop -UseBasicParsing
-        $token = ($lr.Content | ConvertFrom-Json).access_token
-        Write-Host "  PASS  Login -> 200 (alt password)" -ForegroundColor Green
-        $pass++
-    } catch {
-        Write-Host "  FAIL  Login failed" -ForegroundColor Red
-        $fail++
-        $errorList += "Login failed"
-        Write-Host "`n  Cannot continue without token." -ForegroundColor Red
-        return
-    }
+    Write-Host "  FAIL  Login failed" -ForegroundColor Red
+    $fail++
+    $errorList += "Login failed"
+    Write-Host "`n  Cannot continue without token." -ForegroundColor Red
+    return
 }
 
 Do-Test -Method GET -Url "$BASE/auth/me" -Label "Get current user" -Token $token
