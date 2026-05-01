@@ -894,26 +894,69 @@ def _build_fallback_summary(
     return " ".join(parts)
 
 
+_REPORT_ITEM_CAP = 1000
+_REPORT_JSON_BYTES_CAP = 1024 * 1024  # 1 MB
+
+
 def _persist_report(
     db: Session,
     requirement_id: int,
     change_description: str,
     report: ImpactReport,
 ) -> None:
-    """Save the impact report to the database."""
+    """Save the impact report to the database.
+
+    F-083: a pathological change on a heavily-traced requirement could
+    spawn an ImpactReport with tens of thousands of affected rows. The
+    pre-fix path serialised the whole thing into a JSONB column with no
+    bound, occasionally producing 50–100 MB rows that broke admin pages
+    that loaded the report. Three guards now apply:
+
+    - ``flush()`` before ``commit()`` so any deferred constraint check
+      (e.g. JSONB size) raises *before* the transaction half-applies.
+    - the four big lists are truncated to ``_REPORT_ITEM_CAP`` items
+      with a marker noting the original count.
+    - if the serialised payload still exceeds ``_REPORT_JSON_BYTES_CAP``
+      after the per-list cap, we fall back to a placeholder JSON that
+      records the totals but drops the bodies, so the row still saves.
+    """
     try:
         from app.models.impact import ImpactReport as ImpactReportModel
+
+        report_payload = report.model_dump()
+
+        for key in ("direct_impacts", "indirect_impacts",
+                    "affected_verifications", "affected_baselines"):
+            items = report_payload.get(key) or []
+            if len(items) > _REPORT_ITEM_CAP:
+                report_payload[key] = items[:_REPORT_ITEM_CAP]
+                report_payload.setdefault("_truncated", {})[key] = {
+                    "kept": _REPORT_ITEM_CAP,
+                    "total": len(items),
+                }
+
+        import json
+        if len(json.dumps(report_payload, default=str).encode("utf-8")) > _REPORT_JSON_BYTES_CAP:
+            report_payload = {
+                "_truncated_full": True,
+                "reason": "serialized payload exceeded 1 MB after per-list cap",
+                "risk_level": report_payload.get("risk_level"),
+                "total_affected": report_payload.get("total_affected"),
+                "dependency_depth": report_payload.get("dependency_depth"),
+                "ai_summary": (report_payload.get("ai_summary") or "")[:2000],
+            }
 
         stored = ImpactReportModel(
             requirement_id=requirement_id,
             change_description=change_description,
-            report_json=report.model_dump(),
+            report_json=report_payload,
             risk_level=report.risk_level,
             total_affected=report.total_affected,
             dependency_depth=report.dependency_depth,
             ai_summary=report.ai_summary[:2000] if report.ai_summary else "",
         )
         db.add(stored)
+        db.flush()
         db.commit()
     except Exception as exc:
         db.rollback()

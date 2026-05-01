@@ -986,3 +986,49 @@ def maybe_delete_connection_for_wire(db: Session, wire: Wire) -> bool:
             db.delete(conn)
             return True
     return False
+
+
+def upsert_connection_for_wire(db: Session, wire: Wire) -> Optional[int]:
+    """Standalone counterpart to ``maybe_delete_connection_for_wire``.
+
+    F-049: ``update_wire`` needs to keep the Connection rollup in sync
+    when a wire's endpoints move from one LRU pair to another. The class
+    method ``AutoGrowEngine._upsert_connection`` does the same thing,
+    but constructing an engine just to flip a single Connection row is
+    wasteful and pulls the engine's whole project-scoped context into a
+    place that doesn't need it. This helper resolves the wire's two
+    LRUs from its pin connectors and ensures a single Connection row
+    exists for that unordered pair.
+
+    Returns the Connection.id, or ``None`` if the wire is intra-LRU
+    (both pins on the same unit) or the unit chain can't be resolved.
+    """
+    from_conn = (db.query(Connector)
+                 .join(Pin, Pin.connector_id == Connector.id)
+                 .filter(Pin.id == wire.from_pin_id).first())
+    to_conn = (db.query(Connector)
+               .join(Pin, Pin.connector_id == Connector.id)
+               .filter(Pin.id == wire.to_pin_id).first())
+    if not from_conn or not to_conn:
+        return None
+    if from_conn.unit_id is None or to_conn.unit_id is None:
+        return None
+    if from_conn.unit_id == to_conn.unit_id:
+        return None
+
+    a, b = _pair_key(from_conn.unit_id, to_conn.unit_id)
+    project_id = from_conn.project_id or to_conn.project_id
+    if project_id is None:
+        return None
+
+    existing = (db.query(Connection)
+                .filter(Connection.lru_a_id == a, Connection.lru_b_id == b)
+                .first())
+    if existing:
+        existing.lru_a_id = a  # bump updated_at
+        db.flush()
+        return existing.id
+    conn = Connection(project_id=project_id, lru_a_id=a, lru_b_id=b)
+    db.add(conn)
+    db.flush()
+    return conn.id

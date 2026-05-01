@@ -3479,19 +3479,70 @@ def reject_auto_requirements(
 def update_wire(
     wire_pk: int,
     data: WireUpdate,
+    request: Request = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("interfaces.update")),
 ):
+    """F-049: a wire whose endpoints move from one LRU pair to another
+    has to update the Connection rollup table — otherwise the rollup
+    accumulates stale rows for pairs that no longer have any wires
+    between them, and is missing rows for the new pair the wire just
+    joined. Pre-fix the PATCH only `setattr`'d the new values and
+    committed, leaving the rollup desynchronized."""
     wire = db.query(Wire).filter(Wire.id == wire_pk).first()
     if not wire:
         raise HTTPException(404, "Wire not found")
     _assert_member_for_entity(db, current_user, wire)
 
     updates = data.model_dump(exclude_unset=True)
+    pin_changed = (
+        ("from_pin_id" in updates and updates["from_pin_id"] != wire.from_pin_id)
+        or ("to_pin_id" in updates and updates["to_pin_id"] != wire.to_pin_id)
+    )
+
+    from app.services.interface.auto_grow import (
+        maybe_delete_connection_for_wire,
+        upsert_connection_for_wire,
+    )
+
+    old_pins = (wire.from_pin_id, wire.to_pin_id)
+
+    if pin_changed:
+        # Tear down the rollup for the OLD pair before mutating the wire
+        # — `maybe_delete_connection_for_wire` reads `wire.from_pin_id`
+        # / `wire.to_pin_id` to resolve the LRUs.
+        try:
+            maybe_delete_connection_for_wire(db, wire)
+        except Exception as e:
+            logger.warning(f"connection rollup teardown on wire update failed: {e}")
+
     for field, value in updates.items():
         setattr(wire, field, value)
+    db.flush()  # so upsert reads the new pin ids
+
+    if pin_changed:
+        try:
+            upsert_connection_for_wire(db, wire)
+        except Exception as e:
+            logger.warning(f"connection rollup upsert on wire update failed: {e}")
+
     db.commit()
     db.refresh(wire)
+
+    if pin_changed:
+        harness = db.query(WireHarness).filter(WireHarness.id == wire.harness_id).first()
+        _audit(
+            db, "wire.endpoints_changed", "wire", wire.id, current_user.id,
+            {
+                "wire_number": wire.wire_number,
+                "old_from_pin_id": old_pins[0],
+                "old_to_pin_id": old_pins[1],
+                "new_from_pin_id": wire.from_pin_id,
+                "new_to_pin_id": wire.to_pin_id,
+            },
+            project_id=harness.project_id if harness else None,
+            request=request,
+        )
 
     resp = WireResponse.model_validate(wire)
     _populate_wire_joins(db, resp, wire)
@@ -3835,6 +3886,19 @@ def create_req_link(
     db.commit()
     db.refresh(link)
 
+    # F-050: trace-link create/delete used to leave no audit trail, so a
+    # forensic question like "who linked req X to bus Y?" had no answer.
+    _audit(
+        db, "interface_req_link.created", "interface_req_link", link.id, current_user.id,
+        {
+            "requirement_id": link.requirement_id,
+            "requirement_req_id": req.req_id,
+            "entity_type": _ev(link.entity_type),
+            "entity_id": link.entity_id,
+        },
+        project_id=req.project_id, request=request,
+    )
+
     resp = InterfaceReqLinkResponse.model_validate(link)
     resp.requirement_req_id = req.req_id
     resp.requirement_title = req.title
@@ -3959,6 +4023,7 @@ def list_req_links_for_project(
 @router.delete("/req-links/{link_pk}", status_code=200)
 def delete_req_link(
     link_pk: int,
+    request: Request = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("interfaces.delete")),
 ):
@@ -3966,8 +4031,27 @@ def delete_req_link(
     if not link:
         raise HTTPException(404, "Requirement link not found")
     _assert_member_for_entity(db, current_user, link)
+
+    # F-050: snapshot the link's identifying fields BEFORE delete so the
+    # audit row carries the broken-link forensic context.
+    req = db.query(Requirement).filter(Requirement.id == link.requirement_id).first()
+    snapshot = {
+        "requirement_id": link.requirement_id,
+        "requirement_req_id": req.req_id if req else None,
+        "entity_type": _ev(link.entity_type),
+        "entity_id": link.entity_id,
+    }
+    project_id = req.project_id if req else None
+
     db.delete(link)
     db.commit()
+
+    _audit(
+        db, "interface_req_link.deleted", "interface_req_link", link_pk, current_user.id,
+        snapshot,
+        project_id=project_id, request=request,
+    )
+
     return {"status": "deleted", "id": link_pk}
 
 
