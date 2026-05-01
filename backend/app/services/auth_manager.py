@@ -14,6 +14,7 @@ Env vars:
 import os
 import hashlib
 import secrets
+import uuid
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -51,6 +52,10 @@ def create_access_token(
     to_encode.update({"exp": expire})
     if partial:
         to_encode["mfa_pending"] = True
+    # F-200: stamp jti so the F-063 revocation list can target tokens
+    # minted via SAML/OIDC/PIV/MFA/refresh-rotation paths. Mirrors
+    # services/auth.py:create_access_token.
+    to_encode.setdefault("jti", uuid.uuid4().hex)
     return jwt.encode(to_encode, settings.SECRET_KEY.get_secret_value(), algorithm=settings.ALGORITHM)
 
 
