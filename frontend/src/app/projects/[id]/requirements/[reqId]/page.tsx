@@ -31,6 +31,9 @@ import {
 // F-084: runtime require() shims replaced with normal typed imports.
 import { aiAPI } from '@/lib/ai-api';
 import { aiWriterAPI } from '@/lib/ai-writer-api';
+// Phase 5 — sync lock + source links panel.
+import RequirementSyncPanel from '@/components/req-sync/RequirementSyncPanel';
+import { useAuth } from '@/lib/auth';
 
 // ══════════════════════════════════════
 //  Status transitions
@@ -483,8 +486,12 @@ type TabKey = 'overview' | 'traces' | 'impact' | 'quality' | 'history' | 'commen
 export default function RequirementDetailPage() {
   const params = useParams();
   const router = useRouter();
+  const { user } = useAuth();
   const projectId = Number(params.id);
   const reqId = Number(params.reqId);
+  const canManageLock = !!user && [
+    'admin', 'project_manager', 'requirements_engineer',
+  ].includes(user.role);
 
   const [req, setReq] = useState<any>(null);
   const [history, setHistory] = useState<any[]>([]);
@@ -794,6 +801,15 @@ export default function RequirementDetailPage() {
               <div className="text-center"><div className="text-lg font-bold text-slate-100">{comments.length}</div><div className="text-[10px] text-slate-500">Comments</div></div>
             </div>
           </div>
+
+          {/* Sync — lock + source links (Phase 5) */}
+          <RequirementSyncPanel
+            requirementId={req.id}
+            syncLocked={!!req.sync_locked}
+            syncLockedReason={req.sync_locked_reason}
+            canManageLock={canManageLock}
+            onChange={fetchData}
+          />
 
           {/* Timeline */}
           <div className="rounded-xl border border-astra-border bg-astra-surface p-5">

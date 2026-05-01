@@ -18,11 +18,12 @@ import {
   FileText, Network, Archive, Settings, LayoutDashboard,
   ChevronDown, ChevronRight, LogOut, Shield, FolderOpen,
   Sparkles, Search, Zap, CheckSquare, FileBarChart, Upload,
-  Users, Home, ChevronLeft, Loader2, Cable, Package,
+  Users, Home, ChevronLeft, Loader2, Cable, Package, RefreshCw,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useAuth } from '@/lib/auth';
 import { projectsAPI, dashboardAPI } from '@/lib/api';
+import { reqSyncAPI } from '@/lib/req-sync-api';
 
 // ══════════════════════════════════════
 //  Types
@@ -92,6 +93,13 @@ function getProjectNav(projectId: number): NavGroup[] {
           icon: Sparkles,
           conditionalKey: 'auto_req_approval_required', // Only show when this is true
         },
+        // Phase 5 — INTF-002 Reactive Requirement Sync
+        {
+          href: `${p}/req-sync`,
+          label: 'Sync Proposals',
+          icon: RefreshCw,
+          countKey: 'sync_proposals',
+        },
       ],
     },
     {
@@ -146,6 +154,11 @@ export default function Sidebar() {
           ...prev,
           requirements: Number(r.data?.total_requirements ?? 0),
         }));
+      }).catch(() => {});
+
+      // Phase 5 — pending sync proposal count for the sidebar badge.
+      reqSyncAPI.pendingCount(projectId).then(n => {
+        setCounts(prev => ({ ...prev, sync_proposals: n }));
       }).catch(() => {});
     } else {
       setProject(null);
