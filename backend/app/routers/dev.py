@@ -5,15 +5,42 @@ Changes from original:
   - seed_database now creates 6 users with different roles
   - Adds all users as project members
   - Returns credentials for each test user
+
+F-202 / F-216 hardening:
+  - Both /dev/seed and /dev/reset require ADMIN authentication.
+  - /dev/reset additionally requires the X-Dev-Reset-Confirm header.
+  - dev.reset emits an audit event before drop_all runs.
+  - A best-effort _RESET_IN_PROGRESS flag returns 503 to concurrent
+    callers while the drop/create/seed cycle is mid-flight (single-
+    worker dev shim; multi-worker would need a Redis flag — deferred).
 """
 
-from fastapi import APIRouter, Depends
+import logging
+
+from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy.orm import Session
+
 from app.database import get_db, Base, engine
-from app.models import User, Project, Requirement
+from app.models import User, Project, Requirement, UserRole
 from app.models.project_member import ProjectMember
 from app.services.auth import get_password_hash
 from app.services.quality_checker import check_requirement_quality
+
+# ── RBAC + audit (best-effort imports, same fallback pattern other routers use) ──
+try:
+    from app.services.rbac import require_any_role
+except ImportError:
+    from app.services.auth import get_current_user as _gcu
+    def require_any_role(*roles):
+        return _gcu
+
+try:
+    from app.services.audit_service import record_event as _audit
+except ImportError:
+    def _audit(*a, **kw):
+        pass
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/dev", tags=["Development"])
 
@@ -143,10 +170,20 @@ SEED_USERS = [
 DEFAULT_PASSWORD = "password123"
 
 
-@router.post("/seed")
-def seed_database(db: Session = Depends(get_db)):
-    """Seed the database with test users (all roles), a project, and sample requirements."""
+# F-216: best-effort single-worker shim. While reset_and_seed is
+# mid-flight, concurrent callers receive 503 instead of seeing
+# transient `relation does not exist` errors as tables disappear and
+# come back. This is a single-worker guard only — multi-worker dev
+# would need a Redis-backed flag (deferred per BACKLOG.md).
+_RESET_IN_PROGRESS = False
 
+
+def _seed_database_inner(db: Session) -> dict:
+    """Seed the database with test users (all roles), a project, and sample requirements.
+
+    Internal helper — no auth/header guards. Both `/dev/seed` and
+    `/dev/reset` reach this after their own dependency checks fire.
+    """
     # Check if already seeded
     existing_user = db.query(User).filter(User.username == "mason").first()
     if existing_user:
@@ -253,9 +290,67 @@ def seed_database(db: Session = Depends(get_db)):
     }
 
 
+@router.post("/seed")
+def seed_database(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_any_role(UserRole.ADMIN)),
+):
+    """Seed the database with test users (all roles), a project, and sample requirements.
+
+    F-202: requires ADMIN authentication. The dev router is
+    additionally only mounted when ENVIRONMENT != production.
+    """
+    if _RESET_IN_PROGRESS:
+        raise HTTPException(503, "Database reset is in progress. Try again shortly.")
+    return _seed_database_inner(db)
+
+
 @router.post("/reset")
-def reset_and_seed(db: Session = Depends(get_db)):
-    """Drop all tables, recreate, and seed. DEV ONLY."""
-    Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
-    return seed_database(db)
+def reset_and_seed(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_any_role(UserRole.ADMIN)),
+    x_confirm: str = Header(None, alias="X-Dev-Reset-Confirm"),
+):
+    """Drop all tables, recreate, and seed. DEV ONLY.
+
+    F-202:
+      - Authenticated ADMIN required.
+      - X-Dev-Reset-Confirm: I-mean-it header required (defence
+        against CSRF / accidental triggers).
+      - dev.reset audit event written before drop_all runs.
+    F-216:
+      - Module-level _RESET_IN_PROGRESS flag returns 503 to concurrent
+        callers during the drop/create window so polling clients see a
+        clean "service unavailable" instead of transient "relation
+        does not exist" errors. Single-worker shim — multi-worker
+        would need a Redis flag (deferred).
+    """
+    global _RESET_IN_PROGRESS
+
+    if x_confirm != "I-mean-it":
+        raise HTTPException(
+            400, "Send X-Dev-Reset-Confirm: I-mean-it to proceed",
+        )
+
+    if _RESET_IN_PROGRESS:
+        raise HTTPException(503, "Database reset is in progress. Try again shortly.")
+
+    # Audit BEFORE the drop — once tables are gone, the audit row can't
+    # be written. Best-effort: the next seed will recreate audit_logs.
+    try:
+        _audit(
+            db, "dev.reset", "system", 0, current_user.id,
+            {"trigger": "manual"},
+        )
+    except Exception as exc:  # pragma: no cover
+        logger.warning("dev.reset audit emission failed (continuing): %s", exc)
+
+    _RESET_IN_PROGRESS = True
+    try:
+        Base.metadata.drop_all(bind=engine)
+        Base.metadata.create_all(bind=engine)
+        result = _seed_database_inner(db)
+    finally:
+        _RESET_IN_PROGRESS = False
+
+    return result
