@@ -1833,6 +1833,133 @@ class ImpactPreview(BaseModel):
     action_options: List[str] = Field(default_factory=list)
 
 
+# ══════════════════════════════════════════════════════════════
+#  INTF-002 Phase 4 — Connection Builder
+# ══════════════════════════════════════════════════════════════
+# Spec §9.5 — three endpoints living in the interface router. The internal
+# dataclasses in services/interface/auto_wire.py are never serialised
+# directly; the Pydantic models below mirror them for the API surface.
+
+class CbStartRequest(BaseModel):
+    """POST /interfaces/connection-builder/start."""
+    project_id: int
+    source_unit_id: int
+    target_unit_id: int
+    name: Optional[str] = Field(None, max_length=255)
+    # Default to a generic digital data interface; user can refine after
+    # the draft is created. Valid values come from
+    # ``app.models.interface.InterfaceType``.
+    interface_type: Optional[str] = "data_digital"
+    direction: Optional[str] = "bidirectional"
+    description: Optional[str] = None
+
+
+class PinSummary(BaseModel):
+    id: int
+    pin_number: str
+    pin_label: Optional[str] = None
+    internal_signal_name: Optional[str] = None
+    mfr_pin_name: Optional[str] = None
+    direction: str
+    signal_type: str
+    connector_id: int
+    connector_designator: str
+
+
+class WireSuggestion(BaseModel):
+    gauge: str
+    color: str
+    insulation: str
+    max_length_m: Optional[float] = None
+    rationale: str = ""
+
+
+class ProposedWireOut(BaseModel):
+    source_pin: PinSummary
+    target_pin: PinSummary
+    matched_signal_name: str
+    direction_pair: tuple[str, str]
+    confidence: str
+    suggestion: WireSuggestion
+    warning: Optional[str] = None
+
+
+class AmbiguousMatchOut(BaseModel):
+    source_pin: PinSummary
+    candidates: List[PinSummary]
+
+
+class DirectionConflictOut(BaseModel):
+    source_pin: PinSummary
+    target_pin: PinSummary
+    src_direction: str
+    tgt_direction: str
+    reason: str
+
+
+class TypeMismatchOut(BaseModel):
+    source_pin: PinSummary
+    target_pin: PinSummary
+    src_signal_type: str
+    tgt_signal_type: str
+
+
+class AutoWireResultResponse(BaseModel):
+    interface_id: int
+    proposed_wires: List[ProposedWireOut] = Field(default_factory=list)
+    unmatched_source: List[PinSummary] = Field(default_factory=list)
+    unmatched_target: List[PinSummary] = Field(default_factory=list)
+    ambiguous: List[AmbiguousMatchOut] = Field(default_factory=list)
+    direction_conflicts: List[DirectionConflictOut] = Field(default_factory=list)
+    type_mismatches: List[TypeMismatchOut] = Field(default_factory=list)
+    lru_validation_errors: List[str] = Field(default_factory=list)
+    summary: Dict[str, int] = Field(default_factory=dict)
+
+
+class CbAcceptedWire(BaseModel):
+    """A single user-accepted wire from the auto-wire suggestion list."""
+    source_pin_id: int
+    target_pin_id: int
+    wire_gauge: Optional[str] = None
+    wire_color: Optional[str] = None
+    wire_type: Optional[str] = "signal_single"
+    length_m: Optional[float] = None
+    notes: Optional[str] = None
+
+
+class CbHarnessMetadata(BaseModel):
+    """Harness create-time metadata for the commit step."""
+    name: str = Field(..., max_length=255)
+    cable_type: Optional[str] = Field(None, max_length=100)
+    overall_length_m: Optional[float] = None
+    jacket_color: Optional[str] = Field(None, max_length=30)
+    shield_type: Optional[str] = None
+    description: Optional[str] = None
+
+
+class CbCommitRequest(BaseModel):
+    """POST /interfaces/connection-builder/{interface_id}/commit."""
+    accepted_wires: List[CbAcceptedWire] = Field(default_factory=list)
+    harness: CbHarnessMetadata
+
+
+class CbCommitResponse(BaseModel):
+    interface_id: int
+    harness_id: int
+    wires_created: int
+    wire_ids: List[int] = Field(default_factory=list)
+
+
+class CbStartResponse(BaseModel):
+    """Returned by /connection-builder/start — the new draft interface."""
+    interface_id: int
+    name: str
+    source_unit_id: int
+    target_unit_id: int
+    status: str
+    project_id: int
+
+
 # ── Wiring Diagram ──
 
 class WiringDiagramData(BaseModel):

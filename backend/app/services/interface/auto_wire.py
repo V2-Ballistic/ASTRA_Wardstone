@@ -304,10 +304,20 @@ def auto_wire_interface(
             f"Interface id={interface_id} not found."
         )
         return result
-    if interface.status == InterfaceStatus.APPROVED:
+    # Spec §11.2 step 1 says "FAIL FAST if status = approved". The
+    # existing InterfaceStatus enum has no APPROVED member; the closest
+    # operational analogues are BASELINED, VERIFIED, VALIDATED — all of
+    # which represent locked, change-controlled interfaces. Treat any of
+    # them as auto-wire-locked.
+    _LOCKED_STATUSES = {
+        InterfaceStatus.BASELINED,
+        InterfaceStatus.VERIFIED,
+        InterfaceStatus.VALIDATED,
+    }
+    if interface.status in _LOCKED_STATUSES:
         result.lru_validation_errors.append(
-            "Interface is APPROVED — auto-wire is locked. "
-            "Re-open the interface to re-run auto-suggest."
+            f"Interface status is {interface.status.value!r} — "
+            "auto-wire is locked. Re-open the interface to re-run."
         )
         return result
 
