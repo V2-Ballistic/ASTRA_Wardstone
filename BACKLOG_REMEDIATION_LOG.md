@@ -8,10 +8,10 @@
 |---|---|---|---|---|---|---|
 | F-200 | High | ✅ Fixed | `backend/app/services/auth_manager.py`, `backend/tests/test_auth_manager_jti.py` | `cf6e952` | `pytest tests/test_auth_manager_jti.py` → 4 passed | jti stamped via `to_encode.setdefault(...)`; refresh-rotated tokens now also get jti |
 | F-221 | Low | ✅ Fixed | `backend/app/services/auth.py` | `1c832fe` | Code review only (warning observable in logs) | Logger added to module; rollback preserved |
-| F-208 | Medium | ⏳ Pending | — | — | — | Phase 2 |
-| F-210 | Medium | ⏳ Pending | — | — | — | Phase 2 |
-| F-211 | Medium | ⏳ Pending | — | — | — | Phase 2 |
-| F-201 | High | ⏳ Pending | — | — | — | Phase 2 |
+| F-208 | Medium | ✅ Fixed | `backend/app/routers/audit.py`, `backend/tests/test_phase2_membership_sweep.py` | `e24a3ea` | `pytest -k F208` → 2 passed | Mirror of /audit/export gate |
+| F-210 | Medium | ✅ Fixed | `backend/app/routers/seed_project.py`, tests | `fa3b86d` | `pytest -k F210` → 1 passed | — |
+| F-211 | Medium | ✅ Fixed | `backend/app/routers/imports.py`, tests | `2e58456` | `pytest -k F211` → 1 passed | Both preview and confirm gated |
+| F-201 | High | ✅ Fixed | `backend/app/routers/workflows.py` (`fdb1553`), `backend/app/routers/ai.py` (`c37e095`), `backend/app/routers/ai_writer.py` + schema (`2de8daa`), tests (`e5accca`) | three commits | `pytest -k F201` → 9 passed | ai_writer added optional `project_id` to each schema; gate is no-op when absent (backward-compatible) |
 | F-202 | High | ⏳ Pending | — | — | — | Phase 3 |
 | F-216 | Medium | ⏳ Pending | — | — | — | Phase 3 |
 | F-203 | High | ⏳ Pending | — | — | — | Phase 4 |
@@ -33,7 +33,7 @@
 ## Phase Status
 
 - [x] Phase 1 — Auth / Token Hardening (F-200, F-221) — full suite: 295 passed, 0 failed (`pytest tests/ -x -q -m 'not performance'`, 178s). Backend route count: 332. `alembic check` reports pre-existing schema drift (per operating rule §3 — known and tolerated on this baseline; no migration introduced this phase).
-- [ ] Phase 2 — Project Membership Sweep (F-201, F-208, F-210, F-211)
+- [x] Phase 2 — Project Membership Sweep (F-201, F-208, F-210, F-211) — full suite: 309 passed, 0 failed (was 295 before; +14 negative tests). 7 commits on `fix/backlog-phase-2-membership`.
 - [ ] Phase 3 — Dev Router Hardening (F-202, F-216)
 - [ ] Phase 4 — Data Integrity & Contract (F-203, F-204, F-205)
 - [ ] Phase 5 — Medium Severity (F-206–F-215)
