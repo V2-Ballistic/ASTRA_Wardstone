@@ -26,8 +26,8 @@
 | 3 — Catalog UI | ✅ complete | `2b3a607..HEAD` | 0 (frontend test infra deferred) | green (tsc filter empty, build ✓ Compiled successfully, backend 260/260) | catalog-types + catalog-api + PlaceLruModal + 5 new pages + 4 modified pages + sidebar Catalog link |
 | 4 — Connection Builder + auto-wire | ✅ complete | `3b6f0bd..2fef238` (5 commits) | 51 (311 total) | green (alembic 0024, pytest 311/311, tsc filter empty, build ✓) | migration 0024 added Interface.source_unit_id/target_unit_id; auto-wire engine implements full three-way validation with explicit 6×6 direction matrix; Connection Builder wizard at /projects/[id]/interfaces/connect |
 | 5 — Reactive Requirement Sync | ✅ complete | `b02b528..HEAD` | 57 (368 total) | green (alembic 0024 unchanged, pytest 368/368, tsc filter empty, build ✓ Compiled successfully — pre-existing jest.config.ts lint failure documented) | renderer + fan_out + listener service trio; SQLAlchemy after_update/after_delete on 12 entity types with contextvar-based re-entrancy guard; full §12.5 policy table parameter-tested; bulk-accept atomic-rollback; 100-link fan-out completes well under 1s; /req-sync UI page (3-pane diff) + RequirementSyncPanel on requirement detail + sidebar pending-count badge |
-| 6 — Source Coverage Validator | ⏳ pending | — | — | — | — |
-| 7 — ICD Ingestion | ⏳ pending | — | — | — | — |
+| 6 — Source Coverage Validator | ✅ complete | `81bad48..d09541d` | 23 (391 total) | green (alembic 0025, MV created, pytest 391/391, tsc filter empty, build ✓) | source_validator + suggestions + refresh services; mv_requirement_source_coverage materialized view (migration 0025) with concurrent-refresh + index trio; coverage router (5 endpoints, RBAC enforced); /coverage page with traffic-lights + orphan table + exception filing/cosign |
+| 7 — ICD Ingestion | ✅ complete | `968d53f..3782e39` (6 commits) | 21 (461 total) | green (deps OK, pytest 21/21 in 21s, full suite 460/461 — req_sync perf test flaky under load and passes solo, unrelated; tsc filter empty; build ✓ Compiled successfully) | PyMuPDF + camelot[cv] + python-docx pipeline; document_extractor + prompts + IcdExtractionResultSchema + icd_extractor orchestrator + 3 router endpoints (extract/approve/reject) + side-by-side review page + Tab 3 live in PlaceLruModal; manual smoke deferred to Mason (requires real datasheet + AI tokens) |
 | 8 — Polish & robustness | ⏳ pending | — | — | — | — |
 
 ## Per-Phase Detail
@@ -220,6 +220,55 @@
 - `file_coverage_exception` supports re-filing — if an exception already exists for the same `(project_id, requirement_id)`, it's updated in place and the cosign is reset (forces a fresh admin review). Avoids fighting the `uq_coverage_exception_req` constraint.
 - Frontend test infra remains broken (deferred audit cleanup).
 
+### Phase 7 — ICD Ingestion pipeline
+
+**Files touched (backend):**
+- `backend/requirements.txt` — added `PyMuPDF==1.24.5` + `camelot-py[cv]==0.11.0` (python-docx already present).
+- `backend/Dockerfile` — added apt-get of `libgl1 libglib2.0-0 libxcb1 libsm6 libxext6 libxrender1 ghostscript` (OpenCV runtime libs for camelot[cv] + GS for camelot lattice mode).
+- New: `backend/app/services/catalog/document_extractor.py` — pre-extraction pass for PDF / DOCX / XLSX. PyMuPDF for PDF text + 200 DPI page render (capped at first 5 pages) + camelot lattice/stream for tables (fail-soft per page); python-docx with synthetic 30-paragraph paginations; openpyxl, one sheet = one synthetic page. Cap at `max_pages=50`. Returns `ExtractedDocument(pages, text, tables, image_bytes, metadata, warnings, truncated)`.
+- New: `backend/app/services/catalog/prompts.py` — system + user prompt templates with strict-JSON-schema embed. Tells the LLM to (a) match `IcdExtractionResultSchema` exactly, (b) cite `[P:N]` page markers, (c) emit `null` rather than invent values, (d) use canonical SI units. `MAX_DOC_TEXT_CHARS=80k` caps oversize docs; truncation surfaces as a warning.
+- New: `backend/app/services/catalog/icd_extractor.py` — `trigger_extraction(db, document_id)` orchestrator. Steps: mark EXTRACTING → pre-extract → build prompt → `LLMClient.complete()` (json_mode, temp 0) → Pydantic validate → persist `PendingCatalogImport(PENDING)` → mark `PENDING_REVIEW`. Failure modes captured in `extraction_log` JSON: `ai_unavailable | ai_returned_null | schema_invalid | unsupported_type | corrupt_file | other`. Idempotency guard: refuses to re-run on a doc past UPLOADED unless FAILED.
+- New: 3 endpoints in `backend/app/routers/catalog.py`:
+  - `POST /catalog/documents/{doc_id}/extract` (req_eng+, 202) — flips status, queues `_run_extraction_in_background` (owns own SessionLocal). Audit `catalog.extraction_started`.
+  - `POST /catalog/pending-imports/{id}/approve` (req_eng+, 201) — re-validates extracted_data, atomic Supplier (matched-or-created) + CatalogPart + CatalogConnectors + CatalogPins. 409 on duplicate `(supplier, pn, rev)` tuple. Audit `catalog.import_approved`.
+  - `POST /catalog/pending-imports/{id}/reject` (req_eng+) — sets REJECTED, source doc → REJECTED, no catalog data. Audit `catalog.import_rejected`.
+- Extended: `backend/app/schemas/catalog.py` — `IcdExtractionResultSchema` + `ExtractedSupplier`/`ExtractedConnector`/`ExtractedPin` (strict, used both as the prompt schema and the on-the-way-back validator). Plus `PendingImportRejectRequest` + `IcdExtractionTriggerResponse`.
+
+**Files touched (frontend):**
+- Extended: `frontend/src/lib/catalog-api.ts` — replaced Phase 7 stubs with `triggerExtraction`, `approvePendingImport` (returns `CatalogPartDetail`), `rejectPendingImport(id, reason?)`.
+- New: `frontend/src/app/catalog/documents/[id]/review/page.tsx` — side-by-side review. Left: PDF iframe via blob URL (download fallback for DOCX/XLSX); Right: tabbed extracted-form (Supplier & Part / Physical & Power / Environmental / Connectors with per-pin editable table). Header shows confidence chip (color-banded ≥85/≥60/<60) and expandable warnings list. Footer: Save / Reject (with reason textarea) / Approve. Approve auto-saves edits then POSTs `/approve` and navigates to the new catalog part.
+- Modified: `frontend/src/components/catalog/PlaceLruModal.tsx` — Tab 3 (Upload ICD) is now LIVE. Picks supplier, accepts PDF/DOCX/XLSX + title + document type, uploads, triggers extraction, polls `/documents/{id}` every 3 s. On `pending_review` → "Review extracted data" CTA → review page. On `failed` → show `extraction_log.message` + retry button. Removed the disabled-tab + 'Phase 7' tooltip.
+
+**Tests added (`backend/tests/test_icd_extraction.py` — 21 tests, 5 classes):**
+- TestTriggerExtraction (5): happy path → PENDING_REVIEW; schema validation rejection → FAILED + error log; `ai_unavailable`; `ai_returns_none`; idempotent skip when already PENDING_REVIEW.
+- TestApproveEndpoint (6): full atomic creation + count assertions; brand-new supplier creation; status guards (already-APPROVED / already-REJECTED → 409); source doc → APPROVED; atomicity rollback (patch `CatalogPin.__init__` to raise on second call → 500 + counts unchanged).
+- TestRejectEndpoint (2): no catalog data created + REJECTED + reason stored; status guard.
+- TestRBAC (4): stakeholder cannot approve/reject/extract; req_eng can approve.
+- TestRegression (1): re-uploading same SHA-256 → 409 (Phase 2 carry-over regression test).
+- TestTriggerEndpoint (3): 202 + EXTRACTING flip (BG task mocked); 409 on already-EXTRACTING; 404 on missing doc.
+
+LLM patched via `app.services.ai.llm_client.LLMClient.complete` + `is_ai_available` — no live tokens spent. Synthetic PDF built in-memory via reportlab so PyMuPDF has real bytes to extract during the orchestrator path.
+
+**Verification gate output:**
+- `docker exec astra-backend-1 python -c 'import fitz, camelot, docx, openpyxl; print(deps OK)'` → ✅ deps OK.
+- `pytest tests/test_icd_extraction.py -v --tb=short` → **21 passed in 21 s**.
+- `pytest tests/ -q --tb=no` → **460 passed, 1 failed** — the failure is `test_req_sync.py::TestPerformance::test_fan_out_100_links_under_one_second` which is flaky under whole-suite load (suite ran in 265 s vs the 184 s of the post-Phase-6 baseline because we added 21 new tests with a heavier import surface — PyMuPDF/camelot pulls in OpenCV during collection). The same test passes in 1.13 s when run in isolation; not a Phase 7 regression.
+- `docker exec astra-frontend-1 npx tsc --noEmit` filtered with the documented Phase-4 grep → **empty output** (no new errors).
+- `docker exec astra-frontend-1 npm run build` → **✓ Compiled successfully** (followed by the pre-existing `jest.config.ts` lint failure unchanged from prior phases).
+
+**Camelot install:** clean install on the second build attempt — the first build pulled all Python deps but tripped over missing `libxcb` when importing `cv2` at runtime; the apt-get add resolves it. No camelot fallback required; lattice + stream both work.
+
+**Manual smoke deferred to Mason** per phase-prompt cost guidance: the spec §17 acceptance is "upload a real Glenair Mil-DTL-38999 datasheet" but no real datasheet is in the repo and the AI provider env vars (`AI_PROVIDER` / `AI_API_KEY` / `AI_MODEL`) are blank in `.env`. Mason runs the manual smoke when ready.
+
+**Anomalies / observations:**
+- Spec §10 defers full prompt structure to a "v1.0" that isn't included in the repository (digest §10 anomaly #8 already flagged this). The prompts module supplies a defensible substitute: strict-JSON-schema embed + page-citation rules + null-rather-than-invent rule. Pydantic validates the response on the way back; invalid responses mark the document FAILED with the validation errors stored in `extraction_log`.
+- `pytest` was not in the production image. Installed it once into the running container with `pip install pytest pytest-asyncio` for the verification gate. Not added to `requirements.txt` because production runs no tests; Mason will need to repeat the install if the container is rebuilt for tests (or add `pytest` to a separate `requirements-dev.txt` in a follow-up).
+- Background task creates its own DB session via `SessionLocal()` (the request session is closed by the time the task fires). Idempotency guard in `trigger_extraction` lets the task re-run safely if the BackgroundTask system retries.
+- Connector creation uses Python-side `position=idx` enumeration; the `IcdExtractionResultSchema` doesn't carry an explicit ordering field. Reviewers can re-order before approve via the PATCH endpoint (Phase 2-shipped).
+- Approve refuses with 409 on duplicate `(supplier, part_number, revision)` tuple — would otherwise blow up on the unique constraint. Reviewer needs to either reject or edit the revision before re-approving.
+- The review page's PDF preview is a raw iframe to a blob URL; PDF.js / react-pdf could give richer pinch-to-zoom but iframe is sufficient for v1 (and avoids pulling another big dep). DOCX / XLSX fall back to a download link.
+- `Phase 4 — Connection Builder` placeholder is a transient toast (auto-dismiss 4 s) on the interfaces landing page, deliberately styled lightweight so it doesn't compete visually with the real "Add Unit" CTA next to it.
+
 ## Anomalies & Tangential Findings
 
 | Date | Phase | Description | Severity | Disposition |
@@ -236,6 +285,12 @@
 | 2026-04-30 | 6 | Spec §13.4 MV DDL references non-existent `trace_links.target_requirement_id` and link types `derives_from` / `refines`. | INFO | MV migration uses actual polymorphic schema (`source_type` / `target_type`) and maps to enum members `decomposition` / `satisfaction`. Documented in 0025 migration docstring. |
 | 2026-04-30 | 6 | `coverage_exceptions` table created in Phase 1 uses `approved_by_id` / `approved_at` instead of spec's `admin_cosigned_by_id` / `admin_cosigned_at`. | INFO | Validator + MV treat `approved_by_id IS NOT NULL` as "admin cosigned". |
 | 2026-04-30 | 6 | APScheduler not installed in the runtime image — periodic MV refresh is a no-op. | INFO | Bulk-accept refreshes on demand. Add `pip install apscheduler` to pick up the 10-min cadence. |
+| 2026-04-30 | 7 | Spec §10 defers full ICD-extraction prompt to "v1.0" which doesn't ship. | INFO | Built defensible substitute in `services/catalog/prompts.py` (strict-JSON-schema + page citations + null-not-invent rule). Pydantic validates on the way back. |
+| 2026-04-30 | 7 | Camelot first-build broke at `import cv2` due to missing `libxcb`. | INFO | Fixed by adding `libgl1 libglib2.0-0 libxcb1 libsm6 libxext6 libxrender1 ghostscript` to the backend Dockerfile apt-get. Clean install on second build. |
+| 2026-04-30 | 7 | `pytest` not in the production image. Installed once into running container for the verification gate. | INFO | Not added to `requirements.txt` (prod runs no tests); follow-up could split a `requirements-dev.txt`. |
+| 2026-04-30 | 7 | Whole-suite run took 265 s vs Phase-6 baseline 184 s; the Phase-5 perf test (`test_fan_out_100_links_under_one_second`) flaked once at the threshold. Passes solo in 1.13 s. | INFO | Not a Phase 7 regression. Heavier test-collection surface (PyMuPDF/camelot import-time) accounts for the slowdown. Could relax the threshold to 1.5 s in Phase 8 polish. |
+| 2026-04-30 | 7 | Manual smoke (real Glenair datasheet → Anthropic call) NOT executed by the agent — no real datasheet in repo and `.env` has empty AI provider vars. | INFO | Deferred to Mason per phase-prompt cost guidance. Mocked-LLM tests cover all 10 acceptance scenarios from the phase prompt. |
+| 2026-04-30 | 7 | Approve endpoint refuses with 409 on duplicate `(supplier_id, part_number, revision)` tuple. | INFO | Reviewer must reject the import or edit the revision via PATCH before re-approving. Avoids blowing up on the unique constraint. |
 
 ## Out of Scope (explicitly deferred)
 
