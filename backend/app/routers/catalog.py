@@ -387,6 +387,15 @@ def delete_supplier(
             f"Supplier has {parts_count} catalog part(s). Pass ?admin_force=true to delete anyway.",
         )
 
+    # admin_force=true: explicitly cascade-delete the parts first so the FK
+    # doesn't trip. (CatalogPart.supplier_id is NOT NULL with no ondelete=CASCADE
+    # at the DB level — the relationship lets us cascade in Python explicitly.)
+    if parts_count > 0 and admin_force:
+        parts = db.query(CatalogPart).filter(CatalogPart.supplier_id == s.id).all()
+        for p in parts:
+            db.delete(p)
+        db.flush()
+
     _audit(
         db, "supplier.deleted", "supplier", s.id, current_user.id,
         {"name": s.name, "parts_dropped": parts_count, "admin_force": admin_force},
