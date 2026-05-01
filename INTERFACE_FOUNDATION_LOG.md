@@ -179,6 +179,47 @@
 - Frontend test infra remains broken (deferred audit cleanup) — verification by `tsc --noEmit` + `npm run build` per operating rule #7.
 - The sidebar pending-count badge fetches once per project change (no auto-refresh). Real-time push is a Phase 8 polish item.
 
+### Phase 6 — Source Coverage Validator + materialized view
+
+**Files touched (backend):**
+- New service package: `backend/app/services/coverage/__init__.py` re-exports the validator + refresh + suggestion entry points.
+- New: `backend/app/services/coverage/source_validator.py` — `validate_project_coverage(db, project_id, use_materialized_view=True)` returns a `CoverageReport` (per-level `LevelSummary` + `OrphanRequirement` list). Two execution paths: MV-backed (fast) and live computation (slow but always current). Live path walks `parent_id` + `decomposition`/`satisfaction` `TraceLink`s in a fixpoint BFS so multi-hop coverage propagation works on SQLite tests.
+- New: `backend/app/services/coverage/suggestions.py` — `suggest_source_type(req)` pattern-matches statement+title+rationale and returns the most-specific `SourceEntityType` hint per spec §13.5 (voltage→pin, data rate→wire, temperature→unit_env_spec, harness→wire_harness, …). Returns `None` when no pattern matches.
+- New: `backend/app/services/coverage/refresh.py` — `refresh_coverage_mv(db, concurrent=True)` wraps `REFRESH MATERIALIZED VIEW [CONCURRENTLY]`. Falls back to blocking refresh if CONCURRENTLY raises (first refresh edge-case). `start_periodic_refresh(interval_minutes=10)` schedules a BackgroundScheduler if APScheduler is installed; no-op otherwise.
+- New: `backend/app/routers/coverage.py` — 5 endpoints per spec §9.7 (`GET /coverage/source/{project_id}`, `GET /coverage/source/{project_id}/orphans`, `POST /coverage/exception`, `GET /coverage/exceptions/{project_id}`, `POST /coverage/exceptions/{id}/cosign`). RBAC: any-logged-in member for reads, proj_mgr+ to file, admin only to cosign. Audit emit on every state change (`coverage.exception_filed`, `coverage.exception_cosigned`).
+- New: `backend/alembic/versions/0025_coverage_materialized_view.py` — creates `mv_requirement_source_coverage` with unique index `uq_mv_coverage_req` (required for CONCURRENTLY refresh) + `ix_mv_coverage_project` + `ix_mv_coverage_severity`. PostgreSQL-only (no-op on SQLite).
+- Extended: `backend/app/schemas/coverage.py` — added `LevelSeveritySummary`, `CoverageReportResponse`, `OrphanRequirementResponse`, `OrphanListResponse`, `CoverageExceptionListResponse`, `CosignRequest`. Phase 1 placeholders (`CoverageLevelSummary`, `OrphanRequirement`) preserved for backwards compat.
+- Modified: `backend/app/main.py` — registers `app.routers.coverage` in `_optional_routers`; lifespan now starts/stops the periodic MV refresh (graceful no-op when APScheduler is missing).
+- Modified: `backend/app/routers/req_sync.py` — `bulk_accept_proposals` calls `refresh_coverage_mv(db)` ONCE after the transaction commits (not per proposal — covered by a dedicated test).
+
+**Files touched (frontend):**
+- New: `frontend/src/lib/coverage-types.ts` — TS mirror of the Pydantic schemas.
+- New: `frontend/src/lib/coverage-api.ts` — typed axios wrappers + `badgeCount(projectId)` helper for the sidebar.
+- New: `frontend/src/app/projects/[id]/coverage/page.tsx` — traffic-light per level (clickable to filter), sortable orphan table with severity chips + suggestion badges, exception filing modal, exception list with cosign button. Filters: severity + level. Pagination implicit at 200.
+- Modified: `frontend/src/components/layout/Sidebar.tsx` — added "Coverage" nav entry under MANAGEMENT with `coverageAPI.badgeCount` (warning + error total).
+
+**Tests added:**
+- `backend/tests/test_coverage.py` — 23 tests across 5 classes covering all 13 spec §13.7 acceptance scenarios: severity rules per level (L1 ok, L2 warning, L3 error, L4 traced-parent ok, L4 orphan error, L5 cosigned ok / pending warning / expired error, direct-source overrides level), suggestion engine (5 cases), router RBAC (stakeholder blocked / proj_mgr can file / non-admin blocked from cosign / admin can cosign), project-membership enforcement, happy-path summary shape + orphan filtering + file→cosign roundtrip, **bulk-accept fires exactly one MV refresh per batch (monkeypatched call counter)**.
+
+**Verification gate output:**
+- `alembic upgrade head` → `0025 (head)` ✅. `alembic downgrade -1; alembic upgrade head` round-trips cleanly.
+- `psql -c "SELECT * FROM mv_requirement_source_coverage LIMIT 5"` → 5 rows of real data (51, 92, 98, 103, 88), `computed_severity = 'ok'` for direct-source-linked rows.
+- `pytest tests/test_coverage.py -v --tb=short` → **23 passed**.
+- `pytest tests/ -q --tb=no` → **391 passed** (368 baseline + 23 new, zero regressions, ~184 s).
+- `npx tsc --noEmit` filtered with the documented Phase 4 grep → **empty output** (no new errors).
+- `npm run build` → **✓ Compiled successfully** (followed by the documented pre-existing `jest.config.ts` lint failure — unchanged from Phase 3/4/5).
+
+**Spec adaptations (called out in the migration docstring):**
+- `mv_requirement_source_coverage` DDL uses the **actual** polymorphic `trace_links` schema (`source_type` / `source_id` / `target_type` / `target_id`) instead of the spec's non-existent `target_requirement_id` (digest §10 anomaly #5). Maps the spec's `derives_from`/`refines` intent to the real `TraceLinkType` enum members `decomposition` and `satisfaction`.
+- `coverage_exceptions` table uses `approved_by_id` / `approved_at` (Phase 1 schema) as the admin co-sign columns; spec text refers to `admin_cosigned_*`. The MV and validator treat `approved_by_id IS NOT NULL` as "admin cosigned".
+- The MV resolves *one-hop* `has_traced_parent`. The live validator does multi-hop fixpoint BFS so deep chains still get correct coverage; the MV represents the common case at MV speed and the live mode (`?live=true`) is the escape hatch.
+
+**Anomalies / observations:**
+- APScheduler isn't installed in the production image — the periodic refresh logs a single info line at startup and skips. Bulk-accept still refreshes on demand. Adding APScheduler is a one-line `pip install` + restart when product wants the periodic safety net.
+- `start_periodic_refresh` is registered in the FastAPI lifespan; tests don't exercise the scheduler (they directly test `refresh_coverage_mv`).
+- `file_coverage_exception` supports re-filing — if an exception already exists for the same `(project_id, requirement_id)`, it's updated in place and the cosign is reset (forces a fresh admin review). Avoids fighting the `uq_coverage_exception_req` constraint.
+- Frontend test infra remains broken (deferred audit cleanup).
+
 ## Anomalies & Tangential Findings
 
 | Date | Phase | Description | Severity | Disposition |
@@ -192,6 +233,9 @@
 | 2026-04-30 | 5 | Spec §12.5 references statuses `cancelled` / `superseded` that don't exist in `RequirementStatus`. | INFO | Mapped per digest §6: `cancelled`→`DELETED`→SKIP, `superseded`→treated as immutable history→SKIP. Documented in `decide_action` and parameter-tested. |
 | 2026-04-30 | 5 | Spec §12.5 doesn't mention `AUTO_GENERATED` status (it exists in the actual enum). | INFO | Treated as `PENDING_REVIEW` for policy purposes (auto-apply on UPDATE_STATEMENT). |
 | 2026-04-30 | 5 | `pending_review` auto-apply emits `req_sync.auto_applied` audit event in addition to the silent update. | INFO | Spec says "silent + log to audit"; implementation writes both an audit row and a RequirementHistory entry. |
+| 2026-04-30 | 6 | Spec §13.4 MV DDL references non-existent `trace_links.target_requirement_id` and link types `derives_from` / `refines`. | INFO | MV migration uses actual polymorphic schema (`source_type` / `target_type`) and maps to enum members `decomposition` / `satisfaction`. Documented in 0025 migration docstring. |
+| 2026-04-30 | 6 | `coverage_exceptions` table created in Phase 1 uses `approved_by_id` / `approved_at` instead of spec's `admin_cosigned_by_id` / `admin_cosigned_at`. | INFO | Validator + MV treat `approved_by_id IS NOT NULL` as "admin cosigned". |
+| 2026-04-30 | 6 | APScheduler not installed in the runtime image — periodic MV refresh is a no-op. | INFO | Bulk-accept refreshes on demand. Add `pip install apscheduler` to pick up the 10-min cadence. |
 
 ## Out of Scope (explicitly deferred)
 
