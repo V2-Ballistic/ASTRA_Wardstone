@@ -76,9 +76,26 @@
   - [x] 2D — Workflow integrity, schema hygiene, triage cleanup (F-035, F-142, F-143/F-078, F-145, F-036, F-037, F-065, F-038, F-074, F-075, F-076, schema-drift) — full pytest 221/222 (only F-144 remains, routed to Phase 3); alembic head 0019; 6 of 7 originally-failing tests now passing; alembic check residual drift is cosmetic only (PK-redundant `ix_<table>_id` declarations + server-default notation deltas).
   - [ ] 2D — Hardening + sweep (F-010, F-011, F-012, F-024, F-025, F-026, F-027, F-028, F-029, F-030, F-033 onwards as scoped)
 - [ ] Phase 3 — Medium Severity
-- [ ] Phase 4 — Low Severity & Cleanup
+- [~] Phase 4 — Low Severity & Cleanup (branch `fix/phase-4-cleanup`, in progress)
 - [ ] Phase 5 — Info & Follow-ups
 - [ ] Post-remediation audit re-run
+
+## Phase 4 — verified-closed findings (covered by earlier phases)
+
+These findings were tagged in the original audit but were already covered
+by an earlier phase's fix. Verified by reading the current code at the
+start of Phase 4 (2026-04-30). NOT counted as Phase-4 fixes — counted as
+"verified-closed" for the post-audit comparison.
+
+| Finding | Verified-by | Verification |
+|---|---|---|
+| F-120 — seed router prefix collision | F-004 (`ad5a5b9`) | `routers/seed_project.py:49` declares `prefix="/admin/seed-project"`; the `/dev` prefix is gone. |
+| F-121 — silent except in main.py optional-router loop | F-002 (`d495747`) | `app/main.py:90` uses `logger.warning("Failed to load optional router %s: %s", _mod, exc)` instead of `pass`. Same pattern at lines 105, 109, 130 for dev / seed / model loaders. |
+| F-138 — workflow model imports unresolved | F-002 (`d495747`) | `app/models/__init__.py` re-exports the workflow models; `from app.models import ApprovalWorkflow` resolves. The module move that triggered the original break is fixed. |
+| F-124 — auth.login_success audit wrapped in try/except: pass | F-031 (Phase 2A) | `routers/auth.py:194` carries the comment `# F-124: no try/except here. record_event has its own retry / chain semantics; if it raises, the login surfaces the failure rather than silently dropping the audit trail.` and the `_audit(...)` call sits unwrapped. |
+| F-139 — info, no action | — | Original audit marked as informational. No fix expected. |
+| F-140 — info, no action | — | Original audit marked as informational. No fix expected. |
+| F-141 — focused review of services/interface/auto_requirements.py | F-144 (Phase 3A) | The focused review surfaced and fixed F-144's idempotency-key collision. `auto_requirements.py:989` carries the F-144 comment, and the env_emi parent uses `category="env_emi_parent"` at line 1072. The broader review concern is satisfied by the F-144 root-cause fix rather than a separate sweep. |
 
 ## Deferred items requiring user coordination
 
