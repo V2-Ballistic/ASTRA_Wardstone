@@ -298,11 +298,17 @@ def _next_id(db: Session, model, project_id: int, prefix: str, id_field: str) ->
 #  TEMPLATE GENERATION
 # ══════════════════════════════════════════════════════════════
 
-@router.post("/import/template")
+@router.get("/import/template")
 def generate_import_template(
     current_user: User = Depends(get_current_user),
 ):
-    """Generate a styled .xlsx import template with example data and validation."""
+    """Generate a styled .xlsx import template with example data and validation.
+
+    F-071: was previously POST. The verb is wrong — there's no
+    server-side state change here, just a deterministic file generated
+    from constants. POST blocked the endpoint from being a regular
+    download link / `<a href>` and required JS. GET is correct.
+    """
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.utils import get_column_letter

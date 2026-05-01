@@ -837,14 +837,20 @@ class TestAutoRequirementGeneration:
 class TestExcelImportExport:
 
     def test_download_template(self, client, auth_headers):
-        resp = client.post("/api/v1/interfaces/io/import/template", headers=auth_headers)
+        # F-071: route flipped from POST to GET (no body, idempotent).
+        resp = client.get("/api/v1/interfaces/io/import/template", headers=auth_headers)
         assert resp.status_code == 200
         assert "spreadsheetml" in resp.headers.get("content-type", "")
         assert len(resp.content) > 1000, "Template should be a real xlsx file"
 
+    def test_template_requires_auth(self, client):
+        # F-072: unauth call rejected.
+        resp = client.get("/api/v1/interfaces/io/import/template")
+        assert resp.status_code == 401
+
     def test_template_has_four_sheets(self, client, auth_headers):
         from openpyxl import load_workbook
-        resp = client.post("/api/v1/interfaces/io/import/template", headers=auth_headers)
+        resp = client.get("/api/v1/interfaces/io/import/template", headers=auth_headers)
         wb = load_workbook(filename=io.BytesIO(resp.content))
         assert "Units" in wb.sheetnames
         assert "Connectors" in wb.sheetnames

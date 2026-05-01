@@ -309,7 +309,10 @@ export const interfaceAPI = {
   // ══════════════════════════════════════
 
   downloadTemplate: () =>
-    api.post(`${IO}/import/template`, null, { responseType: 'blob' }),
+    // F-071: backend route flipped from POST to GET — the call had no
+    // body anyway. Frontend must update at the same time as the backend
+    // since they ship together; see backend/app/routers/interface_import.py.
+    api.get(`${IO}/import/template`, { responseType: 'blob' }),
 
   importPreview: (file: File) => {
     const formData = new FormData();
