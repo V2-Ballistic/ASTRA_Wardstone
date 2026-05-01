@@ -7,6 +7,16 @@ Create Date: 2025-06-01 00:00:00.000000
 Adds tables for AI embedding-based semantic analysis:
   - requirement_embeddings: cached vector embeddings per requirement
   - ai_suggestions: persisted AI suggestions (duplicates, trace links, verification)
+
+F-136: this revision intentionally jumps from 0002 to 0005. Numbers
+0003 and 0004 were never used — early in the project a couple of
+WIP migrations got `revision='0003'` / `'0004'` for prototyping but
+were squashed into 0005 before the migration history was committed.
+The chain is consistent (down_revision='0002') and `alembic history`
+walks 0001 → 0002 → 0005 → 0006 → … cleanly. Renumbering to close
+the gap would force-rename four migrations and update every
+`down_revision` in the chain — high churn for a cosmetic improvement,
+so we leave the gap and document it here.
 """
 
 from alembic import op

@@ -47,14 +47,14 @@ class SystemResponse(BaseModel):
     id: int
     system_id: str
     name: str
-    abbreviation: Optional[str]
-    description: Optional[str]
+    abbreviation: Optional[str] = None
+    description: Optional[str] = None
     system_type: str
-    system_type_custom: Optional[str]
+    system_type_custom: Optional[str] = None
     status: str
-    parent_system_id: Optional[int]
-    wbs_number: Optional[str]
-    responsible_org: Optional[str]
+    parent_system_id: Optional[int] = None
+    wbs_number: Optional[str] = None
+    responsible_org: Optional[str] = None
     project_id: int
     owner_id: int
     created_at: datetime
@@ -277,89 +277,89 @@ class UnitResponse(BaseModel):
     unit_id: str
     name: str
     designation: str
-    description: Optional[str]
+    description: Optional[str] = None
     part_number: str
     manufacturer: str
-    cage_code: Optional[str]
-    nsn: Optional[str]
-    drawing_number: Optional[str]
-    revision: Optional[str]
-    serial_number_prefix: Optional[str]
+    cage_code: Optional[str] = None
+    nsn: Optional[str] = None
+    drawing_number: Optional[str] = None
+    revision: Optional[str] = None
+    serial_number_prefix: Optional[str] = None
     unit_type: str
-    unit_type_custom: Optional[str]
+    unit_type_custom: Optional[str] = None
     status: str
-    heritage: Optional[str]
+    heritage: Optional[str] = None
     # Physical
-    mass_kg: Optional[float]
-    mass_max_kg: Optional[float]
-    dimensions_l_mm: Optional[float]
-    dimensions_w_mm: Optional[float]
-    dimensions_h_mm: Optional[float]
-    volume_cc: Optional[float]
+    mass_kg: Optional[float] = None
+    mass_max_kg: Optional[float] = None
+    dimensions_l_mm: Optional[float] = None
+    dimensions_w_mm: Optional[float] = None
+    dimensions_h_mm: Optional[float] = None
+    volume_cc: Optional[float] = None
     # Electrical
-    power_watts_nominal: Optional[float]
-    power_watts_peak: Optional[float]
-    power_watts_standby: Optional[float]
-    voltage_input_nominal: Optional[str]
-    voltage_input_min: Optional[float]
-    voltage_input_max: Optional[float]
-    voltage_ripple_max_mvpp: Optional[float]
-    current_inrush_amps: Optional[float]
-    current_steady_state_amps: Optional[float]
+    power_watts_nominal: Optional[float] = None
+    power_watts_peak: Optional[float] = None
+    power_watts_standby: Optional[float] = None
+    voltage_input_nominal: Optional[str] = None
+    voltage_input_min: Optional[float] = None
+    voltage_input_max: Optional[float] = None
+    voltage_ripple_max_mvpp: Optional[float] = None
+    current_inrush_amps: Optional[float] = None
+    current_steady_state_amps: Optional[float] = None
     # Thermal
-    temp_operating_min_c: Optional[float]
-    temp_operating_max_c: Optional[float]
-    temp_storage_min_c: Optional[float]
-    temp_storage_max_c: Optional[float]
-    temp_survival_min_c: Optional[float]
-    temp_survival_max_c: Optional[float]
+    temp_operating_min_c: Optional[float] = None
+    temp_operating_max_c: Optional[float] = None
+    temp_storage_min_c: Optional[float] = None
+    temp_storage_max_c: Optional[float] = None
+    temp_survival_min_c: Optional[float] = None
+    temp_survival_max_c: Optional[float] = None
     # Mechanical
-    vibration_random_grms: Optional[float]
-    vibration_sine_g_peak: Optional[float]
-    shock_mechanical_g: Optional[float]
-    shock_mechanical_duration_ms: Optional[float]
-    shock_pyrotechnic_g: Optional[float]
-    acceleration_max_g: Optional[float]
-    acoustic_spl_db: Optional[float]
+    vibration_random_grms: Optional[float] = None
+    vibration_sine_g_peak: Optional[float] = None
+    shock_mechanical_g: Optional[float] = None
+    shock_mechanical_duration_ms: Optional[float] = None
+    shock_pyrotechnic_g: Optional[float] = None
+    acceleration_max_g: Optional[float] = None
+    acoustic_spl_db: Optional[float] = None
     # Climate
-    humidity_min_pct: Optional[float]
-    humidity_max_pct: Optional[float]
-    altitude_operating_max_m: Optional[float]
-    altitude_storage_max_m: Optional[float]
-    pressure_min_kpa: Optional[float]
-    pressure_max_kpa: Optional[float]
-    sand_dust_exposed: Optional[bool]
-    salt_fog_exposed: Optional[bool]
-    fungus_resistant: Optional[bool]
+    humidity_min_pct: Optional[float] = None
+    humidity_max_pct: Optional[float] = None
+    altitude_operating_max_m: Optional[float] = None
+    altitude_storage_max_m: Optional[float] = None
+    pressure_min_kpa: Optional[float] = None
+    pressure_max_kpa: Optional[float] = None
+    sand_dust_exposed: Optional[bool] = None
+    salt_fog_exposed: Optional[bool] = None
+    fungus_resistant: Optional[bool] = None
     # EMI/EMC
-    emi_ce101_limit_dba: Optional[float]
-    emi_ce102_limit_dbua: Optional[float]
-    emi_cs101_limit_db: Optional[float]
-    emi_cs114_limit_dba: Optional[float]
-    emi_cs115_limit_v: Optional[float]
-    emi_cs116_limit_db: Optional[float]
-    emi_re101_limit_dba: Optional[float]
-    emi_re102_limit_dbm: Optional[float]
-    emi_rs101_limit_db: Optional[float]
-    emi_rs103_limit_vm: Optional[float]
-    esd_hbm_v: Optional[float]
-    esd_cdm_v: Optional[float]
+    emi_ce101_limit_dba: Optional[float] = None
+    emi_ce102_limit_dbua: Optional[float] = None
+    emi_cs101_limit_db: Optional[float] = None
+    emi_cs114_limit_dba: Optional[float] = None
+    emi_cs115_limit_v: Optional[float] = None
+    emi_cs116_limit_db: Optional[float] = None
+    emi_re101_limit_dba: Optional[float] = None
+    emi_re102_limit_dbm: Optional[float] = None
+    emi_rs101_limit_db: Optional[float] = None
+    emi_rs103_limit_vm: Optional[float] = None
+    esd_hbm_v: Optional[float] = None
+    esd_cdm_v: Optional[float] = None
     # Radiation
-    radiation_tid_krad: Optional[float]
-    radiation_see_let_threshold: Optional[float]
-    radiation_dd_mev_cm2_g: Optional[float]
+    radiation_tid_krad: Optional[float] = None
+    radiation_see_let_threshold: Optional[float] = None
+    radiation_dd_mev_cm2_g: Optional[float] = None
     # Reliability
-    mtbf_hours: Optional[float]
-    mtbf_environment: Optional[str]
-    design_life_years: Optional[float]
-    duty_cycle_pct: Optional[float]
-    derating_standard: Optional[str]
+    mtbf_hours: Optional[float] = None
+    mtbf_environment: Optional[str] = None
+    design_life_years: Optional[float] = None
+    duty_cycle_pct: Optional[float] = None
+    derating_standard: Optional[str] = None
     # References
-    datasheet_url: Optional[str]
-    specification_doc: Optional[str]
-    test_report_doc: Optional[str]
-    notes: Optional[str]
-    metadata_json: Optional[dict]
+    datasheet_url: Optional[str] = None
+    specification_doc: Optional[str] = None
+    test_report_doc: Optional[str] = None
+    notes: Optional[str] = None
+    metadata_json: Optional[dict] = None
     # FKs
     system_id: int
     project_id: int
@@ -458,8 +458,8 @@ class PinBusAssignmentResponse(BaseModel):
     pin_id: int
     bus_def_id: int
     pin_role: str
-    pin_role_custom: Optional[str]
-    notes: Optional[str]
+    pin_role_custom: Optional[str] = None
+    notes: Optional[str] = None
     created_at: datetime
     # Computed joins
     pin_number: Optional[str] = None
@@ -473,27 +473,27 @@ class PinBusAssignmentResponse(BaseModel):
 class PinResponse(BaseModel):
     id: int
     pin_number: str
-    pin_label: Optional[str]
+    pin_label: Optional[str] = None
     signal_name: str
     signal_type: str
-    signal_type_custom: Optional[str]
+    signal_type_custom: Optional[str] = None
     direction: str
-    pin_size: Optional[str]
-    contact_type: Optional[str]
-    voltage_nominal: Optional[str]
-    voltage_min: Optional[float]
-    voltage_max: Optional[float]
-    voltage_dc_bias: Optional[float]
-    current_nominal_amps: Optional[float]
-    current_max_amps: Optional[float]
-    impedance_ohms: Optional[float]
-    frequency_mhz: Optional[float]
-    rise_time_ns: Optional[float]
-    termination: Optional[str]
-    pull_up_down: Optional[str]
-    esd_protection: Optional[str]
-    description: Optional[str]
-    notes: Optional[str]
+    pin_size: Optional[str] = None
+    contact_type: Optional[str] = None
+    voltage_nominal: Optional[str] = None
+    voltage_min: Optional[float] = None
+    voltage_max: Optional[float] = None
+    voltage_dc_bias: Optional[float] = None
+    current_nominal_amps: Optional[float] = None
+    current_max_amps: Optional[float] = None
+    impedance_ohms: Optional[float] = None
+    frequency_mhz: Optional[float] = None
+    rise_time_ns: Optional[float] = None
+    termination: Optional[str] = None
+    pull_up_down: Optional[str] = None
+    esd_protection: Optional[str] = None
+    description: Optional[str] = None
+    notes: Optional[str] = None
     connector_id: int
     created_at: datetime
     # Mating LRU (FK + denormalized display fields for the UI so it doesn't
@@ -587,45 +587,45 @@ class ConnectorUpdate(BaseModel):
 
 class ConnectorResponse(BaseModel):
     id: int
-    connector_id: Optional[str]
+    connector_id: Optional[str] = None
     designator: str
-    name: Optional[str]
-    description: Optional[str]
+    name: Optional[str] = None
+    description: Optional[str] = None
     connector_type: str
-    connector_type_custom: Optional[str]
+    connector_type_custom: Optional[str] = None
     gender: str
-    mounting: Optional[str]
-    mounting_custom: Optional[str]
-    shell_size: Optional[str]
-    insert_arrangement: Optional[str]
+    mounting: Optional[str] = None
+    mounting_custom: Optional[str] = None
+    shell_size: Optional[str] = None
+    insert_arrangement: Optional[str] = None
     total_contacts: int
-    signal_contacts: Optional[int]
-    power_contacts: Optional[int]
-    coax_contacts: Optional[int]
-    fiber_contacts: Optional[int]
-    spare_contacts: Optional[int]
-    keying: Optional[str]
-    polarization: Optional[str]
-    coupling: Optional[str]
-    ip_rating: Optional[str]
-    operating_temp_min_c: Optional[float]
-    operating_temp_max_c: Optional[float]
-    mating_cycles: Optional[int]
-    shell_material: Optional[str]
-    shell_finish: Optional[str]
-    contact_finish: Optional[str]
-    mil_spec: Optional[str]
-    manufacturer_part_number: Optional[str]
-    connector_manufacturer: Optional[str]
-    backshell_type: Optional[str]
-    notes: Optional[str]
+    signal_contacts: Optional[int] = None
+    power_contacts: Optional[int] = None
+    coax_contacts: Optional[int] = None
+    fiber_contacts: Optional[int] = None
+    spare_contacts: Optional[int] = None
+    keying: Optional[str] = None
+    polarization: Optional[str] = None
+    coupling: Optional[str] = None
+    ip_rating: Optional[str] = None
+    operating_temp_min_c: Optional[float] = None
+    operating_temp_max_c: Optional[float] = None
+    mating_cycles: Optional[int] = None
+    shell_material: Optional[str] = None
+    shell_finish: Optional[str] = None
+    contact_finish: Optional[str] = None
+    mil_spec: Optional[str] = None
+    manufacturer_part_number: Optional[str] = None
+    connector_manufacturer: Optional[str] = None
+    backshell_type: Optional[str] = None
+    notes: Optional[str] = None
     # Ownership: connectors now belong to either a Unit (LRU-side, the old
     # behavior) or a Harness (mating connector, Phase 1 addition). unit_id
     # is nullable when owner_type='harness'. DB check constraint enforces
     # exactly one ownership at a time.
     unit_id: Optional[int] = None
     owner_type: str = "unit"
-    project_id: Optional[int]
+    project_id: Optional[int] = None
     created_at: datetime
     # Computed
     pin_count: int = 0
@@ -713,39 +713,39 @@ class BusDefinitionUpdate(BaseModel):
 
 class BusDefinitionResponse(BaseModel):
     id: int
-    bus_def_id: Optional[str]
+    bus_def_id: Optional[str] = None
     name: str
-    description: Optional[str]
+    description: Optional[str] = None
     protocol: str
-    protocol_custom: Optional[str]
-    protocol_version: Optional[str]
+    protocol_custom: Optional[str] = None
+    protocol_version: Optional[str] = None
     bus_role: str
-    bus_role_custom: Optional[str]
-    bus_address: Optional[str]
-    bus_address_secondary: Optional[str]
-    bus_name_network: Optional[str]
-    data_rate: Optional[str]
-    data_rate_actual_bps: Optional[int]
-    word_size_bits: Optional[int]
-    frame_size_max_bytes: Optional[int]
-    topology: Optional[str]
-    redundancy: Optional[str]
-    deterministic: Optional[bool]
-    fault_tolerance: Optional[str]
-    bus_loading_max_pct: Optional[float]
-    latency_budget_ms: Optional[float]
-    jitter_max_us: Optional[float]
-    error_rate_max: Optional[str]
-    encoding: Optional[str]
-    electrical_standard: Optional[str]
-    coupling: Optional[str]
-    stub_length_max_m: Optional[float]
-    bus_length_max_m: Optional[float]
-    termination_required: Optional[str]
-    notes: Optional[str]
-    metadata_json: Optional[dict]
+    bus_role_custom: Optional[str] = None
+    bus_address: Optional[str] = None
+    bus_address_secondary: Optional[str] = None
+    bus_name_network: Optional[str] = None
+    data_rate: Optional[str] = None
+    data_rate_actual_bps: Optional[int] = None
+    word_size_bits: Optional[int] = None
+    frame_size_max_bytes: Optional[int] = None
+    topology: Optional[str] = None
+    redundancy: Optional[str] = None
+    deterministic: Optional[bool] = None
+    fault_tolerance: Optional[str] = None
+    bus_loading_max_pct: Optional[float] = None
+    latency_budget_ms: Optional[float] = None
+    jitter_max_us: Optional[float] = None
+    error_rate_max: Optional[str] = None
+    encoding: Optional[str] = None
+    electrical_standard: Optional[str] = None
+    coupling: Optional[str] = None
+    stub_length_max_m: Optional[float] = None
+    bus_length_max_m: Optional[float] = None
+    termination_required: Optional[str] = None
+    notes: Optional[str] = None
+    metadata_json: Optional[dict] = None
     unit_id: int
-    project_id: Optional[int]
+    project_id: Optional[int] = None
     created_at: datetime
     updated_at: datetime
     # Computed
@@ -832,33 +832,33 @@ class MessageFieldBatchCreate(BaseModel):
 class MessageFieldResponse(BaseModel):
     id: int
     field_name: str
-    label: Optional[str]
-    description: Optional[str]
+    label: Optional[str] = None
+    description: Optional[str] = None
     data_type: str
-    data_type_custom: Optional[str]
-    byte_order: Optional[str]
-    word_number: Optional[int]
-    byte_offset: Optional[int]
-    bit_offset: Optional[int]
+    data_type_custom: Optional[str] = None
+    byte_order: Optional[str] = None
+    word_number: Optional[int] = None
+    byte_offset: Optional[int] = None
+    bit_offset: Optional[int] = None
     bit_length: int
-    unit_of_measure: Optional[str]
-    scale_factor: Optional[float]
-    offset_value: Optional[float]
-    lsb_value: Optional[float]
-    min_value: Optional[float]
-    max_value: Optional[float]
-    resolution: Optional[float]
-    accuracy: Optional[float]
-    default_value: Optional[str]
-    initial_value: Optional[str]
-    invalid_value: Optional[str]
-    stale_timeout_ms: Optional[float]
-    enum_values: Optional[dict]
-    bit_mask: Optional[str]
-    field_order: Optional[int]
-    is_padding: Optional[bool]
-    is_spare: Optional[bool]
-    notes: Optional[str]
+    unit_of_measure: Optional[str] = None
+    scale_factor: Optional[float] = None
+    offset_value: Optional[float] = None
+    lsb_value: Optional[float] = None
+    min_value: Optional[float] = None
+    max_value: Optional[float] = None
+    resolution: Optional[float] = None
+    accuracy: Optional[float] = None
+    default_value: Optional[str] = None
+    initial_value: Optional[str] = None
+    invalid_value: Optional[str] = None
+    stale_timeout_ms: Optional[float] = None
+    enum_values: Optional[dict] = None
+    bit_mask: Optional[str] = None
+    field_order: Optional[int] = None
+    is_padding: Optional[bool] = None
+    is_spare: Optional[bool] = None
+    notes: Optional[str] = None
     message_id: int
     created_at: datetime
 
@@ -933,12 +933,12 @@ class MessageDefinitionUpdate(BaseModel):
 
 class MessageSummary(BaseModel):
     id: int
-    msg_def_id: Optional[str]
+    msg_def_id: Optional[str] = None
     label: str
-    mnemonic: Optional[str]
+    mnemonic: Optional[str] = None
     direction: str
-    rate_hz: Optional[float]
-    word_count: Optional[int]
+    rate_hz: Optional[float] = None
+    word_count: Optional[int] = None
     field_count: int = 0
 
     class Config:
@@ -947,37 +947,37 @@ class MessageSummary(BaseModel):
 
 class MessageDefinitionResponse(BaseModel):
     id: int
-    msg_def_id: Optional[str]
+    msg_def_id: Optional[str] = None
     label: str
-    mnemonic: Optional[str]
-    description: Optional[str]
-    protocol_message_id: Optional[str]
-    message_id_hex: Optional[str]
-    subaddress: Optional[int]
-    word_count: Optional[int]
-    byte_count: Optional[int]
+    mnemonic: Optional[str] = None
+    description: Optional[str] = None
+    protocol_message_id: Optional[str] = None
+    message_id_hex: Optional[str] = None
+    subaddress: Optional[int] = None
+    word_count: Optional[int] = None
+    byte_count: Optional[int] = None
     direction: str
-    scheduling: Optional[str]
-    rate_hz: Optional[float]
-    rate_min_hz: Optional[float]
-    rate_max_hz: Optional[float]
-    latency_max_ms: Optional[float]
-    latency_typical_ms: Optional[float]
-    priority: Optional[str]
-    is_periodic: Optional[bool]
-    timeout_ms: Optional[float]
-    integrity_mechanism: Optional[str]
-    fragmentation: Optional[bool]
-    encryption: Optional[str]
-    authentication: Optional[str]
-    source_system_name: Optional[str]
-    target_system_name: Optional[str]
-    icd_reference: Optional[str]
-    notes: Optional[str]
-    metadata_json: Optional[dict]
+    scheduling: Optional[str] = None
+    rate_hz: Optional[float] = None
+    rate_min_hz: Optional[float] = None
+    rate_max_hz: Optional[float] = None
+    latency_max_ms: Optional[float] = None
+    latency_typical_ms: Optional[float] = None
+    priority: Optional[str] = None
+    is_periodic: Optional[bool] = None
+    timeout_ms: Optional[float] = None
+    integrity_mechanism: Optional[str] = None
+    fragmentation: Optional[bool] = None
+    encryption: Optional[str] = None
+    authentication: Optional[str] = None
+    source_system_name: Optional[str] = None
+    target_system_name: Optional[str] = None
+    icd_reference: Optional[str] = None
+    notes: Optional[str] = None
+    metadata_json: Optional[dict] = None
     bus_def_id: int
     unit_id: int
-    project_id: Optional[int]
+    project_id: Optional[int] = None
     created_at: datetime
     updated_at: datetime
     # Computed
@@ -1046,21 +1046,21 @@ class EnvironmentalSpecResponse(BaseModel):
     id: int
     unit_id: int
     category: str
-    standard: Optional[str]
-    standard_custom: Optional[str]
-    test_method: Optional[str]
-    test_level: Optional[str]
-    limit_value: Optional[float]
-    limit_unit: Optional[str]
-    limit_min: Optional[float]
-    limit_max: Optional[float]
-    frequency_range: Optional[str]
-    duration: Optional[str]
-    test_condition: Optional[str]
-    compliance_status: Optional[str]
-    test_report_ref: Optional[str]
-    notes: Optional[str]
-    auto_generated: Optional[bool]
+    standard: Optional[str] = None
+    standard_custom: Optional[str] = None
+    test_method: Optional[str] = None
+    test_level: Optional[str] = None
+    limit_value: Optional[float] = None
+    limit_unit: Optional[str] = None
+    limit_min: Optional[float] = None
+    limit_max: Optional[float] = None
+    frequency_range: Optional[str] = None
+    duration: Optional[str] = None
+    test_condition: Optional[str] = None
+    compliance_status: Optional[str] = None
+    test_report_ref: Optional[str] = None
+    notes: Optional[str] = None
+    auto_generated: Optional[bool] = None
     created_at: datetime
 
     class Config:
@@ -1146,28 +1146,28 @@ class WireResponse(BaseModel):
     id: int
     wire_number: str
     signal_name: str
-    wire_gauge: Optional[str]
-    wire_gauge_custom: Optional[str]
-    wire_color_primary: Optional[str]
-    wire_color_secondary: Optional[str]
-    wire_color_tertiary: Optional[str]
+    wire_gauge: Optional[str] = None
+    wire_gauge_custom: Optional[str] = None
+    wire_color_primary: Optional[str] = None
+    wire_color_secondary: Optional[str] = None
+    wire_color_tertiary: Optional[str] = None
     wire_type: str
-    wire_type_custom: Optional[str]
-    wire_spec: Optional[str]
-    wire_material: Optional[str]
-    insulation_material: Optional[str]
-    insulation_color: Optional[str]
-    length_m: Optional[float]
-    length_max_m: Optional[float]
+    wire_type_custom: Optional[str] = None
+    wire_spec: Optional[str] = None
+    wire_material: Optional[str] = None
+    insulation_material: Optional[str] = None
+    insulation_color: Optional[str] = None
+    length_m: Optional[float] = None
+    length_max_m: Optional[float] = None
     from_pin_id: int
     to_pin_id: int
     harness_id: int
-    splice_info: Optional[str]
-    termination_from: Optional[str]
-    termination_to: Optional[str]
-    heat_shrink: Optional[bool]
-    heat_shrink_size: Optional[str]
-    notes: Optional[str]
+    splice_info: Optional[str] = None
+    termination_from: Optional[str] = None
+    termination_to: Optional[str] = None
+    heat_shrink: Optional[bool] = None
+    heat_shrink_size: Optional[str] = None
+    notes: Optional[str] = None
     created_at: datetime
     # Phase 1: the matching pin on the harness's mating connector at each end.
     # Null until the wire is assigned to a harness endpoint (e.g., freshly
@@ -1271,35 +1271,35 @@ class WireHarnessUpdate(BaseModel):
 
 class WireHarnessResponse(BaseModel):
     id: int
-    harness_id: Optional[str]
+    harness_id: Optional[str] = None
     name: str
-    description: Optional[str]
-    cable_type: Optional[str]
-    cable_spec: Optional[str]
-    cable_part_number: Optional[str]
-    cable_manufacturer: Optional[str]
-    overall_length_m: Optional[float]
-    overall_length_max_m: Optional[float]
-    mass_kg: Optional[float]
-    outer_diameter_mm: Optional[float]
-    jacket_material: Optional[str]
-    jacket_material_custom: Optional[str]
-    jacket_color: Optional[str]
-    temp_rating_min_c: Optional[float]
-    temp_rating_max_c: Optional[float]
-    voltage_rating_v: Optional[float]
-    bend_radius_min_mm: Optional[float]
-    shield_type: Optional[str]
-    shield_coverage_pct: Optional[float]
-    shield_material: Optional[str]
-    overall_shield_termination: Optional[str]
-    conductor_count: Optional[int]
-    pair_count: Optional[int]
-    status: Optional[str]
-    drawing_number: Optional[str]
-    drawing_revision: Optional[str]
-    approved_by: Optional[str]
-    approval_date: Optional[datetime]
+    description: Optional[str] = None
+    cable_type: Optional[str] = None
+    cable_spec: Optional[str] = None
+    cable_part_number: Optional[str] = None
+    cable_manufacturer: Optional[str] = None
+    overall_length_m: Optional[float] = None
+    overall_length_max_m: Optional[float] = None
+    mass_kg: Optional[float] = None
+    outer_diameter_mm: Optional[float] = None
+    jacket_material: Optional[str] = None
+    jacket_material_custom: Optional[str] = None
+    jacket_color: Optional[str] = None
+    temp_rating_min_c: Optional[float] = None
+    temp_rating_max_c: Optional[float] = None
+    voltage_rating_v: Optional[float] = None
+    bend_radius_min_mm: Optional[float] = None
+    shield_type: Optional[str] = None
+    shield_coverage_pct: Optional[float] = None
+    shield_material: Optional[str] = None
+    overall_shield_termination: Optional[str] = None
+    conductor_count: Optional[int] = None
+    pair_count: Optional[int] = None
+    status: Optional[str] = None
+    drawing_number: Optional[str] = None
+    drawing_revision: Optional[str] = None
+    approved_by: Optional[str] = None
+    approval_date: Optional[datetime] = None
     # Legacy 2-endpoint fields — still populated for backward compat during
     # the Phase 1 → Phase 3 transition. New code should read from the
     # endpoints[] list below instead of these fields.
@@ -1307,7 +1307,7 @@ class WireHarnessResponse(BaseModel):
     from_connector_id: Optional[int] = None
     to_unit_id: Optional[int] = None
     to_connector_id: Optional[int] = None
-    project_id: Optional[int]
+    project_id: Optional[int] = None
     created_at: datetime
     updated_at: datetime
     # Phase 1: new Harness Overview attributes (match migration columns)
@@ -1366,10 +1366,10 @@ class HarnessEndpointResponse(BaseModel):
     id: int
     harness_id: int
     mating_connector_id: int
-    lru_connector_id: Optional[int]
-    label: Optional[str]
-    tail_length_m: Optional[float]
-    notes: Optional[str]
+    lru_connector_id: Optional[int] = None
+    label: Optional[str] = None
+    tail_length_m: Optional[float] = None
+    notes: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     # Computed joins — filled in by the router for UI convenience
@@ -1584,27 +1584,27 @@ class InterfaceUpdate(BaseModel):
 
 class InterfaceResponse(BaseModel):
     id: int
-    interface_id: Optional[str]
+    interface_id: Optional[str] = None
     name: str
-    description: Optional[str]
+    description: Optional[str] = None
     interface_type: str
-    interface_type_custom: Optional[str]
+    interface_type_custom: Optional[str] = None
     direction: str
     source_system_id: int
     target_system_id: int
     status: str
     criticality: str
-    icd_document_number: Optional[str]
-    icd_document_revision: Optional[str]
-    icd_section: Optional[str]
+    icd_document_number: Optional[str] = None
+    icd_document_revision: Optional[str] = None
+    icd_section: Optional[str] = None
     version: int
-    data_rate_aggregate: Optional[str]
-    latency_requirement_ms: Optional[float]
-    availability_requirement_pct: Optional[float]
-    notes: Optional[str]
-    metadata_json: Optional[dict]
-    project_id: Optional[int]
-    owner_id: Optional[int]
+    data_rate_aggregate: Optional[str] = None
+    latency_requirement_ms: Optional[float] = None
+    availability_requirement_pct: Optional[float] = None
+    notes: Optional[str] = None
+    metadata_json: Optional[dict] = None
+    project_id: Optional[int] = None
+    owner_id: Optional[int] = None
     created_at: datetime
     updated_at: datetime
     # Computed joins
@@ -1649,16 +1649,16 @@ class InterfaceReqLinkResponse(BaseModel):
     entity_id: int
     requirement_id: int
     link_type: str
-    link_type_custom: Optional[str]
-    description: Optional[str]
+    link_type_custom: Optional[str] = None
+    description: Optional[str] = None
     auto_generated: bool
-    auto_req_source: Optional[str]
-    auto_req_template: Optional[str]
-    confidence_score: Optional[float]
+    auto_req_source: Optional[str] = None
+    auto_req_template: Optional[str] = None
+    confidence_score: Optional[float] = None
     status: str
-    reviewed_by_id: Optional[int]
-    reviewed_at: Optional[datetime]
-    created_by_id: Optional[int]
+    reviewed_by_id: Optional[int] = None
+    reviewed_at: Optional[datetime] = None
+    created_by_id: Optional[int] = None
     created_at: datetime
     # Computed joins
     requirement_req_id: Optional[str] = None
@@ -1675,15 +1675,15 @@ class InterfaceReqLinkResponse(BaseModel):
 class AutoReqLogResponse(BaseModel):
     id: int
     project_id: int
-    trigger_entity_type: Optional[str]
-    trigger_entity_id: Optional[int]
-    trigger_action: Optional[str]
-    requirements_generated: Optional[int]
-    verifications_generated: Optional[int]
-    links_generated: Optional[int]
-    template_used: Optional[str]
-    generation_summary: Optional[dict]
-    user_id: Optional[int]
+    trigger_entity_type: Optional[str] = None
+    trigger_entity_id: Optional[int] = None
+    trigger_action: Optional[str] = None
+    requirements_generated: Optional[int] = None
+    verifications_generated: Optional[int] = None
+    links_generated: Optional[int] = None
+    template_used: Optional[str] = None
+    generation_summary: Optional[dict] = None
+    user_id: Optional[int] = None
     created_at: datetime
 
     class Config:
@@ -1697,18 +1697,18 @@ class AutoReqLogResponse(BaseModel):
 class InterfaceChangeImpactResponse(BaseModel):
     id: int
     project_id: int
-    change_type: Optional[str]
-    entity_type: Optional[str]
-    entity_id: Optional[int]
-    entity_description: Optional[str]
-    affected_requirements: Optional[dict]
-    affected_verifications: Optional[dict]
-    risk_level: Optional[str]
-    total_affected: Optional[int]
-    user_action: Optional[str]
+    change_type: Optional[str] = None
+    entity_type: Optional[str] = None
+    entity_id: Optional[int] = None
+    entity_description: Optional[str] = None
+    affected_requirements: Optional[dict] = None
+    affected_verifications: Optional[dict] = None
+    risk_level: Optional[str] = None
+    total_affected: Optional[int] = None
+    user_action: Optional[str] = None
     resolved: bool
-    resolved_at: Optional[datetime]
-    user_id: Optional[int]
+    resolved_at: Optional[datetime] = None
+    user_id: Optional[int] = None
     created_at: datetime
 
     class Config:

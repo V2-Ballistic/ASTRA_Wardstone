@@ -189,6 +189,33 @@ for the complete guide.
 
 ---
 
+## 8a. PostgreSQL extensions (F-137)
+
+`database/init.sql` runs once on first container start and enables two
+PostgreSQL extensions:
+
+| Extension | Purpose |
+|-----------|---------|
+| `uuid-ossp` | UUID generation primitives used by some legacy ID columns. |
+| `pg_trgm`   | Trigram indexes for fuzzy text search on requirement statements / titles. |
+
+These are required — the application assumes both are present and will
+fail at query time if `pg_trgm`'s `%` operator isn't available. If you
+restore an ASTRA database into a fresh PostgreSQL instance that doesn't
+go through `init.sql` (e.g. `pg_restore` into an empty cluster), enable
+both manually before starting the backend:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "pg_trgm";
+```
+
+The init script also contains zero `ALTER USER` / `CREATE ROLE` / seed-data
+statements (see REMEDIATION_LOG.md "New findings" entries from 2026-04-29
+for why that matters in the context of password-rotation diagnostics).
+
+---
+
 ## 9. Audit Trail (AU-2, AU-3, AU-9)
 
 The tamper-evident audit log uses a SHA-256 hash chain.  See the audit

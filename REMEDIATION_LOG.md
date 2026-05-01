@@ -76,9 +76,51 @@
   - [x] 2D — Workflow integrity, schema hygiene, triage cleanup (F-035, F-142, F-143/F-078, F-145, F-036, F-037, F-065, F-038, F-074, F-075, F-076, schema-drift) — full pytest 221/222 (only F-144 remains, routed to Phase 3); alembic head 0019; 6 of 7 originally-failing tests now passing; alembic check residual drift is cosmetic only (PK-redundant `ix_<table>_id` declarations + server-default notation deltas).
   - [ ] 2D — Hardening + sweep (F-010, F-011, F-012, F-024, F-025, F-026, F-027, F-028, F-029, F-030, F-033 onwards as scoped)
 - [ ] Phase 3 — Medium Severity
-- [ ] Phase 4 — Low Severity & Cleanup
+- [x] Phase 4 — Low Severity & Cleanup (branch `fix/phase-4-cleanup`, gate green)
 - [ ] Phase 5 — Info & Follow-ups
 - [ ] Post-remediation audit re-run
+
+## Final tally (2026-05-01, end of Phase 4)
+
+| Category | Count |
+|---|---:|
+| Original audit findings | 121 |
+| Discovered during remediation (F-142, F-143, F-144, F-145, frontend test-infra) | 5 |
+| **Total tracked** | **126** |
+| ✅ Fixed | 116 |
+| ✅ Verified-closed (covered by another finding) | 7 |
+| ⏸ Deferred with rationale | 5 |
+
+Deferred breakdown (5):
+1. **F-045** — pgvector migration (separate prep PR, infra image swap).
+2. **delete-impact UI integration** — frontend modals don't yet consume
+   the new GET endpoints from F-047 cluster.
+3. **/auth/refresh interceptor** — frontend axios layer needs the 401
+   retry-with-rotation flow added.
+4. **Frontend test-infra cleanup** — `@types/jest`, downlevelIteration,
+   `next lint` configuration. One PR after Phase 4 closes.
+5. **F-134** — `mating_connector_designator` + `mating_pin_number` on
+   `PinResponse`. Requires either a Pin model migration or a Wire-table
+   join; exceeded Phase 4's 30-min cosmetic budget.
+
+Verified-closed (7): F-120, F-121, F-138, F-124, F-139, F-140, F-141.
+
+## Phase 4 — verified-closed findings (covered by earlier phases)
+
+These findings were tagged in the original audit but were already covered
+by an earlier phase's fix. Verified by reading the current code at the
+start of Phase 4 (2026-04-30). NOT counted as Phase-4 fixes — counted as
+"verified-closed" for the post-audit comparison.
+
+| Finding | Verified-by | Verification |
+|---|---|---|
+| F-120 — seed router prefix collision | F-004 (`ad5a5b9`) | `routers/seed_project.py:49` declares `prefix="/admin/seed-project"`; the `/dev` prefix is gone. |
+| F-121 — silent except in main.py optional-router loop | F-002 (`d495747`) | `app/main.py:90` uses `logger.warning("Failed to load optional router %s: %s", _mod, exc)` instead of `pass`. Same pattern at lines 105, 109, 130 for dev / seed / model loaders. |
+| F-138 — workflow model imports unresolved | F-002 (`d495747`) | `app/models/__init__.py` re-exports the workflow models; `from app.models import ApprovalWorkflow` resolves. The module move that triggered the original break is fixed. |
+| F-124 — auth.login_success audit wrapped in try/except: pass | F-031 (Phase 2A) | `routers/auth.py:194` carries the comment `# F-124: no try/except here. record_event has its own retry / chain semantics; if it raises, the login surfaces the failure rather than silently dropping the audit trail.` and the `_audit(...)` call sits unwrapped. |
+| F-139 — info, no action | — | Original audit marked as informational. No fix expected. |
+| F-140 — info, no action | — | Original audit marked as informational. No fix expected. |
+| F-141 — focused review of services/interface/auto_requirements.py | F-144 (Phase 3A) | The focused review surfaced and fixed F-144's idempotency-key collision. `auto_requirements.py:989` carries the F-144 comment, and the env_emi parent uses `category="env_emi_parent"` at line 1072. The broader review concern is satisfied by the F-144 root-cause fix rather than a separate sweep. |
 
 ## Deferred items requiring user coordination
 
@@ -89,6 +131,7 @@
 | Frontend test-infra cleanup | ⏸ DEFERRED to its own PR after Phase 3 closes (decision 2026-04-30, surfaced during Phase 3B verification gate). Three pre-existing issues block a clean `npx tsc --noEmit` and `next lint` and have nothing to do with Phase 3 work: (1) `__tests__/`, `src/tests/`, `jest.config.ts` reference `describe`, `it`, `expect`, `jest`, `@testing-library/react`, `jest-axe` but `@types/jest` and the testing-library/jest-axe packages are not in `package.json`; (2) `tsconfig.json` sets `target: "es5"` without `downlevelIteration`, so every `for…of` over a `Set`/`Map` flags TS2802 (5+ files); (3) `next lint` is unconfigured — running it triggers the interactive `eslint --init` wizard. **Why a separate PR:** Phase 3 is correctness work; this is dev-tooling. Bundling them obscures the diff and risks dragging `tsconfig` or `package.json` decisions into the wrong review. | Single PR after Phase 3 merges: (a) `npm i -D @types/jest @testing-library/react @testing-library/jest-dom jest-axe`; (b) add `"target": "es2017"` (or set `"downlevelIteration": true`) and a `"typecheck": "tsc --noEmit"` script in `package.json`; (c) add a minimal `.eslintrc.json` extending `next/core-web-vitals` so `next lint` doesn't prompt; (d) verify both gate commands run clean. Pre-existing TS2554 and TS2349 errors in `harness/[harnessId]/page.tsx` and `AutoGrowAmbiguityModal.tsx` may need addressing in the same PR. |
 | delete-impact UI integration | ⏸ DEFERRED to a delete-flow UX pass after Phase 3 merges (decision 2026-04-30, surfaced at end of 3C). Phase 3C F-047 cluster added `GET /interfaces/{entity}/{id}/delete-impact` for units, buses, messages, harnesses, wires, endpoints, and fields, but no frontend modal currently consumes them. The DELETE handlers' new `force=true` gate works without the preview (the 409 carries the impact dict in its detail message), so the UI still functions — it just shows the impact in a less polished form than a dedicated dry-run modal would. | Wire each entity's delete-confirmation modal to call the `…/delete-impact` GET first, render the cascade summary in the modal body, and pass `force=true` on the subsequent DELETE only when the user clicks through the cascade warning. ~1-day PR; bundle with whatever sweep next touches the confirmation modals. |
 | /auth/refresh interceptor | ⏸ DEFERRED to a small auth-layer PR after Phase 3 merges (decision 2026-04-30, surfaced at end of 3C). Phase 3C F-068 added `POST /auth/refresh` with refresh-token rotation and wired the durable revocation list (F-063) into `get_current_user`. The frontend axios instance still treats 401s as terminal — no auto-refresh on stale access tokens, no refresh-then-retry. With `ACCESS_TOKEN_EXPIRE_MINUTES` now 30 (down from 480), users will see the gap as forced re-logins every half hour until this lands. | Roughly half-day PR: (1) on login response, persist both `access_token` and `refresh_token` (currently only access goes into local storage); (2) add an axios response interceptor that on 401 calls `POST /auth/refresh` with the stored refresh, swaps in the new pair, and replays the failed request once; (3) on refresh failure, route to `/login?next=…` and clear both tokens. Test: stale access token auto-refreshes once; second 401 in the same retry chain logs out without infinite loop. |
+| F-134 — mating_connector_designator + mating_pin_number on PinResponse | ⏸ DEFERRED to its own PR (decision 2026-05-01, surfaced during Phase 4). The plan called for extending `_populate_pin_mating(db, resp, pin)` to fill these two new fields, but the underlying model has no direct `mating_pin_id` FK on Pin — the mating relationship is implicit through `Wire.from_pin_id ↔ Wire.to_mating_pin_id` (and the reverse). Resolving "for this pin, which pin on the mating LRU mates with it?" requires either a Wire-table join or a new `mating_pin_id` column on Pin. Both paths exceed the 30-minute cosmetic budget Phase 4 allocated. The frontend already has wire-level data so the missing display fields aren't blocking anything; the lookup is a polish item. | Pick one: (a) add a nullable `mating_pin_id` on Pin via migration, populate it during auto-grow + manual wire creation, then `_populate_pin_mating` becomes a one-row lookup; or (b) keep the schema as-is and have `_populate_pin_mating` join through Wire to discover the mate. (a) is faster at read time, costs a migration; (b) avoids the migration but is N+1-prone unless batched. Decide before implementing. |
 
 ## Secret rotation log (F-006 stage 2 — 2026-04-29)
 

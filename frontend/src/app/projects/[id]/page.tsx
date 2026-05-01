@@ -428,14 +428,20 @@ export default function ProjectDashboard() {
   };
 
   // ── Derived data ──
-  // Use by_level from stats API if available, else compute client-side
-  const byLevel: Record<string, number> = stats?.by_level || {};
-  if (!stats?.by_level) {
-    requirements.forEach((r: any) => {
-      const lv = r.level?.value || r.level || 'L1';
-      byLevel[lv] = (byLevel[lv] || 0) + 1;
-    });
-  }
+  // F-127: explicit branch — use the API's by_level dict as-is when
+  // present, else compute one client-side. The pre-fix code aliased
+  // the API object and then mutated it via `byLevel[lv] = …`, which
+  // (a) mutated the response back to the SWR cache for some shapes
+  // and (b) made it ambiguous whether the displayed counts came from
+  // the server or the client. Both branches now produce a fresh
+  // object the renderer owns.
+  const byLevel: Record<string, number> = stats?.by_level
+    ? { ...stats.by_level }
+    : requirements.reduce<Record<string, number>>((acc, r: any) => {
+        const lv = r.level?.value || r.level || 'L1';
+        acc[lv] = (acc[lv] || 0) + 1;
+        return acc;
+      }, {});
 
   const qualityScores = requirements.map((r: any) => r.quality_score || 0).filter((s: number) => s > 0);
   const qualityMin = qualityScores.length > 0 ? Math.min(...qualityScores) : 0;

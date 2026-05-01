@@ -26,6 +26,17 @@ from sqlalchemy.orm import Session
 from app.models.auth_models import MFAConfig
 from app.services.encryption import derive_key, _resolve_raw_key
 
+# F-125: qrcode is optional. Resolve once at import time and gate the
+# QR-data-URI branch on this sentinel instead of doing a `try: import
+# qrcode  # type: ignore` every call (the per-call import paid the
+# import cost on every cache miss, and the `# type: ignore` swallowed
+# unrelated typing errors). Module-top conditional means a real type
+# checker can reason about the None branch.
+try:
+    import qrcode as _qrcode
+except ImportError:
+    _qrcode = None
+
 # ── Encryption key — PBKDF2 of ENCRYPTION_KEY or SECRET_KEY,
 #   salted distinctly so MFA Fernet key ≠ field-encryption Fernet key.
 _MFA_SALT = b"astra-mfa-v1"
@@ -73,15 +84,12 @@ def generate_mfa_secret(db: Session, user_id: int) -> dict:
 
     # Generate QR data URI (optional — uses qrcode lib if available)
     qr_data_uri = ""
-    try:
-        import qrcode  # type: ignore
-        img = qrcode.make(provisioning_uri)
+    if _qrcode is not None:
+        img = _qrcode.make(provisioning_uri)
         buf = BytesIO()
         img.save(buf, format="PNG")
         b64 = base64.b64encode(buf.getvalue()).decode()
         qr_data_uri = f"data:image/png;base64,{b64}"
-    except ImportError:
-        pass  # QR code generation optional
 
     return {
         "secret": secret,

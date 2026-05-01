@@ -154,10 +154,14 @@ function ReportCard({ report, projectId, projectCode }: {
         project_id: String(projectId),
       };
 
-      // Format (status-dashboard is always pdf)
-      if (report.key !== 'status-dashboard') {
-        params.format = format;
-      }
+      // F-130: always send the user-clicked format. The pre-fix
+      // condition omitted `format` for status-dashboard with a comment
+      // claiming that endpoint "is always pdf" — but the backend
+      // accepts the same xlsx/pdf/html params for it as for every
+      // other report. Skipping the param made the user's selection
+      // silently invisible: clicking "xlsx" on status-dashboard
+      // returned pdf without warning.
+      params.format = format;
 
       // Compliance framework
       if (report.key === 'compliance' && framework) {
