@@ -79,7 +79,15 @@ def analyze_quality_deep(
                     location=iss.get("location", ""),
                     suggestion=iss.get("suggestion", ""),
                 ))
-            except Exception:
+            except Exception as exc:
+                # F-081: a `pass`/`continue` here pre-fix made AI quality
+                # issues vanish silently if the LLM emitted a row with
+                # an unexpected shape (missing field, wrong type). The
+                # fallback is fine — skip the row so the rest of the
+                # report still surfaces — but log so we notice the
+                # mismatch rather than learning months later that
+                # 30% of LLM rows have been silently discarded.
+                logger.debug("Skipping malformed AI quality issue %r: %s", iss, exc)
                 continue
 
         result = DeepQualityResult(

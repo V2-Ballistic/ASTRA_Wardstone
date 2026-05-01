@@ -523,7 +523,10 @@ class BusProtocol(str, enum.Enum):
     FIBRE_CHANNEL = "fibre_channel"
     JTAG = "jtag"
     SWD = "swd"
-    ONEWIRE = "oneWire"
+    # F-118: storage value normalised from "oneWire" to "one_wire" so
+    # the bus_protocol enum is uniformly snake_case (the camelCase
+    # outlier broke partial-string filters and stood out in JSON dumps).
+    ONEWIRE = "one_wire"
     ANALOG_0_5V = "analog_0_5v"
     ANALOG_4_20MA = "analog_4_20ma"
     ANALOG_0_10V = "analog_0_10v"
