@@ -19,11 +19,13 @@ import {
   ChevronDown, ChevronRight, LogOut, Shield, FolderOpen,
   Sparkles, Search, Zap, CheckSquare, FileBarChart, Upload,
   Users, Home, ChevronLeft, Loader2, Cable, Package, RefreshCw,
+  ShieldCheck,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useAuth } from '@/lib/auth';
 import { projectsAPI, dashboardAPI } from '@/lib/api';
 import { reqSyncAPI } from '@/lib/req-sync-api';
+import { coverageAPI } from '@/lib/coverage-api';
 
 // ══════════════════════════════════════
 //  Types
@@ -80,6 +82,14 @@ function getProjectNav(projectId: number): NavGroup[] {
         { href: `${p}/baselines`, label: 'Baselines', icon: Archive },
         { href: `${p}/reports`, label: 'Reports', icon: FileBarChart },
         { href: `${p}/import`, label: 'Import', icon: Upload },
+        // Phase 6 — INTF-002 Source Coverage dashboard. Badge = total
+        // warning + error orphans across all levels.
+        {
+          href: `${p}/coverage`,
+          label: 'Coverage',
+          icon: ShieldCheck,
+          countKey: 'coverage_issues',
+        },
       ],
     },
     {
@@ -159,6 +169,11 @@ export default function Sidebar() {
       // Phase 5 — pending sync proposal count for the sidebar badge.
       reqSyncAPI.pendingCount(projectId).then(n => {
         setCounts(prev => ({ ...prev, sync_proposals: n }));
+      }).catch(() => {});
+
+      // Phase 6 — coverage badge: warning + error orphans across all levels.
+      coverageAPI.badgeCount(projectId).then(n => {
+        setCounts(prev => ({ ...prev, coverage_issues: n }));
       }).catch(() => {});
     } else {
       setProject(null);
