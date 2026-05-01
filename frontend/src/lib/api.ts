@@ -173,7 +173,7 @@ export const adminAPI = {
     is_active?: boolean;
   }) => api.patch(`/admin/users/${id}`, data),
 
-  deactivateUser: (id: number) => api.delete(`/admin/users/${id}`),
+  deactivateUser: (id: number) => api.post(`/admin/users/${id}/deactivate`),
 
   addProjectMember: (projectId: number, data: {
     user_id: number;

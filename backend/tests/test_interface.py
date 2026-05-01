@@ -343,16 +343,26 @@ class TestUnitCRUD:
         assert resp.json()["mass_kg"] == 3.1
 
     def test_delete_unit_preview(self, client, auth_headers, test_unit, test_connector_a):
-        resp = client.delete(
-            f"/api/v1/interfaces/units/{test_unit.id}",
-            params={"confirm": False},
+        # F-047: preview moved from `DELETE …?confirm=false` to a separate
+        # `GET …/delete-impact` endpoint so DELETE always means destruction.
+        resp = client.get(
+            f"/api/v1/interfaces/units/{test_unit.id}/delete-impact",
             headers=auth_headers,
         )
         assert resp.status_code == 200
         data = resp.json()
-        assert data["status"] == "preview"
+        assert data["entity"] == "unit"
         assert data["impact"]["connectors"] >= 1
         assert data["impact"]["pins"] >= 5
+
+    def test_delete_unit_force_gate_blocks_without_force(self, client, auth_headers, test_unit, test_connector_a):
+        # F-047: a unit with a connector cascades; DELETE without force=true
+        # must 409 instead of silently nuking the children.
+        resp = client.delete(
+            f"/api/v1/interfaces/units/{test_unit.id}",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 409, resp.text
 
     def test_get_unit_specifications(self, client, auth_headers, test_unit):
         resp = client.get(f"/api/v1/interfaces/units/{test_unit.id}/specifications", headers=auth_headers)
@@ -517,14 +527,14 @@ class TestBusDefinition:
         assert data["message_count"] >= 1
 
     def test_delete_bus_preview(self, client, auth_headers, test_bus, test_message):
-        resp = client.delete(
-            f"/api/v1/interfaces/buses/{test_bus.id}",
-            params={"confirm": False},
+        # F-047 contract: preview is a separate GET endpoint.
+        resp = client.get(
+            f"/api/v1/interfaces/buses/{test_bus.id}/delete-impact",
             headers=auth_headers,
         )
         assert resp.status_code == 200
         data = resp.json()
-        assert data["status"] == "preview"
+        assert data["entity"] == "bus_definition"
         assert data["impact"]["messages"] >= 1
 
 
@@ -665,13 +675,13 @@ class TestWireHarness:
         assert resp.status_code == 400, "Wire with wrong connector pins must be rejected"
 
     def test_delete_harness_preview(self, client, auth_headers, test_harness):
-        resp = client.delete(
-            f"/api/v1/interfaces/harnesses/{test_harness.id}",
-            params={"confirm": False},
+        # F-047 contract: preview is a separate GET endpoint.
+        resp = client.get(
+            f"/api/v1/interfaces/harnesses/{test_harness.id}/delete-impact",
             headers=auth_headers,
         )
         assert resp.status_code == 200
-        assert resp.json()["status"] == "preview"
+        assert resp.json()["entity"] == "wire_harness"
 
 
 # ══════════════════════════════════════════════════════════════

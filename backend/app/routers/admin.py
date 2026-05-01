@@ -136,22 +136,50 @@ def update_user(user_id: int, data: AdminUserUpdate, request: Request,
     return user
 
 
-@router.delete("/users/{user_id}", status_code=200,
-               dependencies=[Depends(require_permission("users.manage"))])
+@router.post("/users/{user_id}/deactivate", status_code=200,
+             dependencies=[Depends(require_permission("users.manage"))])
 def deactivate_user(user_id: int, request: Request,
                     db: Session = Depends(get_db),
                     current_user: User = Depends(get_current_user)):
+    """
+    Deactivate a user.
+
+    F-073: was previously a `DELETE /users/{id}` route, which conflicted
+    with REST conventions (DELETE implies destruction; deactivation is a
+    state flip the row survives) and didn't cascade — leaving stale
+    `project_members` rows for a now-inactive user. The cascade matters
+    because membership rows authorize project access; an "inactive" user
+    whose memberships are still live can have their token replayed and
+    pass `_check_membership` until the JWT expires.
+
+    The route is now `POST /users/{id}/deactivate` and removes the
+    user's `project_members` rows in the same transaction.
+    """
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(404, "User not found")
     if user.id == current_user.id:
         raise HTTPException(400, "Cannot deactivate yourself")
+
     user.is_active = False
+
+    membership_count = 0
+    if ProjectMember is not None:
+        membership_count = db.query(ProjectMember).filter(
+            ProjectMember.user_id == user_id
+        ).delete(synchronize_session=False)
+
     db.commit()
 
     record_event(db, "user.deactivated", "user", user_id, current_user.id,
-                 {"username": user.username}, request=request)
-    return {"status": "deactivated", "user_id": user_id, "username": user.username}
+                 {"username": user.username, "memberships_removed": membership_count},
+                 request=request)
+    return {
+        "status": "deactivated",
+        "user_id": user_id,
+        "username": user.username,
+        "memberships_removed": membership_count,
+    }
 
 
 # ══════════════════════════════════════

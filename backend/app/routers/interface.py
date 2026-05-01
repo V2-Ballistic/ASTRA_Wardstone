@@ -740,59 +740,77 @@ def update_unit(
     return resp
 
 
-@router.delete("/units/{unit_pk}", status_code=200)
-def delete_unit(
-    unit_pk: int,
-    confirm: bool = Query(False),
-    request: Request = None,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("interfaces.delete")),
-):
-    unit = db.query(Unit).filter(Unit.id == unit_pk).first()
-    if not unit:
-        raise HTTPException(404, "Unit not found")
-    _assert_member_for_entity(db, current_user, unit)
-
-    # Impact preview
-    conn_count = db.query(func.count(Connector.id)).filter(Connector.unit_id == unit.id).scalar()
-    bus_count = db.query(func.count(BusDefinition.id)).filter(BusDefinition.unit_id == unit.id).scalar()
-    pin_count = db.query(func.count(Pin.id)).join(Connector).filter(Connector.unit_id == unit.id).scalar()
+def _impact_unit(db: Session, unit: Unit) -> dict:
+    """Cascade impact for a unit deletion. Used by GET …/delete-impact
+    and the DELETE force-gate. Pure read — no writes."""
+    conn_count = db.query(func.count(Connector.id)).filter(Connector.unit_id == unit.id).scalar() or 0
+    bus_count = db.query(func.count(BusDefinition.id)).filter(BusDefinition.unit_id == unit.id).scalar() or 0
+    pin_count = db.query(func.count(Pin.id)).join(Connector).filter(Connector.unit_id == unit.id).scalar() or 0
     wire_count = (
         db.query(func.count(Wire.id))
         .join(Pin, Wire.from_pin_id == Pin.id)
         .join(Connector)
         .filter(Connector.unit_id == unit.id)
         .scalar()
-    )
+    ) or 0
+    return {
+        "connectors": conn_count,
+        "pins": pin_count,
+        "bus_definitions": bus_count,
+        "wires_affected": wire_count,
+    }
 
-    if not confirm:
-        return {
-            "status": "preview",
-            "message": "Use confirm=true to proceed with deletion",
-            "impact": {
-                "connectors": conn_count,
-                "pins": pin_count,
-                "bus_definitions": bus_count,
-                "wires_affected": wire_count,
-            },
-        }
+
+@router.get("/units/{unit_pk}/delete-impact")
+def get_unit_delete_impact(
+    unit_pk: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """F-047: read-only preview of what `DELETE /units/{pk}` would
+    cascade. Pre-Phase-3C the same dict was returned by the DELETE
+    endpoint when called with `confirm=false`, conflating two semantics
+    (read vs. write) under one verb. Now: GET previews, DELETE always
+    deletes (gated by `force=true` if there's a cascade)."""
+    unit = db.query(Unit).filter(Unit.id == unit_pk).first()
+    if not unit:
+        raise HTTPException(404, "Unit not found")
+    _assert_member_for_entity(db, current_user, unit)
+    return {"entity": "unit", "id": unit_pk, "impact": _impact_unit(db, unit)}
+
+
+@router.delete("/units/{unit_pk}", status_code=200)
+def delete_unit(
+    unit_pk: int,
+    force: bool = Query(False),
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("interfaces.delete")),
+):
+    """F-047: contract change. DELETE always deletes; pass `force=true`
+    to override the cascade-safety gate. Use GET …/delete-impact for a
+    dry-run."""
+    unit = db.query(Unit).filter(Unit.id == unit_pk).first()
+    if not unit:
+        raise HTTPException(404, "Unit not found")
+    _assert_member_for_entity(db, current_user, unit)
+
+    impact = _impact_unit(db, unit)
+    if any(impact.values()) and not force:
+        raise HTTPException(
+            409,
+            f"Unit has dependent entities ({impact}). "
+            f"Use force=true to cascade-delete, or GET /units/{unit_pk}/delete-impact to inspect.",
+        )
 
     _audit(db, "unit.deleted", "unit", unit.id, current_user.id,
-           {"unit_id": unit.unit_id, "designation": unit.designation},
+           {"unit_id": unit.unit_id, "designation": unit.designation, "force": force, "cascade": impact},
            project_id=unit.project_id, request=request)
 
     _cascade_delete_unit(db, unit)
     db.commit()
 
-    return {
-        "status": "deleted",
-        "id": unit_pk,
-        "cascade": {
-            "connectors": conn_count,
-            "pins": pin_count,
-            "bus_definitions": bus_count,
-        },
-    }
+    return {"status": "deleted", "id": unit_pk, "cascade": impact}
 
 
 @router.get("/units/{unit_pk}/specifications")
@@ -1733,41 +1751,56 @@ def update_bus(
     return resp
 
 
-@router.delete("/buses/{bus_pk}", status_code=200)
-def delete_bus(
+def _impact_bus(db: Session, bus_pk: int) -> dict:
+    return {
+        "messages": db.query(func.count(MessageDefinition.id)).filter(
+            MessageDefinition.bus_def_id == bus_pk
+        ).scalar() or 0,
+        "pin_assignments": db.query(func.count(PinBusAssignment.id)).filter(
+            PinBusAssignment.bus_def_id == bus_pk
+        ).scalar() or 0,
+        "requirement_links": db.query(func.count(InterfaceRequirementLink.id)).filter(
+            InterfaceRequirementLink.entity_type == "bus_definition",
+            InterfaceRequirementLink.entity_id == bus_pk,
+        ).scalar() or 0,
+    }
+
+
+@router.get("/buses/{bus_pk}/delete-impact")
+def get_bus_delete_impact(
     bus_pk: int,
-    confirm: bool = Query(False),
-    request: Request = None,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("interfaces.delete")),
+    current_user: User = Depends(get_current_user),
 ):
     bd = db.query(BusDefinition).filter(BusDefinition.id == bus_pk).first()
     if not bd:
         raise HTTPException(404, "Bus definition not found")
     _assert_member_for_entity(db, current_user, bd)
+    return {"entity": "bus_definition", "id": bus_pk, "impact": _impact_bus(db, bus_pk)}
 
-    msg_count = db.query(func.count(MessageDefinition.id)).filter(
-        MessageDefinition.bus_def_id == bus_pk
-    ).scalar()
-    pa_count = db.query(func.count(PinBusAssignment.id)).filter(
-        PinBusAssignment.bus_def_id == bus_pk
-    ).scalar()
-    req_link_count = db.query(func.count(InterfaceRequirementLink.id)).filter(
-        InterfaceRequirementLink.entity_type == "bus_definition",
-        InterfaceRequirementLink.entity_id == bus_pk,
-    ).scalar()
 
-    if not confirm:
-        return {
-            "status": "preview",
-            "impact": {
-                "messages": msg_count,
-                "pin_assignments": pa_count,
-                "requirement_links": req_link_count,
-            },
-        }
+@router.delete("/buses/{bus_pk}", status_code=200)
+def delete_bus(
+    bus_pk: int,
+    force: bool = Query(False),
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("interfaces.delete")),
+):
+    """F-047: see delete_unit for the contract rationale."""
+    bd = db.query(BusDefinition).filter(BusDefinition.id == bus_pk).first()
+    if not bd:
+        raise HTTPException(404, "Bus definition not found")
+    _assert_member_for_entity(db, current_user, bd)
 
-    # Cascade: fields → messages, pin_assignments
+    impact = _impact_bus(db, bus_pk)
+    if any(impact.values()) and not force:
+        raise HTTPException(
+            409,
+            f"Bus has dependent entities ({impact}). "
+            f"Use force=true to cascade-delete, or GET /buses/{bus_pk}/delete-impact to inspect.",
+        )
+
     msgs = db.query(MessageDefinition).filter(MessageDefinition.bus_def_id == bus_pk).all()
     for m in msgs:
         db.query(MessageField).filter(MessageField.message_id == m.id).delete()
@@ -1779,12 +1812,12 @@ def delete_bus(
     ).delete()
 
     _audit(db, "bus.deleted", "bus_definition", bd.id, current_user.id,
-           {"bus_def_id": bd.bus_def_id, "messages_deleted": msg_count},
+           {"bus_def_id": bd.bus_def_id, "force": force, "cascade": impact},
            project_id=bd.project_id, request=request)
 
     db.delete(bd)
     db.commit()
-    return {"status": "deleted", "id": bus_pk, "messages_deleted": msg_count}
+    return {"status": "deleted", "id": bus_pk, "cascade": impact}
 
 
 @router.post("/buses/{bus_pk}/pin-assignments", response_model=List[PinBusAssignmentResponse], status_code=201)
@@ -2090,27 +2123,52 @@ def update_message(
     return resp
 
 
-@router.delete("/messages/{msg_pk}", status_code=200)
-def delete_message(
+def _impact_message(db: Session, msg_pk: int) -> dict:
+    return {
+        "fields": db.query(func.count(MessageField.id)).filter(
+            MessageField.message_id == msg_pk
+        ).scalar() or 0,
+        "requirement_links": db.query(func.count(InterfaceRequirementLink.id)).filter(
+            InterfaceRequirementLink.entity_type == "message_definition",
+            InterfaceRequirementLink.entity_id == msg_pk,
+        ).scalar() or 0,
+    }
+
+
+@router.get("/messages/{msg_pk}/delete-impact")
+def get_message_delete_impact(
     msg_pk: int,
-    confirm: bool = Query(False),
-    request: Request = None,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("interfaces.delete")),
+    current_user: User = Depends(get_current_user),
 ):
     msg = db.query(MessageDefinition).filter(MessageDefinition.id == msg_pk).first()
     if not msg:
         raise HTTPException(404, "Message definition not found")
     _assert_member_for_entity(db, current_user, msg)
+    return {"entity": "message_definition", "id": msg_pk, "impact": _impact_message(db, msg_pk)}
 
-    fc = db.query(func.count(MessageField.id)).filter(MessageField.message_id == msg_pk).scalar()
-    rl = db.query(func.count(InterfaceRequirementLink.id)).filter(
-        InterfaceRequirementLink.entity_type == "message_definition",
-        InterfaceRequirementLink.entity_id == msg_pk,
-    ).scalar()
 
-    if not confirm:
-        return {"status": "preview", "impact": {"fields": fc, "requirement_links": rl}}
+@router.delete("/messages/{msg_pk}", status_code=200)
+def delete_message(
+    msg_pk: int,
+    force: bool = Query(False),
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("interfaces.delete")),
+):
+    """F-047: see delete_unit for the contract rationale."""
+    msg = db.query(MessageDefinition).filter(MessageDefinition.id == msg_pk).first()
+    if not msg:
+        raise HTTPException(404, "Message definition not found")
+    _assert_member_for_entity(db, current_user, msg)
+
+    impact = _impact_message(db, msg_pk)
+    if any(impact.values()) and not force:
+        raise HTTPException(
+            409,
+            f"Message has dependent entities ({impact}). "
+            f"Use force=true to cascade-delete, or GET /messages/{msg_pk}/delete-impact to inspect.",
+        )
 
     db.query(MessageField).filter(MessageField.message_id == msg_pk).delete()
     db.query(InterfaceRequirementLink).filter(
@@ -2119,12 +2177,12 @@ def delete_message(
     ).delete()
 
     _audit(db, "message.deleted", "message_definition", msg.id, current_user.id,
-           {"msg_def_id": msg.msg_def_id, "fields_deleted": fc},
+           {"msg_def_id": msg.msg_def_id, "force": force, "cascade": impact},
            project_id=msg.project_id, request=request)
 
     db.delete(msg)
     db.commit()
-    return {"status": "deleted", "id": msg_pk, "fields_deleted": fc}
+    return {"status": "deleted", "id": msg_pk, "cascade": impact}
 
 
 # ══════════════════════════════════════════════════════════════
@@ -2190,26 +2248,73 @@ def update_field(
     return MessageFieldResponse.model_validate(field)
 
 
+def _impact_field(db: Session, field_pk: int) -> dict:
+    return {
+        "requirement_links_flagged": db.query(func.count(InterfaceRequirementLink.id)).filter(
+            InterfaceRequirementLink.entity_type == "message_field",
+            InterfaceRequirementLink.entity_id == field_pk,
+        ).scalar() or 0,
+    }
+
+
+@router.get("/fields/{field_pk}/delete-impact")
+def get_field_delete_impact(
+    field_pk: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """F-048: preview for `DELETE /fields/{pk}`. The link rows aren't
+    destroyed — they're flipped to `pending_review` so the auto-derived
+    requirement gets re-triaged after the field changes shape."""
+    field = db.query(MessageField).filter(MessageField.id == field_pk).first()
+    if not field:
+        raise HTTPException(404, "Message field not found")
+    _assert_member_for_entity(db, current_user, field)
+    return {"entity": "message_field", "id": field_pk, "impact": _impact_field(db, field_pk)}
+
+
 @router.delete("/fields/{field_pk}", status_code=200)
 def delete_field(
     field_pk: int,
+    force: bool = Query(False),
+    request: Request = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("interfaces.delete")),
 ):
+    """F-048: gained the same `force=true` gate + audit emit as the
+    other DELETE handlers. Pre-fix this route silently flipped any
+    auto-requirement links to `pending_review` and dropped no audit
+    row, so a deletion that quietly invalidated downstream traceability
+    left no breadcrumb."""
     field = db.query(MessageField).filter(MessageField.id == field_pk).first()
     if not field:
         raise HTTPException(404, "Message field not found")
     _assert_member_for_entity(db, current_user, field)
 
-    # Mark linked auto-requirements for review
+    impact = _impact_field(db, field_pk)
+    if any(impact.values()) and not force:
+        raise HTTPException(
+            409,
+            f"Field has dependent requirement links ({impact}). "
+            f"Use force=true to flag them for review and delete, "
+            f"or GET /fields/{field_pk}/delete-impact to inspect.",
+        )
+
     db.query(InterfaceRequirementLink).filter(
         InterfaceRequirementLink.entity_type == "message_field",
         InterfaceRequirementLink.entity_id == field_pk,
     ).update({"status": "pending_review"})
 
+    msg = db.query(MessageDefinition).filter(MessageDefinition.id == field.message_id).first()
+    _audit(
+        db, "field.deleted", "message_field", field.id, current_user.id,
+        {"field_name": field.field_name, "force": force, "cascade": impact},
+        project_id=msg.project_id if msg else None, request=request,
+    )
+
     db.delete(field)
     db.commit()
-    return {"status": "deleted", "id": field_pk}
+    return {"status": "deleted", "id": field_pk, "cascade": impact}
 
 
 @router.get("/messages/{msg_pk}/byte-map")
@@ -2413,27 +2518,50 @@ def update_harness(
     return resp
 
 
-@router.delete("/harnesses/{har_pk}", status_code=200)
-def delete_harness(
+def _impact_harness(db: Session, har_pk: int) -> dict:
+    return {
+        "wires": db.query(func.count(Wire.id)).filter(Wire.harness_id == har_pk).scalar() or 0,
+        "requirement_links": db.query(func.count(InterfaceRequirementLink.id)).filter(
+            InterfaceRequirementLink.entity_type == "wire_harness",
+            InterfaceRequirementLink.entity_id == har_pk,
+        ).scalar() or 0,
+    }
+
+
+@router.get("/harnesses/{har_pk}/delete-impact")
+def get_harness_delete_impact(
     har_pk: int,
-    confirm: bool = Query(False),
-    request: Request = None,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("interfaces.delete")),
+    current_user: User = Depends(get_current_user),
 ):
     harness = db.query(WireHarness).filter(WireHarness.id == har_pk).first()
     if not harness:
         raise HTTPException(404, "Wire harness not found")
     _assert_member_for_entity(db, current_user, harness)
+    return {"entity": "wire_harness", "id": har_pk, "impact": _impact_harness(db, har_pk)}
 
-    wc = db.query(func.count(Wire.id)).filter(Wire.harness_id == har_pk).scalar()
-    rl = db.query(func.count(InterfaceRequirementLink.id)).filter(
-        InterfaceRequirementLink.entity_type == "wire_harness",
-        InterfaceRequirementLink.entity_id == har_pk,
-    ).scalar()
 
-    if not confirm:
-        return {"status": "preview", "impact": {"wires": wc, "requirement_links": rl}}
+@router.delete("/harnesses/{har_pk}", status_code=200)
+def delete_harness(
+    har_pk: int,
+    force: bool = Query(False),
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("interfaces.delete")),
+):
+    """F-047: see delete_unit for the contract rationale."""
+    harness = db.query(WireHarness).filter(WireHarness.id == har_pk).first()
+    if not harness:
+        raise HTTPException(404, "Wire harness not found")
+    _assert_member_for_entity(db, current_user, harness)
+
+    impact = _impact_harness(db, har_pk)
+    if any(impact.values()) and not force:
+        raise HTTPException(
+            409,
+            f"Harness has dependent entities ({impact}). "
+            f"Use force=true to cascade-delete, or GET /harnesses/{har_pk}/delete-impact to inspect.",
+        )
 
     db.query(Wire).filter(Wire.harness_id == har_pk).delete()
     db.query(InterfaceRequirementLink).filter(
@@ -2442,12 +2570,12 @@ def delete_harness(
     ).delete()
 
     _audit(db, "harness.deleted", "wire_harness", harness.id, current_user.id,
-           {"harness_id": harness.harness_id, "wires_deleted": wc},
+           {"harness_id": harness.harness_id, "force": force, "cascade": impact},
            project_id=harness.project_id, request=request)
 
     db.delete(harness)
     db.commit()
-    return {"status": "deleted", "id": har_pk, "wires_deleted": wc}
+    return {"status": "deleted", "id": har_pk, "cascade": impact}
 
 
 # ══════════════════════════════════════════════════════════════
@@ -3370,43 +3498,74 @@ def update_wire(
     return resp
 
 
-@router.delete("/wires/{wire_pk}", status_code=200)
-def delete_wire(
+def _impact_wire(db: Session, wire_pk: int) -> dict:
+    return {
+        "requirement_links": db.query(func.count(InterfaceRequirementLink.id)).filter(
+            InterfaceRequirementLink.entity_type == "wire",
+            InterfaceRequirementLink.entity_id == wire_pk,
+        ).scalar() or 0,
+    }
+
+
+@router.get("/wires/{wire_pk}/delete-impact")
+def get_wire_delete_impact(
     wire_pk: int,
-    confirm: bool = Query(False),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("interfaces.delete")),
+    current_user: User = Depends(get_current_user),
 ):
     wire = db.query(Wire).filter(Wire.id == wire_pk).first()
     if not wire:
         raise HTTPException(404, "Wire not found")
     _assert_member_for_entity(db, current_user, wire)
+    return {"entity": "wire", "id": wire_pk, "impact": _impact_wire(db, wire_pk)}
 
-    rl = db.query(func.count(InterfaceRequirementLink.id)).filter(
-        InterfaceRequirementLink.entity_type == "wire",
-        InterfaceRequirementLink.entity_id == wire_pk,
-    ).scalar()
 
-    if not confirm and rl > 0:
-        return {"status": "preview", "impact": {"requirement_links": rl}}
+@router.delete("/wires/{wire_pk}", status_code=200)
+def delete_wire(
+    wire_pk: int,
+    force: bool = Query(False),
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("interfaces.delete")),
+):
+    """F-047: see delete_unit for the contract rationale."""
+    wire = db.query(Wire).filter(Wire.id == wire_pk).first()
+    if not wire:
+        raise HTTPException(404, "Wire not found")
+    _assert_member_for_entity(db, current_user, wire)
+
+    impact = _impact_wire(db, wire_pk)
+    if any(impact.values()) and not force:
+        raise HTTPException(
+            409,
+            f"Wire has dependent requirement links ({impact}). "
+            f"Use force=true to cascade-delete, or GET /wires/{wire_pk}/delete-impact to inspect.",
+        )
 
     db.query(InterfaceRequirementLink).filter(
         InterfaceRequirementLink.entity_type == "wire",
         InterfaceRequirementLink.entity_id == wire_pk,
     ).delete()
 
-    # Phase 2: check if this is the last wire between its two LRUs; if so
-    # remove the Connection rollup row. Done BEFORE db.delete(wire) so the
-    # helper can still query the wire's pins.
+    # If this was the last wire between its two LRUs, remove the
+    # Connection rollup row. Done BEFORE db.delete(wire) so the helper
+    # can still query the wire's pins.
     try:
         from app.services.interface.auto_grow import maybe_delete_connection_for_wire
         maybe_delete_connection_for_wire(db, wire)
     except Exception as e:
         logger.warning(f"connection cleanup after wire delete failed: {e}")
 
+    harness = db.query(WireHarness).filter(WireHarness.id == wire.harness_id).first()
+    _audit(
+        db, "wire.deleted", "wire", wire.id, current_user.id,
+        {"wire_number": wire.wire_number, "force": force, "cascade": impact},
+        project_id=harness.project_id if harness else None, request=request,
+    )
+
     db.delete(wire)
     db.commit()
-    return {"status": "deleted", "id": wire_pk}
+    return {"status": "deleted", "id": wire_pk, "cascade": impact}
 
 
 @router.get("/wires/search")
@@ -4440,10 +4599,32 @@ def update_harness_endpoint(
     return resp
 
 
+def _impact_harness_endpoint(db: Session, ep: HarnessEndpoint) -> dict:
+    return {
+        "wires": (db.query(func.count(Wire.id))
+                  .join(Pin, (Pin.id == Wire.from_mating_pin_id) | (Pin.id == Wire.to_mating_pin_id))
+                  .filter(Pin.connector_id == ep.mating_connector_id)
+                  .scalar()) or 0,
+    }
+
+
+@router.get("/endpoints/{ep_pk}/delete-impact")
+def get_endpoint_delete_impact(
+    ep_pk: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    ep = db.query(HarnessEndpoint).filter(HarnessEndpoint.id == ep_pk).first()
+    if not ep:
+        raise HTTPException(404, "Harness endpoint not found")
+    _assert_member_for_entity(db, current_user, ep)
+    return {"entity": "harness_endpoint", "id": ep_pk, "impact": _impact_harness_endpoint(db, ep)}
+
+
 @router.delete("/endpoints/{ep_pk}", status_code=200)
 def delete_harness_endpoint(
     ep_pk: int,
-    confirm: bool = Query(False),
+    force: bool = Query(False),
     request: Request = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("interfaces.delete")),
@@ -4452,7 +4633,8 @@ def delete_harness_endpoint(
     (and its pins via cascade) and any wires that touch this endpoint's
     mating pins on either side.
 
-    Requires confirm=true if there are wires to avoid surprises.
+    F-047: pass `force=true` to override the wire-cascade safety gate.
+    Use GET /endpoints/{pk}/delete-impact for a dry-run.
     """
     ep = db.query(HarnessEndpoint).filter(HarnessEndpoint.id == ep_pk).first()
     if not ep:
@@ -4462,14 +4644,15 @@ def delete_harness_endpoint(
     mating_connector_id = ep.mating_connector_id
     harness_id = ep.harness_id
 
-    # Count wires touching this endpoint's mating pins
-    wire_count = (db.query(func.count(Wire.id))
-                  .join(Pin, (Pin.id == Wire.from_mating_pin_id) | (Pin.id == Wire.to_mating_pin_id))
-                  .filter(Pin.connector_id == mating_connector_id)
-                  .scalar()) or 0
+    impact = _impact_harness_endpoint(db, ep)
+    wire_count = impact["wires"]
 
-    if wire_count > 0 and not confirm:
-        return {"status": "preview", "impact": {"wires": wire_count}}
+    if any(impact.values()) and not force:
+        raise HTTPException(
+            409,
+            f"Endpoint has dependent wires ({impact}). "
+            f"Use force=true to cascade-delete, or GET /endpoints/{ep_pk}/delete-impact to inspect.",
+        )
 
     # Delete wires touching this endpoint's mating pins
     if wire_count > 0:
