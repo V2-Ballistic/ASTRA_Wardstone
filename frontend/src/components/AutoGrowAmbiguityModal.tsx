@@ -34,7 +34,7 @@
  *   });
  */
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import {
   AlertTriangle, X, ArrowRight, Check, Layers, Cable, Loader2,
   ChevronRight,
@@ -105,6 +105,18 @@ export const initialAmbiguityState: AmbiguityModalState = {
  */
 export function useAmbiguityModal() {
   const [state, setState] = useState<AmbiguityModalState>(initialAmbiguityState);
+  // F-128: a ref mirrors `state` so async handlers can read the
+  // latest snapshot without smuggling values through setState
+  // closures. Pre-fix `resolveCurrent` ran setState three times in
+  // a row — once to optimistically update, once as a no-op
+  // "trick to get the most recent decisions list," and a third
+  // captured `latestXXX` closure variables — then a `setTimeout(0)`
+  // hack tried to ensure the flush happened before the API call.
+  // The ref makes that all unnecessary: read state synchronously
+  // from `stateRef.current`, compute the new payload, do one
+  // setState, fire the API call.
+  const stateRef = useRef<AmbiguityModalState>(state);
+  useEffect(() => { stateRef.current = state; }, [state]);
 
   /** Start a new ambiguity flow. Called from the page after the first
    *  auto-grow call returned ambiguities. */
@@ -130,65 +142,30 @@ export function useAmbiguityModal() {
 
   /** Resolve the current ambiguity with the given action. */
   const resolveCurrent = useCallback(async (action: AmbiguityDecision['action'], newHarnessName?: string) => {
-    setState(s => {
-      if (s.pending.length === 0) return s;
-      const current = s.pending[0];
-      const newDecisions: AmbiguityDecision[] = [
-        ...s.decisions,
-        {
-          pair_index: current.pair_index,
-          action,
-          new_harness_name: newHarnessName,
-        },
-      ];
-      return { ...s, decisions: newDecisions, submitting: true, error: null };
-    });
+    // F-128: snapshot, compute, set once, then call. No closure
+    // smuggling, no setTimeout(0), no triple-setState.
+    const snap = stateRef.current;
+    if (snap.pending.length === 0) return;
+    const current = snap.pending[0];
+    const newDecisions: AmbiguityDecision[] = [
+      ...snap.decisions.filter(d => d.pair_index !== current.pair_index),
+      {
+        pair_index: current.pair_index,
+        action,
+        new_harness_name: newHarnessName,
+      },
+    ];
+    const projectId = snap.projectId;
+    const pairs = snap.pairs;
+    const onDone = snap.onDone;
 
-    // Use the most recent state for the backend call. setState above is
-    // async so we capture the new decisions here, outside the setter.
-    // React state batching means we need to compute this manually.
-    setState(s => {
-      if (!s.submitting) return s; // prior set already fired
-      // Fire the backend call asynchronously. We do this inside setState
-      // only as a trick to get the most recent decisions list; the actual
-      // API work happens below, so we just return state unchanged here.
-      return s;
-    });
-
-    // The safer pattern: use the functional form of setState that returns
-    // the new state, then do the API call with that value.
-    let latestDecisions: AmbiguityDecision[] = [];
-    let latestPairs: AutoGrowPair[] = [];
-    let latestProjectId: number = 0;
-    let latestOnDone: ((r: AutoGrowResult) => void) | null = null;
-    setState(s => {
-      if (s.pending.length === 0) return s;
-      const current = s.pending[0];
-      const updatedDecisions: AmbiguityDecision[] = [
-        ...s.decisions.filter(d => d.pair_index !== current.pair_index),
-        {
-          pair_index: current.pair_index,
-          action,
-          new_harness_name: newHarnessName,
-        },
-      ];
-      latestDecisions = updatedDecisions;
-      latestPairs = s.pairs;
-      latestProjectId = s.projectId;
-      latestOnDone = s.onDone;
-      return { ...s, decisions: updatedDecisions, submitting: true, error: null };
-    });
-
-    // Wait a tick so the setState above flushes before we read state.
-    // This is a paranoia-level workaround; the `latestXXX` closure
-    // variables above are the actual source of truth for the call.
-    await new Promise(r => setTimeout(r, 0));
+    setState(s => ({ ...s, decisions: newDecisions, submitting: true, error: null }));
 
     try {
       const res = await interfaceAPI.autoGrow({
-        project_id: latestProjectId,
-        pairs: latestPairs,
-        decisions: latestDecisions,
+        project_id: projectId,
+        pairs,
+        decisions: newDecisions,
       });
       const result: AutoGrowResult = res.data;
 
@@ -205,7 +182,7 @@ export function useAmbiguityModal() {
       } else {
         // Done — close modal and notify caller.
         setState(initialAmbiguityState);
-        if (latestOnDone) latestOnDone(result);
+        if (onDone) onDone(result);
       }
     } catch (err: any) {
       setState(s => ({
