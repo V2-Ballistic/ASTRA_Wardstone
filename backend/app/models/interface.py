@@ -19,7 +19,7 @@ import enum
 from datetime import datetime
 
 from sqlalchemy import (
-    Column, Integer, String, Text, DateTime, Boolean, Float,
+    Column, Integer, String, Text, DateTime, Boolean, Float, Numeric,
     ForeignKey, Enum as SQLEnum, JSON, Index, UniqueConstraint,
 )
 from sqlalchemy.orm import relationship, backref
@@ -1449,13 +1449,20 @@ class MessageField(Base):
     bit_offset = Column(Integer)
     bit_length = Column(Integer, nullable=False)
     unit_of_measure = Column(String(50))
-    scale_factor = Column(Float, default=1.0)
-    offset_value = Column(Float, default=0.0)
-    lsb_value = Column(Float)
-    min_value = Column(Float)
-    max_value = Column(Float)
-    resolution = Column(Float)
-    accuracy = Column(Float)
+    # F-077: engineering-unit math fields are NUMERIC(20, 9), not Float.
+    # Pre-fix the Float columns rounded values like 0.1 to 0.10000000149...
+    # which broke unit-conversion equality checks downstream
+    # (e.g. `field.scale_factor == 0.1` was sometimes False after a
+    # round-trip through the database). 20-digit precision with 9
+    # decimals covers every realistic ICD scale/offset/range value
+    # without losing the source representation.
+    scale_factor = Column(Numeric(20, 9), default=1.0)
+    offset_value = Column(Numeric(20, 9), default=0.0)
+    lsb_value = Column(Numeric(20, 9))
+    min_value = Column(Numeric(20, 9))
+    max_value = Column(Numeric(20, 9))
+    resolution = Column(Numeric(20, 9))
+    accuracy = Column(Numeric(20, 9))
     default_value = Column(String(50))
     initial_value = Column(String(50))
     invalid_value = Column(String(50))
