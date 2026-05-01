@@ -91,7 +91,12 @@ class AISuggestion(Base):
     confidence = Column(Float, nullable=False, default=0.0)
     # Human-readable explanation
     explanation = Column(Text, default="")
-    # Extra structured data (e.g., verification criteria, similarity details)
+    # Extra structured data (e.g., verification criteria, similarity details).
+    # F-132: deliberately named `metadata_json`, NOT `metadata`. SQLAlchemy
+    # reserves `metadata` as a class attribute on the Declarative base for
+    # the table registry — using it as a column name shadows that and
+    # silently breaks `Base.metadata.create_all`. The `_json` suffix is
+    # a convention, not a type hint.
     metadata_json = Column(JSON, default=dict)
     # Resolution status
     status = Column(String(20), nullable=False, default="pending")  # pending, accepted, rejected, dismissed
