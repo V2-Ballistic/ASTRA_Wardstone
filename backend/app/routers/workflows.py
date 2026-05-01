@@ -33,9 +33,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.dependencies.project_access import _check_membership
 from app.models import User, UserRole
 from app.models.workflow import (
     ApprovalWorkflow, WorkflowStage, WorkflowStatus,
+    WorkflowInstance, ElectronicSignature,
 )
 from app.services.auth import get_current_user
 from app.services.workflow_engine import (
@@ -46,6 +48,78 @@ from app.services.signature_service import (
     get_signatures, verify_signature,
     issue_step_up_token, EXTERNAL_IDP_SENTINEL,
 )
+
+
+# ══════════════════════════════════════
+#  F-201: project-resolution helpers
+# ══════════════════════════════════════
+
+def _project_for_workflow(db: Session, workflow_id: int) -> int:
+    """Resolve project_id from a workflow_id (404 if missing)."""
+    row = (
+        db.query(ApprovalWorkflow.project_id)
+        .filter(ApprovalWorkflow.id == workflow_id)
+        .first()
+    )
+    if not row:
+        raise HTTPException(404, "Workflow not found")
+    return row[0]
+
+
+def _project_for_stage(db: Session, stage_id: int) -> int:
+    """Resolve project_id from a stage_id via its parent workflow."""
+    row = (
+        db.query(ApprovalWorkflow.project_id)
+        .join(WorkflowStage, WorkflowStage.workflow_id == ApprovalWorkflow.id)
+        .filter(WorkflowStage.id == stage_id)
+        .first()
+    )
+    if not row:
+        raise HTTPException(404, "Stage not found")
+    return row[0]
+
+
+def _project_for_instance(db: Session, instance_id: int) -> int:
+    """Resolve project_id from a workflow instance."""
+    row = (
+        db.query(WorkflowInstance.project_id)
+        .filter(WorkflowInstance.id == instance_id)
+        .first()
+    )
+    if not row:
+        raise HTTPException(404, "Workflow instance not found")
+    return row[0]
+
+
+def _project_for_signature_entity(
+    db: Session, entity_type: str, entity_id: int,
+) -> Optional[int]:
+    """
+    Resolve project_id from a signature's entity reference.
+
+    Returns None when the entity type isn't project-scoped (callers
+    should treat that as "no project gate applies"). For known
+    project-scoped entity types we look up the row and return its
+    project_id; missing rows return None (the signature lookup itself
+    will produce an empty result, no leak).
+    """
+    et = (entity_type or "").lower()
+    if et == "requirement":
+        from app.models import Requirement
+        row = db.query(Requirement.project_id).filter(Requirement.id == entity_id).first()
+        return row[0] if row else None
+    if et == "baseline":
+        from app.models import Baseline
+        row = db.query(Baseline.project_id).filter(Baseline.id == entity_id).first()
+        return row[0] if row else None
+    if et in ("workflow_instance", "instance"):
+        row = (
+            db.query(WorkflowInstance.project_id)
+            .filter(WorkflowInstance.id == entity_id)
+            .first()
+        )
+        return row[0] if row else None
+    return None
 
 try:
     from app.services.rbac import require_any_role
@@ -119,6 +193,9 @@ def create_workflow(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_any_role(UserRole.ADMIN, UserRole.PROJECT_MANAGER)),
 ):
+    # F-201: a PM can create workflows in any project, but only for
+    # projects they're a member of (or own, or are admin for).
+    _check_membership(db, data.project_id, current_user)
     wf = ApprovalWorkflow(
         name=data.name, description=data.description,
         project_id=data.project_id, entity_type=data.entity_type,
@@ -136,6 +213,8 @@ def list_workflows(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    # F-201: list scoped to a project — caller must be a member.
+    _check_membership(db, project_id, current_user)
     wfs = db.query(ApprovalWorkflow).filter(
         ApprovalWorkflow.project_id == project_id,
     ).order_by(ApprovalWorkflow.created_at.desc()).all()
@@ -151,6 +230,8 @@ def get_workflow(
     wf = db.query(ApprovalWorkflow).filter(ApprovalWorkflow.id == workflow_id).first()
     if not wf:
         raise HTTPException(404, "Workflow not found")
+    # F-201: workflow → project membership.
+    _check_membership(db, wf.project_id, current_user)
     return _wf_to_dict(wf, include_stages=True)
 
 
@@ -163,6 +244,8 @@ def update_workflow(
     wf = db.query(ApprovalWorkflow).filter(ApprovalWorkflow.id == workflow_id).first()
     if not wf:
         raise HTTPException(404, "Workflow not found")
+    # F-201: workflow → project membership.
+    _check_membership(db, wf.project_id, current_user)
     for field, val in data.model_dump(exclude_unset=True).items():
         setattr(wf, field, val)
     db.commit()
@@ -179,6 +262,8 @@ def deactivate_workflow(
     wf = db.query(ApprovalWorkflow).filter(ApprovalWorkflow.id == workflow_id).first()
     if not wf:
         raise HTTPException(404, "Workflow not found")
+    # F-201: workflow → project membership.
+    _check_membership(db, wf.project_id, current_user)
     wf.status = WorkflowStatus.INACTIVE
     db.commit()
     return {"status": "deactivated", "id": workflow_id}
@@ -197,6 +282,8 @@ def add_stage(
     wf = db.query(ApprovalWorkflow).filter(ApprovalWorkflow.id == workflow_id).first()
     if not wf:
         raise HTTPException(404, "Workflow not found")
+    # F-201: workflow → project membership.
+    _check_membership(db, wf.project_id, current_user)
     stage = WorkflowStage(workflow_id=workflow_id, **data.model_dump())
     db.add(stage)
     db.commit()
@@ -213,6 +300,8 @@ def update_stage(
     stage = db.query(WorkflowStage).filter(WorkflowStage.id == stage_id).first()
     if not stage:
         raise HTTPException(404, "Stage not found")
+    # F-201: stage → workflow → project membership.
+    _check_membership(db, _project_for_stage(db, stage_id), current_user)
     for field, val in data.model_dump(exclude_unset=True).items():
         setattr(stage, field, val)
     db.commit()
@@ -229,6 +318,8 @@ def remove_stage(
     stage = db.query(WorkflowStage).filter(WorkflowStage.id == stage_id).first()
     if not stage:
         raise HTTPException(404, "Stage not found")
+    # F-201: stage → workflow → project membership.
+    _check_membership(db, _project_for_stage(db, stage_id), current_user)
     db.delete(stage)
     db.commit()
 
@@ -243,6 +334,8 @@ def start_instance(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    # F-201: starting an instance writes to a project — gate it.
+    _check_membership(db, data.project_id, current_user)
     try:
         inst = start_workflow(
             db, data.workflow_id, data.entity_type,
@@ -264,6 +357,9 @@ def list_workflow_instances(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    # F-201: when scoped to a specific project, enforce membership.
+    if project_id is not None:
+        _check_membership(db, project_id, current_user)
     return list_instances(
         db, project_id=project_id, entity_type=entity_type,
         entity_id=entity_id, status_filter=status,
@@ -277,6 +373,8 @@ def get_workflow_instance(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    # F-201: instance → project membership.
+    _check_membership(db, _project_for_instance(db, instance_id), current_user)
     detail = get_instance_detail(db, instance_id)
     if not detail:
         raise HTTPException(404, "Workflow instance not found")
@@ -291,6 +389,8 @@ def action_on_instance(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    # F-201: instance → project membership before approving/rejecting.
+    _check_membership(db, _project_for_instance(db, instance_id), current_user)
     ip = request.client.host if request.client else ""
     ua = request.headers.get("user-agent", "")
     result = perform_action(
@@ -325,6 +425,13 @@ def list_signatures(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    # F-201: when the signature target is a known project-scoped
+    # entity, enforce membership. Unknown/global entities fall
+    # through (no project gate applies, and no signatures will
+    # match if the entity doesn't exist).
+    project_id = _project_for_signature_entity(db, entity_type, entity_id)
+    if project_id is not None:
+        _check_membership(db, project_id, current_user)
     return get_signatures(db, entity_type, entity_id)
 
 
@@ -334,6 +441,16 @@ def verify_sig(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    # F-201: signature → entity → project membership when applicable.
+    sig = (
+        db.query(ElectronicSignature.entity_type, ElectronicSignature.entity_id)
+        .filter(ElectronicSignature.id == signature_id)
+        .first()
+    )
+    if sig is not None:
+        project_id = _project_for_signature_entity(db, sig[0], sig[1])
+        if project_id is not None:
+            _check_membership(db, project_id, current_user)
     return verify_signature(db, signature_id)
 
 
@@ -389,6 +506,8 @@ def seed_default_workflow(
     current_user: User = Depends(require_any_role(UserRole.ADMIN, UserRole.PROJECT_MANAGER)),
 ):
     """Create the standard 4-stage requirement approval workflow for a project."""
+    # F-201: enforce membership on seeding too.
+    _check_membership(db, project_id, current_user)
     wf = ApprovalWorkflow(
         name="Standard Requirement Approval",
         description="Engineer Submit → Peer Review → PM Approval → CCB Approval",
