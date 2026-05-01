@@ -25,7 +25,11 @@ export type UserRole =
   | 'stakeholder'
   | 'developer';
 
-// ── Permission Matrix (must stay in sync with backend/app/services/rbac.py) ──
+// ── Permission Matrix ──
+// SYNC NOTE: This matrix must mirror backend/app/services/rbac.py.
+// If you change one, change the other. The backend is authoritative;
+// this copy exists so the UI can show/hide controls without a
+// per-action API round-trip.
 
 const PERMISSION_MATRIX: Record<UserRole, Set<string>> = {
   admin: new Set([
@@ -44,6 +48,9 @@ const PERMISSION_MATRIX: Record<UserRole, Set<string>> = {
     'settings.manage',
     'reports.export',
     'imports.execute',
+    'interfaces.create',
+    'interfaces.update',
+    'interfaces.delete',
   ]),
   project_manager: new Set([
     'requirements.create',
@@ -59,6 +66,9 @@ const PERMISSION_MATRIX: Record<UserRole, Set<string>> = {
     'projects.update',
     'reports.export',
     'imports.execute',
+    'interfaces.create',
+    'interfaces.update',
+    'interfaces.delete',
   ]),
   requirements_engineer: new Set([
     'requirements.create',
@@ -71,10 +81,15 @@ const PERMISSION_MATRIX: Record<UserRole, Set<string>> = {
     'requirements.approve',
   ]),
   stakeholder: new Set([
-    // Read-only + comments. No explicit write permissions.
+    // F-114 / F-207: read-only role. Backend grants reports.export so
+    // the matrix needs to as well.
+    'reports.export',
   ]),
   developer: new Set([
-    // Read-only requirements; can update verification status.
+    // F-114 / F-207: read-only on requirements; can update verification
+    // status via dedicated endpoints (gated on responsible_id inside the
+    // handler, not from this matrix). Backend grants reports.export.
+    'reports.export',
   ]),
 };
 

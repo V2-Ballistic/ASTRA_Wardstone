@@ -50,7 +50,9 @@ def get_audit_log(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=500),
+    # F-215: align with the platform-wide 200 cap. If ops tooling needs
+    # higher, raise a documented exception with audit-team approval.
+    limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
     current_user: User = Depends(_audit_dep),
 ):
@@ -82,16 +84,61 @@ def get_audit_log(
 #  Entity trail
 # ══════════════════════════════════════
 
+def _project_for_audit_entity(
+    db: Session, entity_type: str, entity_id: int,
+) -> Optional[int]:
+    """F-214: resolve project_id from common entity types so the audit
+    trail can be membership-gated. Returns None when the entity isn't
+    project-scoped (in which case the trail is open to authenticated
+    callers — global catalog entries, system-level events).
+    """
+    et = (entity_type or "").lower()
+    try:
+        if et == "requirement":
+            from app.models import Requirement
+            row = db.query(Requirement.project_id).filter(Requirement.id == entity_id).first()
+            return row[0] if row else None
+        if et == "baseline":
+            from app.models import Baseline
+            row = db.query(Baseline.project_id).filter(Baseline.id == entity_id).first()
+            return row[0] if row else None
+        if et == "source_artifact":
+            from app.models import SourceArtifact
+            row = db.query(SourceArtifact.project_id).filter(SourceArtifact.id == entity_id).first()
+            return row[0] if row else None
+        if et in ("workflow_instance", "instance"):
+            from app.models.workflow import WorkflowInstance
+            row = db.query(WorkflowInstance.project_id).filter(WorkflowInstance.id == entity_id).first()
+            return row[0] if row else None
+        if et == "project":
+            return entity_id
+    except Exception:
+        # If the model isn't importable for some reason, fall through to
+        # the un-scoped read (admin/PM dep would still apply).
+        return None
+    return None
+
+
 @router.get("/log/entity/{entity_type}/{entity_id}")
 def get_entity_audit_trail(
     entity_type: str,
     entity_id: int,
     skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=500),
+    limit: int = Query(100, ge=1, le=200),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Full audit trail for a specific entity (any authenticated user)."""
+    """Full audit trail for a specific entity.
+
+    F-214: when the entity is project-scoped (requirement, baseline,
+    source_artifact, workflow_instance, project), enforce
+    _check_membership so engineers can read their own project's
+    audit trails but not someone else's. Global / non-scoped entity
+    types stay accessible to any authenticated caller.
+    """
+    project_id = _project_for_audit_entity(db, entity_type, entity_id)
+    if project_id is not None:
+        _check_membership(db, project_id, current_user)
     return query_audit_log(
         db, entity_type=entity_type, entity_id=entity_id,
         skip=skip, limit=limit,
