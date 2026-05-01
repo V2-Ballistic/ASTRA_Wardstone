@@ -21,13 +21,17 @@ import enum
 
 from sqlalchemy import (
     Column, Integer, String, Text, DateTime, Boolean,
-    ForeignKey, Enum as SQLEnum, Index, UniqueConstraint,
+    ForeignKey, Enum as SQLEnum, Index, JSON, UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
 from app.database import Base
+
+
+# JSONB on PostgreSQL, plain JSON on SQLite (test environment).
+_JSON = JSON().with_variant(JSONB(), "postgresql")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -107,7 +111,7 @@ class RequirementSourceLink(Base):
     )
     source_entity_id   = Column(Integer, nullable=False)
     template_id        = Column(String(100), nullable=False)
-    template_inputs    = Column(JSONB, nullable=False)
+    template_inputs    = Column(_JSON, nullable=False)
     role               = Column(String(50), nullable=False, default="primary")
     last_synced_at     = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -153,7 +157,7 @@ class RequirementSyncProposal(Base):
     new_statement            = Column(Text, nullable=True)
     old_rationale            = Column(Text, nullable=True)
     new_rationale            = Column(Text, nullable=True)
-    field_diffs              = Column(JSONB, nullable=False)
+    field_diffs              = Column(_JSON, nullable=False)
 
     proposal_type            = Column(
         SQLEnum(

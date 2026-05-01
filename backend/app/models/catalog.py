@@ -25,13 +25,19 @@ import enum
 
 from sqlalchemy import (
     Column, Integer, String, Text, DateTime, Date, Boolean, Numeric, BigInteger,
-    ForeignKey, Enum as SQLEnum, Index, UniqueConstraint,
+    ForeignKey, Enum as SQLEnum, Index, JSON, UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
 from app.database import Base
+
+
+# Use JSONB on PostgreSQL (richer indexing, jsonb_path_ops GIN) but degrade to
+# the generic JSON type on SQLite (test environment). The conftest creates all
+# tables via Base.metadata.create_all, which can't render JSONB on SQLite.
+_JSON = JSON().with_variant(JSONB(), "postgresql")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -229,7 +235,7 @@ class SupplierDocument(Base):
         nullable=False,
         default=ExtractionStatus.UPLOADED,
     )
-    extraction_log    = Column(JSONB, nullable=True)
+    extraction_log    = Column(_JSON, nullable=True)
     extraction_at     = Column(DateTime(timezone=True), nullable=True)
 
     uploaded_at       = Column(DateTime(timezone=True), server_default=func.now())
@@ -331,7 +337,7 @@ class CatalogPart(Base):
     source_document_id  = Column(
         Integer, ForeignKey("supplier_documents.id", ondelete="SET NULL"), nullable=True
     )
-    source_page_refs    = Column(JSONB, nullable=True)
+    source_page_refs    = Column(_JSON, nullable=True)
 
     notes               = Column(Text, nullable=True)
     image_path          = Column(String(1000), nullable=True)
@@ -468,8 +474,8 @@ class PendingCatalogImport(Base):
     )
     supplier_id              = Column(Integer, ForeignKey("suppliers.id"), nullable=False)
 
-    extracted_data           = Column(JSONB, nullable=False)
-    extraction_warnings      = Column(JSONB, nullable=True)
+    extracted_data           = Column(_JSON, nullable=False)
+    extraction_warnings      = Column(_JSON, nullable=True)
     extraction_confidence    = Column(Numeric(4, 3), nullable=True)
 
     status                   = Column(
