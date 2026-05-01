@@ -188,7 +188,10 @@ export const adminAPI = {
 };
 
 // ── Dev (remove in production) ──
+// F-218: seedProject was relocated from /dev/seed-project/* to
+// /admin/seed-project/* in F-004. The dev.* path returned 404; this
+// keeps the existing UI caller working without renaming the function.
 export const devAPI = {
   seed: () => api.post('/dev/seed'),
-  seedProject: (projectId: number) => api.post(`/dev/seed-project/${projectId}`),
+  seedProject: (projectId: number) => api.post(`/admin/seed-project/${projectId}`),
 };

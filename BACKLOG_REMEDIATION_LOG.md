@@ -24,10 +24,10 @@
 | F-213 | Medium | ✅ Fixed | `backend/app/routers/baselines.py` | `48fd9a0` | full suite green | Dead stub deleted; replaced with explanatory comment |
 | F-214 | Medium | ✅ Fixed | `backend/app/routers/audit.py` | `4f8893b` | full suite green | Resolves entity → project → `_check_membership` |
 | F-215 | Medium | ✅ Fixed | `backend/app/routers/audit.py` | `4f8893b` | full suite green | Both endpoints now `le=200` |
-| F-217 | Low | ⏳ Pending | — | — | — | Phase 6 |
-| F-218 | Low | ⏳ Pending | — | — | — | Phase 6 |
-| F-219 | Low | ⏳ Pending | — | — | — | Phase 6 |
-| F-220 | Low | ⏳ Pending | — | — | — | Phase 6 |
+| F-217 | Low | ✅ Fixed | 4 `.bak` files removed | `1b498a1` | `git status` clean of `.bak` | `.gitignore` already had `*.bak` |
+| F-218 | Low | ✅ Fixed | `frontend/src/lib/api.ts` | `ef7af1c` | TS clean | One UI caller exists in `[id]/page.tsx:417` — path now hits `/admin/seed-project/...` |
+| F-219 | Low | ✅ Fixed | `.env.example` | `6949a2e` | n/a (config) | **ACTION FOR MASON:** update live `.env` on dev machine — change `PGADMIN_DEFAULT_EMAIL` from `admin@astra.local` → `admin@example.com` |
+| F-220 | Low | ✅ Fixed | `backend/app/services/auth_providers/saml.py` | `d21dc79` | full suite green | OIDC + PIV providers verified to already default safely |
 | F-222 | Info | — | — | — | — | No-action / architectural framing |
 
 ## Phase Status
@@ -37,7 +37,7 @@
 - [x] Phase 3 — Dev Router Hardening (F-202, F-216) — full suite: 316 passed (+7).
 - [x] Phase 4 — Data Integrity & Contract (F-203, F-204, F-205) — full suite: 319 passed (+3). Migration 0026 applied; db backup at `astra-db-1:/tmp/pre-0026-1777669474.sql`.
 - [x] Phase 5 — Medium Severity (F-206–F-215) — full suite: 319 passed, 0 failed (no new tests; existing coverage protects the touched paths).
-- [ ] Phase 6 — Low Severity & Cleanup (F-217–F-220)
+- [x] Phase 6 — Low Severity & Cleanup (F-217–F-220) — full suite: 319 passed; FE typecheck clean for touched files.
 - [ ] Final verification gate
 
 ## New findings discovered during remediation
