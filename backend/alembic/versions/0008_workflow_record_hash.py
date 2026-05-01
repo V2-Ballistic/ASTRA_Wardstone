@@ -1,7 +1,7 @@
 """F-007 + F-008: workflow enum values_callable + e-signature record_hash
 
 Revision ID: 0008
-Revises: 4bd35db2ef64
+Revises: 0007a
 Create Date: 2026-04-30
 
 F-007 (workflow SQLEnum values_callable): the SQLAlchemy column
@@ -34,7 +34,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = "0008"
-down_revision: Union[str, None] = "4bd35db2ef64"
+down_revision: Union[str, None] = "0007a"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
