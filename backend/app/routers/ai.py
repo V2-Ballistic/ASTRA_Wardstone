@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from app.database import get_db
+from app.dependencies.project_access import _check_membership
 from app.models import User, Requirement, Project
 from app.services.auth import get_current_user
 
@@ -85,6 +86,9 @@ def get_project_duplicates(
     if not project:
         raise HTTPException(404, "Project not found")
 
+    # F-201: gate on membership before exposing duplicate analytics.
+    _check_membership(db, project_id, current_user)
+
     result = find_duplicates(db, project_id, threshold)
     return result
 
@@ -102,6 +106,9 @@ def check_duplicate(
     project = db.query(Project).filter(Project.id == data.project_id).first()
     if not project:
         raise HTTPException(404, "Project not found")
+
+    # F-201: gate on membership before checking against project corpus.
+    _check_membership(db, data.project_id, current_user)
 
     return check_new_requirement(
         db=db,
@@ -129,6 +136,9 @@ def get_trace_suggestions(
         raise HTTPException(404, "Requirement not found")
 
     pid = project_id or req.project_id
+
+    # F-201: requirement → project membership.
+    _check_membership(db, pid, current_user)
 
     return suggest_trace_links(
         db=db,
@@ -161,7 +171,6 @@ def get_project_trace_suggestions(
     suggest_trace_links maintains, so the second-onwards iterations
     are fast.
     """
-    from app.dependencies.project_access import _check_membership
     _check_membership(db, project_id, current_user)
 
     req_ids = [
@@ -224,6 +233,9 @@ def get_verification_suggestion(
     if not req:
         raise HTTPException(404, "Requirement not found")
 
+    # F-201: requirement → project membership.
+    _check_membership(db, req.project_id, current_user)
+
     return suggest_verification_method(db, requirement_id)
 
 
@@ -243,6 +255,9 @@ def submit_feedback(
     suggestion = db.query(AISuggestion).filter(AISuggestion.id == data.suggestion_id).first()
     if not suggestion:
         raise HTTPException(404, "Suggestion not found")
+
+    # F-201: suggestion → project membership.
+    _check_membership(db, suggestion.project_id, current_user)
 
     suggestion.status = data.action
     suggestion.resolved_by_id = current_user.id
@@ -288,6 +303,10 @@ def reindex_embeddings(
     project = db.query(Project).filter(Project.id == data.project_id).first()
     if not project:
         raise HTTPException(404, "Project not found")
+
+    # F-201: reindex writes embeddings for every requirement in the
+    # project — gate it on membership.
+    _check_membership(db, data.project_id, current_user)
 
     if not is_embedding_available():
         return ReindexResponse(
@@ -384,6 +403,10 @@ def get_ai_stats(
 ):
     """Return AI embedding and suggestion statistics."""
     from app.models.embedding import RequirementEmbedding, AISuggestion
+
+    # F-201: when scoped to a project, enforce membership.
+    if project_id is not None:
+        _check_membership(db, project_id, current_user)
 
     info = get_embedding_info()
 

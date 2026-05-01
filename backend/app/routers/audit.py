@@ -55,6 +55,12 @@ def get_audit_log(
     current_user: User = Depends(_audit_dep),
 ):
     """Paginated audit log with filters."""
+    # F-208: when the caller filters by project_id, enforce membership
+    # so a PM with cross-project read can't pivot into a project they
+    # weren't added to. Mirrors the gate already on /audit/export.
+    if project_id is not None:
+        _check_membership(db, project_id, current_user)
+
     df = datetime.fromisoformat(date_from) if date_from else None
     dt = datetime.fromisoformat(date_to) if date_to else None
 
