@@ -1545,6 +1545,9 @@ class InterfaceCreate(BaseModel):
     direction: str = Field(...)
     source_system_id: int
     target_system_id: int
+    # ── INTF-002 Phase 4: optional unit-level endpoints (drives auto-wire) ──
+    source_unit_id: Optional[int] = None
+    target_unit_id: Optional[int] = None
     # Optional
     interface_type_custom: Optional[str] = Field(None, max_length=100)
     description: Optional[str] = None
@@ -1568,6 +1571,9 @@ class InterfaceUpdate(BaseModel):
     direction: Optional[str] = None
     source_system_id: Optional[int] = None
     target_system_id: Optional[int] = None
+    # ── INTF-002 Phase 4 ──
+    source_unit_id: Optional[int] = None
+    target_unit_id: Optional[int] = None
     description: Optional[str] = None
     status: Optional[str] = None
     criticality: Optional[str] = None
@@ -1592,6 +1598,9 @@ class InterfaceResponse(BaseModel):
     direction: str
     source_system_id: int
     target_system_id: int
+    # ── INTF-002 Phase 4: unit-level endpoints ──
+    source_unit_id: Optional[int] = None
+    target_unit_id: Optional[int] = None
     status: str
     criticality: str
     icd_document_number: Optional[str] = None

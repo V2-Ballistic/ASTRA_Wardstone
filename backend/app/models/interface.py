@@ -1683,6 +1683,17 @@ class Interface(Base):
     direction = Column(SQLEnum(InterfaceDirection, values_callable=lambda x: [e.value for e in x]), nullable=False)
     source_system_id = Column(Integer, ForeignKey("systems.id"), nullable=False)
     target_system_id = Column(Integer, ForeignKey("systems.id"), nullable=False)
+    # ── INTF-002 Phase 4: unit-level endpoints (drives auto-wire) ──
+    # Nullable for legacy rows pre-migration 0024 and for multi-unit-system
+    # interfaces that the user has yet to disambiguate via Connection Builder.
+    source_unit_id = Column(
+        Integer, ForeignKey("units.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
+    target_unit_id = Column(
+        Integer, ForeignKey("units.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
     status = Column(SQLEnum(InterfaceStatus, values_callable=lambda x: [e.value for e in x]), default=InterfaceStatus.PROPOSED)
     criticality = Column(SQLEnum(InterfaceCriticality, values_callable=lambda x: [e.value for e in x]), default=InterfaceCriticality.NON_CRITICAL)
     icd_document_number = Column(String(100))
@@ -1704,6 +1715,8 @@ class Interface(Base):
     # Relationships
     source_system = relationship("System", foreign_keys=[source_system_id])
     target_system = relationship("System", foreign_keys=[target_system_id])
+    source_unit = relationship("Unit", foreign_keys=[source_unit_id])
+    target_unit = relationship("Unit", foreign_keys=[target_unit_id])
     owner = relationship("User")
 
 
