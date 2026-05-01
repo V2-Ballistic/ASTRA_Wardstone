@@ -69,8 +69,23 @@ def create_refresh_token(db: Session, user_id: int) -> str:
     return raw
 
 
-def refresh_access_token(db: Session, raw_refresh: str) -> str | None:
-    """Validate a refresh token and return a new access token (or None)."""
+def refresh_access_token(db: Session, raw_refresh: str) -> dict | None:
+    """Validate a refresh token, ROTATE it, and return new tokens.
+
+    F-068: pre-fix this returned just a new access token and left the
+    incoming refresh token alive. That violates refresh-rotation best
+    practice — a stolen refresh token could be replayed forever
+    (until its 30-day expiry) without the legitimate user noticing.
+
+    Now: the incoming refresh token is revoked and a new refresh
+    token is issued in the same call. The legitimate client uses the
+    new pair on its next refresh; if an attacker also tries to use
+    the old refresh token, the second call sees the revoked flag and
+    fails with None — a signal the caller should escalate (force
+    logout of all sessions, alert SOC, etc.).
+
+    Returns a dict ``{"access_token", "refresh_token"}`` or ``None``.
+    """
     token_hash = hashlib.sha256(raw_refresh.encode()).hexdigest()
     rt = (
         db.query(RefreshToken)
@@ -88,7 +103,12 @@ def refresh_access_token(db: Session, raw_refresh: str) -> str | None:
     if not user or not user.is_active:
         return None
 
-    return create_access_token(data={"sub": user.username})
+    # Rotate: kill the incoming refresh, issue a new one.
+    rt.revoked = True
+    db.flush()
+    new_refresh = create_refresh_token(db, user.id)
+    new_access = create_access_token(data={"sub": user.username})
+    return {"access_token": new_access, "refresh_token": new_refresh}
 
 
 def revoke_refresh_token(db: Session, raw_refresh: str) -> bool:
@@ -101,17 +121,26 @@ def revoke_refresh_token(db: Session, raw_refresh: str) -> bool:
     return True
 
 
-# ── Token blacklist (simple DB approach; swap for Redis in prod) ──
+# ── Token blacklist ──
+# F-063: pre-fix this was a process-local `_BLACKLIST: set[str]` —
+# logging out on worker A had no effect on workers B…N, so the token
+# stayed valid across the rest of the worker pool until natural expiry.
+# Revocation now lives in the `revoked_tokens` table (see migration
+# 0020), checked on every authenticated request by `get_current_user`.
+# This module-level helper is preserved as a thin shim so callers that
+# still import `blacklist_token` keep working.
 
-_BLACKLIST: set[str] = set()
+
+def blacklist_token(db: Session, jti: str, exp: datetime,
+                    user_id: int | None = None,
+                    reason: str = "logout") -> None:
+    from app.services.auth import revoke_access_token_jti
+    revoke_access_token_jti(db, jti, exp, user_id=user_id, reason=reason)
 
 
-def blacklist_token(jti_or_raw: str) -> None:
-    _BLACKLIST.add(jti_or_raw)
-
-
-def is_token_blacklisted(jti_or_raw: str) -> bool:
-    return jti_or_raw in _BLACKLIST
+def is_token_blacklisted(db: Session, jti: str) -> bool:
+    from app.models.auth_models import RevokedToken
+    return db.query(RevokedToken).filter(RevokedToken.jti == jti).first() is not None
 
 
 # ══════════════════════════════════════

@@ -1,7 +1,7 @@
 """
 ASTRA — Rate Limiter Middleware
 ================================
-File: backend/app/middleware/rate_limiter.py   ← NEW
+File: backend/app/middleware/rate_limiter.py
 
 In-memory token-bucket rate limiter with three tiers:
   - Default API:      100 req/min per IP
@@ -12,6 +12,29 @@ All limits are configurable via environment variables.
 
 NIST 800-53 controls: SC-5 (Denial of Service Protection),
 AC-7 (Unsuccessful Logon Attempts — complementary to account lockout).
+
+═══════════════════════════════════════════════════════════════════════
+  F-064: Multi-worker effective limit
+═══════════════════════════════════════════════════════════════════════
+The buckets are *process-local* — each gunicorn / uvicorn worker has
+its own ``_TokenBucket`` instances. With ``--workers N`` the effective
+ceiling that any one client IP can hit is ``N × RATE_LIMIT_*`` because
+the load balancer (nginx, k8s service) can spray requests across
+workers and each worker thinks it has the full budget to spend.
+
+Implications:
+  * The defaults above (100 / 10 / 5 req/min) are *per-worker* values.
+    A 4-worker deployment effectively allows 400 / 40 / 20 req/min per
+    IP. Choose the env-var values knowing this multiplier applies.
+  * Account lockout (NIST AC-7) is NOT affected — it lives in the DB
+    and is shared across workers. Brute-force protection still works
+    correctly; only the per-IP request-rate ceiling is multiplied.
+  * Single-worker deployments (``--workers 1``) are not affected.
+
+This is documented behaviour, not a bug. The proper fix is to back the
+buckets with Redis so the ceiling is shared across workers; that's
+deferred to a separate PR alongside the Redis stack introduction
+(see SECURITY.md §"Rate limiting" and AUDIT_FINDINGS F-064).
 """
 
 import os

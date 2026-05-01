@@ -11,6 +11,7 @@ from enum import Enum
 class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    refresh_token: Optional[str] = None  # F-068: present on /auth/refresh
 
 class TokenData(BaseModel):
     username: Optional[str] = None
