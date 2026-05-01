@@ -83,7 +83,7 @@ export default function ImportPage() {
   const [rows, setRows] = useState<ImportRow[]>([]);
   const [result, setResult] = useState<ImportResult | null>(null);
   const [error, setError] = useState('');
-  const [progress, setProgress] = useState(0);
+  // F-099: progress state removed — was driven by a fake setInterval.
   const [dragOver, setDragOver] = useState(false);
 
   useEffect(() => {
@@ -142,30 +142,24 @@ export default function ImportPage() {
   const excludeAll = () => setRows((prev) => prev.map((r) => ({ ...r, included: false })));
 
   // ── Confirm import ──
+  // F-099: dropped the fake setInterval progress tick. The server
+  // doesn't expose per-row progress, so the bar was lying. Spinner
+  // step renders the indeterminate state honestly.
   const handleConfirm = async () => {
     setStep('importing');
-    setProgress(0);
     setError('');
-
-    // Animate progress
-    const interval = setInterval(() => {
-      setProgress((p) => Math.min(p + 2, 90));
-    }, 100);
-
     try {
       const res = await api.post('/imports/requirements/confirm', {
         project_id: projectId,
         rows: rows.filter((r) => r.included),
       });
       setResult(res.data);
-      setProgress(100);
       setStep('done');
     } catch (e: any) {
       const detail = e.response?.data?.detail;
       setError(typeof detail === 'string' ? detail : 'Import failed');
       setStep('preview');
     }
-    clearInterval(interval);
   };
 
   // ── Download template ──
@@ -411,21 +405,19 @@ export default function ImportPage() {
       )}
 
       {/* ═══════════════════════════════════
-          Step 3: Importing (progress)
+          Step 3: Importing (spinner — F-099 dropped the fake bar)
           ═══════════════════════════════════ */}
       {step === 'importing' && (
-        <div className="rounded-2xl border border-astra-border bg-astra-surface p-12 text-center">
-          <Loader2 className="mx-auto h-10 w-10 animate-spin text-blue-500 mb-4" />
-          <h3 className="text-sm font-bold text-slate-200 mb-2">Importing Requirements…</h3>
-          <div className="mx-auto max-w-xs">
-            <div className="h-2 overflow-hidden rounded-full bg-astra-surface-alt">
-              <div
-                className="h-full rounded-full bg-blue-500 transition-all duration-300"
-                style={{ width: `${progress}%` }}
-              />
-            </div>
-            <span className="mt-1 text-[10px] text-slate-500">{progress}%</span>
-          </div>
+        <div
+          className="rounded-2xl border border-astra-border bg-astra-surface p-12 text-center"
+          role="status"
+          aria-live="polite"
+        >
+          <Loader2 className="mx-auto h-10 w-10 animate-spin text-blue-500 mb-4" aria-hidden="true" />
+          <h3 className="text-sm font-bold text-slate-200 mb-2">Importing Requirements&hellip;</h3>
+          <p className="text-[11px] text-slate-500">
+            Persisting rows into the project. This may take a few seconds.
+          </p>
         </div>
       )}
 

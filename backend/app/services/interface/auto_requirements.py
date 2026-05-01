@@ -986,6 +986,9 @@ class AutoRequirementGenerator:
             source_id=unit.id,
             template_name="environmental_spec" if tmpl.get("standard", "").startswith("MIL-STD-810") else "emi_spec",
             req_type="environmental",
+            # F-144: per-spec discriminator so multiple env/EMI children
+            # don't collide on the (template_name) idempotency key.
+            category=tmpl["category"],
         )
 
         # Auto-verification
@@ -1023,12 +1026,16 @@ class AutoRequirementGenerator:
     def _find_or_create_env_parent(self, unit: Unit) -> Optional[Requirement]:
         """Find or create an L3 parent requirement for env/EMI specs on this unit."""
 
-        # Look for existing env parent
+        # Look for existing env parent. F-144: filter on the parent
+        # category as well — without it, the FIRST matching env link
+        # (which post-fix could be a per-spec child) would be returned
+        # as the "parent."
         existing_link = self.db.query(InterfaceRequirementLink).filter(
             InterfaceRequirementLink.entity_type == "unit",
             InterfaceRequirementLink.entity_id == unit.id,
             InterfaceRequirementLink.auto_generated.is_(True),
             InterfaceRequirementLink.auto_req_template == "environmental_spec",
+            InterfaceRequirementLink.auto_req_source == "env_emi_parent",
         ).first()
 
         if existing_link:
@@ -1059,6 +1066,10 @@ class AutoRequirementGenerator:
             source_id=unit.id,
             template_name="environmental_spec",
             req_type="environmental",
+            # F-144: parent has its own category so the idempotency
+            # check distinguishes it from per-spec children that also
+            # use template_name="environmental_spec".
+            category="env_emi_parent",
         )
 
         return req
@@ -1130,25 +1141,38 @@ class AutoRequirementGenerator:
         source_id: Optional[int] = None,
         template_name: Optional[str] = None,
         req_type: str = "interface",
+        category: Optional[str] = None,
     ) -> Requirement:
         """Create requirement through standard ASTRA pipeline.
 
         Idempotency: if an auto-generated, non-deleted requirement already
-        exists for this (source_type, source_id, template_name) tuple in this
-        project, return it instead of creating a duplicate. This makes repeated
-        'Generate Requirements' clicks safe — the second click is a no-op.
+        exists for this (source_type, source_id, template_name, category)
+        tuple in this project, return it instead of creating a duplicate.
+        This makes repeated 'Generate Requirements' clicks safe — the
+        second click is a no-op.
+
+        F-144: ``category`` is a finer-grained discriminator stored in
+        ``InterfaceRequirementLink.auto_req_source``. Multiple env/EMI
+        children share the same ``template_name`` ("environmental_spec"
+        / "emi_spec") but each has a distinct ``category``
+        ("temperature_operating", "vibration_random", "ce102", …).
+        Without the category in the idempotency key, every env child
+        after the first matched the parent (which also uses
+        template_name="environmental_spec") and was silently discarded.
+        Net: 6 candidate children → 2 generated. With the category in
+        the key, each child has a unique idempotency tuple.
         """
 
         # ── Idempotency check ──
-        # Look for existing non-deleted auto-generated requirement tied to this
-        # exact source entity + template. If found, reuse it.
+        # Look for existing non-deleted auto-generated requirement tied to
+        # this exact source entity + template + category. If found, reuse.
         has_valid_source = (
             isinstance(source_type, str) and source_type.strip() != ""
             and isinstance(source_id, int) and source_id > 0
             and isinstance(template_name, str) and template_name.strip() != ""
         )
         if has_valid_source:
-            existing = (
+            q = (
                 self.db.query(Requirement)
                 .join(
                     InterfaceRequirementLink,
@@ -1162,13 +1186,18 @@ class AutoRequirementGenerator:
                     InterfaceRequirementLink.auto_req_template == template_name,
                     InterfaceRequirementLink.auto_generated.is_(True),
                 )
-                .first()
             )
+            if category is not None:
+                q = q.filter(
+                    InterfaceRequirementLink.auto_req_source == category,
+                )
+            existing = q.first()
             if existing:
                 logger.info(
                     "auto-req idempotency: reusing existing %s for "
-                    "(source_type=%s, source_id=%d, template=%s)",
+                    "(source_type=%s, source_id=%d, template=%s, category=%s)",
                     existing.req_id, source_type, source_id, template_name,
+                    category,
                 )
                 # Don't append to self.generated_reqs — nothing was created.
                 return existing
@@ -1261,7 +1290,12 @@ class AutoRequirementGenerator:
             requirement_id=req.id,
             link_type="satisfies",
             auto_generated=True,
-            auto_req_source=template_name or "unknown",
+            # F-144: store the per-child category in auto_req_source so
+            # the idempotency check can distinguish siblings under the
+            # same template_name. auto_req_template stays at the broad
+            # "environmental_spec" / "emi_spec" level for report
+            # display compatibility.
+            auto_req_source=category or template_name or "unknown",
             auto_req_template=template_name,
             status=link_status,
             created_by_id=self.user.id,

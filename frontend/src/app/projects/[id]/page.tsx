@@ -13,7 +13,7 @@
  *   - Recent activity with relative timestamps, user initials, action colors
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
   Loader2, LayoutDashboard, Database, FileText, CheckCircle,
@@ -26,11 +26,17 @@ import { projectsAPI, dashboardAPI, traceabilityAPI, requirementsAPI, devAPI, ba
 import {
   LEVEL_COLORS, LEVEL_LABELS, STATUS_COLORS, STATUS_LABELS,
   type RequirementLevel, type RequirementStatus,
+  type Project, type Requirement, type DashboardStats,
+  type CoverageReport, type BaselineDetail,
 } from '@/lib/types';
+import type { AIStats } from '@/lib/ai-api';
 
-// Optional AI API
-let aiAPI: any = null;
-try { aiAPI = require('@/lib/ai-api').aiAPI; } catch {}
+// F-084: runtime require() shim replaced with a normal typed import.
+// The catch never fired anyway — webpack/turbopack always bundle the
+// module — and the resulting `aiAPI: any` defeated type-checking.
+// Whether AI is actually available at runtime is a separate question
+// answered by `aiAPI.isAvailable()` (cached, hits /ai/stats).
+import { aiAPI } from '@/lib/ai-api';
 
 // ══════════════════════════════════════
 //  Helpers
@@ -346,16 +352,26 @@ export default function ProjectDashboard() {
   const router = useRouter();
   const projectId = Number(params.id);
 
-  const [project, setProject] = useState<any>(null);
-  const [stats, setStats] = useState<any>(null);
-  const [coverage, setCoverage] = useState<any>(null);
-  const [requirements, setRequirements] = useState<any[]>([]);
-  const [baselines, setBaselines] = useState<any[]>([]);
-  const [aiStats, setAiStats] = useState<any>(null);
+  // F-092: typed state replaces useState<any>(null) so contract drift
+  // between backend and frontend surfaces at compile time.
+  const [project, setProject] = useState<Project | null>(null);
+  const [stats, setStats] = useState<DashboardStats | null>(null);
+  const [coverage, setCoverage] = useState<CoverageReport | null>(null);
+  const [requirements, setRequirements] = useState<Requirement[]>([]);
+  const [baselines, setBaselines] = useState<BaselineDetail[]>([]);
+  const [aiStats, setAiStats] = useState<AIStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [seeding, setSeeding] = useState(false);
   const [seedResult, setSeedResult] = useState<string | null>(null);
+
+  // F-102: AbortController for the AI stats fetch so a navigation
+  // away mid-flight doesn't trigger setState on an unmounted
+  // component. Pre-fix the aiAPI.getStats(...).then(setAiStats) call
+  // had no abort hook — switching projects fast enough produced
+  // "Can't perform a React state update on an unmounted component"
+  // warnings + occasional stale data flicker.
+  const aiAbortRef = useRef<AbortController | null>(null);
 
   const fetchAll = useCallback(async () => {
     if (!projectId) return;
@@ -375,11 +391,17 @@ export default function ProjectDashboard() {
       setRequirements(Array.isArray(reqsRes?.data) ? reqsRes.data : []);
       setBaselines(blRes?.data?.baselines || blRes?.data || []);
 
-      if (aiAPI) {
-        aiAPI.getStats(projectId)
-          .then((res: any) => setAiStats(res.data))
-          .catch(() => setAiStats(null));
-      }
+      // F-102: cancel any in-flight aiStats fetch before starting a new one.
+      aiAbortRef.current?.abort();
+      const ctl = new AbortController();
+      aiAbortRef.current = ctl;
+      aiAPI.getStats(projectId)
+        .then((res) => {
+          if (!ctl.signal.aborted) setAiStats(res.data);
+        })
+        .catch(() => {
+          if (!ctl.signal.aborted) setAiStats(null);
+        });
     } catch (e: any) {
       setError(e.response?.data?.detail || 'Failed to load dashboard');
     }
@@ -556,11 +578,11 @@ export default function ProjectDashboard() {
                 <LevelBar key={lv} level={lv} count={byLevel[lv] || 0} total={totalReqs} />
               ))}
             </div>
-            {(stats?.orphan_count > 0) && (
+            {((stats?.orphan_count ?? 0) > 0) && (
               <div className="mt-4 flex items-center gap-2 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2">
                 <AlertTriangle className="h-3.5 w-3.5 text-amber-400 flex-shrink-0" />
                 <span className="text-[11px] text-amber-300">
-                  {stats.orphan_count} orphan{stats.orphan_count !== 1 ? 's' : ''} with no trace links
+                  {stats!.orphan_count} orphan{stats!.orphan_count !== 1 ? 's' : ''} with no trace links
                 </span>
               </div>
             )}

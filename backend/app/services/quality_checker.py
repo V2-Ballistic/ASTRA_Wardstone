@@ -8,24 +8,21 @@ requirements validation checks per NASA SP-2016-6105 Rev2 Appendix C.
 import re
 from typing import List, Tuple
 
-# NASA Appendix C: Prohibited ambiguous/unverifiable terms
-PROHIBITED_TERMS = [
-    "flexible", "easy", "sufficient", "safe", "ad hoc", "adequate",
-    "accommodate", "user-friendly", "usable", "when required",
-    "if required", "appropriate", "fast", "portable", "lightweight",
-    "light-weight", "small", "large", "maximize", "minimize",
-    "sufficient", "robust", "quickly", "easily", "clearly",
-    "simply", "efficiently", "effectively", "reasonable",
-    "as appropriate", "etc", "and/or", "but not limited to",
-    "as needed", "timely", "user friendly"
-]
+# F-079: prohibited / ambiguous / TBD terms now live in
+# `app.services.quality.nasa_terms` so the editorial check, the
+# quality_report renderer, and any future quality tooling all share one
+# canonical list. Pre-fix this module had a private list with two
+# `"sufficient"` entries (a tell that two engineers had each appended
+# and nobody noticed) and was missing several terms the report module
+# checked, so a requirement could pass `quality_checker` and then fail
+# the report. Importing through the canonical module fixes both.
+from app.services.quality.nasa_terms import (
+    PROHIBITED_TERMS as _CANONICAL_PROHIBITED,
+    AMBIGUOUS_QUANTIFIERS as _CANONICAL_AMBIGUOUS,
+)
 
-# Terms that are ambiguous quantifiers
-AMBIGUOUS_QUANTIFIERS = [
-    "some", "several", "many", "few", "often", "usually",
-    "generally", "normally", "approximately", "about",
-    "significant", "minimal", "considerable"
-]
+PROHIBITED_TERMS = list(_CANONICAL_PROHIBITED)
+AMBIGUOUS_QUANTIFIERS = list(_CANONICAL_AMBIGUOUS)
 
 # NASA Appendix C: Correct keyword usage
 # SHALL = requirement, WILL = fact/declaration, SHOULD = goal

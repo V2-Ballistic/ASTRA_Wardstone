@@ -11,6 +11,9 @@ import { Loader2, Zap, AlertTriangle, CheckCircle, XCircle, ChevronRight, Refres
 import clsx from 'clsx';
 import { requirementsAPI, projectsAPI } from '@/lib/api';
 import api from '@/lib/api';
+// F-092: pull the existing ImpactReport type for the report state.
+import type { ImpactReport } from '@/lib/impact-api';
+import type { Requirement } from '@/lib/types';
 
 const RISK_COLORS: Record<string, { color: string; bg: string }> = {
   low: { color: '#10B981', bg: '#10B98115' },
@@ -25,12 +28,13 @@ export default function ImpactAnalysisPage() {
   const projectId = Number(params.id);
 
   const [projectCode, setProjectCode] = useState('');
-  const [requirements, setRequirements] = useState<any[]>([]);
-  const [highImpact, setHighImpact] = useState<any[]>([]);
+  const [requirements, setRequirements] = useState<Requirement[]>([]);
+  const [highImpact, setHighImpact] = useState<Requirement[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedReqId, setSelectedReqId] = useState<number | null>(null);
   const [changeDesc, setChangeDesc] = useState('');
-  const [report, setReport] = useState<any>(null);
+  // F-092: typed report so the JSX accesses real fields.
+  const [report, setReport] = useState<ImpactReport | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
 
   useEffect(() => {

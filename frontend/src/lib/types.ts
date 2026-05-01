@@ -94,6 +94,92 @@ export interface QualityCheckResult {
   suggestions: string[];
 }
 
+// ── F-092: typed dashboard / coverage / baseline / audit responses ──
+//
+// These mirror the shapes the backend returns for the listed
+// endpoints. Pre-fix the corresponding pages used `useState<any>(null)`
+// and bled un-validated `res.data` into JSX. With these types in
+// place TS catches contract drift between backend and frontend at
+// compile time.
+
+export interface DashboardStats {
+  total_requirements: number;
+  by_status: Record<string, number>;
+  by_type: Record<string, number>;
+  by_level: Record<string, number>;
+  verified_count: number;
+  avg_quality_score: number;
+  total_trace_links: number;
+  orphan_count: number;
+  recent_activity: Array<{
+    req_id: string;
+    field: string;
+    old_value: string | null;
+    new_value: string | null;
+    description: string;
+    user: string;
+    timestamp: string | null;
+  }>;
+}
+
+export interface CoverageReport {
+  // The router computes the same coverage three different ways for
+  // backward compatibility with consumers (landing page, traceability
+  // page, sidebar). All fields below are part of the documented
+  // payload — see backend/app/routers/projects.py::get_coverage.
+  total_requirements: number;
+  total?: number;                // alias used by traceability page
+  with_source: number;
+  with_source_pct: number;
+  with_children: number;
+  with_children_pct: number;
+  with_verification: number;
+  with_verification_pct: number;
+  orphans: number;
+  orphan_pct: number;
+  // Legacy keys consumed by projects/[id]/page.tsx:
+  forward_coverage: number;      // == with_source_pct
+  backward_coverage: number;     // == with_children_pct
+  verification_coverage: number; // == with_verification_pct
+}
+
+export interface BaselineDetail {
+  id: number;
+  name: string;
+  description: string;
+  project_id: number;
+  requirements_count: number;
+  created_by: string;
+  created_at: string | null;
+  // The detail-fetch payload bundles the snapshot rows alongside the
+  // header. Modeled loosely (Record<string, unknown>) because the
+  // snapshot row schema mixes typed fields and free-form columns;
+  // tightening it further is a follow-up.
+  requirements?: Array<Record<string, unknown>>;
+}
+
+export interface BaselineCompareResult {
+  baseline_a?: BaselineDetail;
+  baseline_b?: BaselineDetail;
+  added?: Array<Record<string, unknown>>;
+  removed?: Array<Record<string, unknown>>;
+  modified?: Array<Record<string, unknown>>;
+  // The compare endpoint returns a free-form `summary` block too;
+  // typed loosely until the response shape is locked down.
+  summary?: Record<string, unknown>;
+}
+
+export interface AuditChainVerifyResult {
+  is_valid: boolean;
+  verified_count?: number;
+  total_records?: number;
+  error?: string;
+  // Server returns the offending record as `first_invalid: { sequence_number, reason }`
+  // (or null when the chain is valid). Modeled loosely so the page can
+  // read `.first_invalid?.sequence_number` without ceremony.
+  first_invalid?: { sequence_number?: number; reason?: string } | null;
+}
+
 // ── Enums ──
 
 export type RequirementType =

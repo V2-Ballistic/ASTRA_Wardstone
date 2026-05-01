@@ -10,8 +10,8 @@ import { useParams, useRouter } from 'next/navigation';
 import { Sparkles, Loader2, RefreshCw, AlertTriangle, CheckCircle, XCircle, Clock, Network, Copy, FlaskConical, BarChart3, ChevronRight, Zap, Wand2 } from 'lucide-react';
 import { projectsAPI } from '@/lib/api';
 
-let aiAPI: any = null;
-try { aiAPI = require('@/lib/ai-api').aiAPI; } catch {}
+// F-084: replaced runtime require() shim with normal typed import.
+import { aiAPI } from '@/lib/ai-api';
 
 export default function AIHubPage() {
   const params = useParams();

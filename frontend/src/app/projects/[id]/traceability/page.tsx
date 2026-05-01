@@ -22,11 +22,11 @@ import ForceGraph from '@/components/traceability/ForceGraph';
 import {
   STATUS_COLORS, STATUS_LABELS, LEVEL_COLORS,
   type RequirementStatus, type RequirementLevel,
+  type CoverageReport,
 } from '@/lib/types';
 
-// Optional AI
-let aiAPI: any = null;
-try { aiAPI = require('@/lib/ai-api').aiAPI; } catch {}
+// F-084: runtime require() shim replaced with normal typed import.
+import { aiAPI } from '@/lib/ai-api';
 
 // ── Coverage bar ──
 function CoverageBar({ label, value, pct, total, color }: {
@@ -108,7 +108,7 @@ export default function TraceabilityPage() {
 
   // Data
   const [matrixData, setMatrixData] = useState<any[]>([]);
-  const [coverage, setCoverage] = useState<any>(null);
+  const [coverage, setCoverage] = useState<CoverageReport | null>(null);
   const [graphData, setGraphData] = useState<{ nodes: any[]; edges: any[] }>({ nodes: [], edges: [] });
 
   // AI Suggestions
@@ -226,7 +226,7 @@ export default function TraceabilityPage() {
           <h1 className="text-xl font-bold tracking-tight">Traceability</h1>
           <p className="mt-1 text-sm text-slate-500">{projectCode} · Requirements verification traceability</p>
         </div>
-        <button onClick={fetchData} className="rounded-full border border-astra-border p-2 text-slate-400 transition hover:text-slate-200">
+        <button onClick={fetchData} aria-label="Refresh traceability data" className="rounded-full border border-astra-border p-2 text-slate-400 transition hover:text-slate-200">
           <RefreshCw className="h-3.5 w-3.5" />
         </button>
       </div>

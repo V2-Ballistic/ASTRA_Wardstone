@@ -138,6 +138,77 @@ def get_trace_suggestions(
     )
 
 
+@router.get("/trace-suggestions/by-project")
+def get_project_trace_suggestions(
+    project_id: int = Query(..., description="Project to scan"),
+    threshold: float = Query(0.60, ge=0.3, le=1.0),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """F-087: project-wide trace suggestions with EXPLICIT pagination.
+
+    Pre-fix the traceability page issued one /trace-suggestions call
+    per requirement using `reqs.slice(0, 20)` and silently dropped
+    suggestions for requirements 21..N. This endpoint runs the
+    suggester for every non-deleted requirement in the project, then
+    returns a paginated slice plus the total count so the UI can
+    show "Showing first N of M".
+
+    Per-requirement suggestions are computed sequentially server-side
+    — the embedding lookups share the project-level cache that
+    suggest_trace_links maintains, so the second-onwards iterations
+    are fast.
+    """
+    from app.dependencies.project_access import _check_membership
+    _check_membership(db, project_id, current_user)
+
+    req_ids = [
+        r.id for r in (
+            db.query(Requirement.id)
+            .filter(
+                Requirement.project_id == project_id,
+                Requirement.status != "deleted",
+            )
+            .order_by(Requirement.id)
+            .all()
+        )
+    ]
+    total = len(req_ids)
+    page_ids = req_ids[skip : skip + limit]
+
+    suggestions = []
+    for rid in page_ids:
+        try:
+            res = suggest_trace_links(
+                db=db,
+                requirement_id=rid,
+                project_id=project_id,
+                threshold=threshold,
+            )
+            # res is a TraceSuggestionsResponse — surface its
+            # `.suggestions` list with the originating req_id.
+            for s in (res.suggestions or []):
+                # Pydantic model → dict for the heterogeneous response.
+                d = s.model_dump() if hasattr(s, "model_dump") else dict(s)
+                d.setdefault("requirement_id", rid)
+                suggestions.append(d)
+        except Exception:
+            # Don't fail the whole batch if one requirement's
+            # suggestion call blows up — skip and keep going.
+            continue
+
+    return {
+        "project_id": project_id,
+        "total_requirements": total,
+        "scanned": len(page_ids),
+        "skip": skip,
+        "limit": limit,
+        "suggestions": suggestions,
+    }
+
+
 # ══════════════════════════════════════
 #  Verification Suggestion
 # ══════════════════════════════════════

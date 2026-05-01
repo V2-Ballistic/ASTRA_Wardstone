@@ -58,9 +58,42 @@ function wireColor(signalType?: string | null, wireType?: string | null): string
   return '#3B82F6';
 }
 
+// F-097: a one-character glyph paired with the color so signal type
+// is conveyed by both colour AND text. Maps the same prefixes
+// wireColor uses; defaults to "S" for generic signal.
+function signalGlyph(signalType?: string | null, wireType?: string | null): string {
+  const s = (signalType || '').toLowerCase();
+  if (s.startsWith('power')) return 'P';
+  if (s.includes('ground')) return 'G';
+  if (s.startsWith('clock')) return 'C';
+  if (s.startsWith('rf_') || s === 'rf_signal') return 'R';
+  if (s.startsWith('discrete')) return 'D';
+  if (s.includes('analog')) return 'A';
+  if (s.includes('digital')) return 'D';
+  if (s.startsWith('serial') || s.startsWith('spi') || s.startsWith('i2c') || s.startsWith('can')) return 'B';
+  if (s.startsWith('fiber') || s.startsWith('shield')) return 'S';
+  if (s === 'spare' || s === 'no_connect') return '–';
+  const t = (wireType || '').toLowerCase();
+  if (t.startsWith('power')) return 'P';
+  if (t.startsWith('ground')) return 'G';
+  if (t.startsWith('shield')) return 'S';
+  if (t.startsWith('coax') || t.startsWith('rf')) return 'R';
+  if (t.startsWith('fiber')) return 'S';
+  return 'S';
+}
+
 function WireColor({ type, signalType }: { type: string; signalType?: string }) {
   const color = wireColor(signalType, type);
-  return <div className="h-2 w-2 rounded-full flex-shrink-0" style={{ background: color }} />;
+  const glyph = signalGlyph(signalType, type);
+  // F-097: render a glyph next to the color dot — colour-only signals
+  // failed WCAG 1.4.1; the adjacent letter gives the same info to
+  // users who can't distinguish the colours.
+  return (
+    <div className="flex items-center gap-1 flex-shrink-0">
+      <div className="h-2 w-2 rounded-full" style={{ background: color }} aria-hidden="true" />
+      <span className="text-[8px] font-bold text-slate-400" aria-label={`Signal class ${glyph}`}>{glyph}</span>
+    </div>
+  );
 }
 
 const STATUS_COLORS: Record<string, { bg: string; text: string }> = {
@@ -91,6 +124,17 @@ function StatusBadge({ status }: { status: string }) {
 //  above each trace. Hover highlights an individual trace.
 // ══════════════════════════════════════════════════════════════
 
+// F-129: paginate when wire count exceeds this threshold. Below it,
+// the SVG renders the full set the way it always has. Above, the
+// component renders a 200-wire window plus a "Showing wires X..Y of N"
+// header with previous/next controls. SVG-aware viewport-based
+// virtualization would be cleaner but requires the parent scroll
+// container to be on the SVG itself; the harness page lets the
+// page-level scroll do the work today, so paged chunks are the
+// simpler bounded fix. Canvas would scale further but is a
+// substantial rewrite — defer until 1000+ wires becomes common.
+const PIN_MAP_PAGE_SIZE = 200;
+
 function PinMapSvg({
   harness,
   hoveredWireId,
@@ -100,7 +144,12 @@ function PinMapSvg({
   hoveredWireId: number | null;
   onHover: (id: number | null) => void;
 }) {
-  const wires = harness.wires;
+  const allWires = harness.wires;
+  const [page, setPage] = useState(0);
+  const totalPages = Math.max(1, Math.ceil(allWires.length / PIN_MAP_PAGE_SIZE));
+  const wires = allWires.length > PIN_MAP_PAGE_SIZE
+    ? allWires.slice(page * PIN_MAP_PAGE_SIZE, (page + 1) * PIN_MAP_PAGE_SIZE)
+    : allWires;
 
   // Layout constants
   const rowHeight = 36;
@@ -126,14 +175,49 @@ function PinMapSvg({
   const legend = useMemo(() => {
     const seen = new Map<string, string>();
     for (const w of wires) {
-      const key = w.signal_name && (w as any).signal_type ? (w as any).signal_type : w.wire_type;
-      if (!seen.has(key)) seen.set(key, wireColor((w as any).signal_type, w.wire_type));
+      const key = w.signal_name && w.signal_type ? w.signal_type : w.wire_type;
+      if (!seen.has(key)) seen.set(key, wireColor(w.signal_type, w.wire_type));
     }
     return [...seen.entries()];
   }, [wires]);
 
   return (
     <div>
+      {/* F-129: pagination strip when wire count exceeds the page size. */}
+      {allWires.length > PIN_MAP_PAGE_SIZE && (
+        <div className="mb-3 flex items-center justify-between rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-[11px] text-amber-200">
+          <span>
+            Showing wires {page * PIN_MAP_PAGE_SIZE + 1}–
+            {Math.min((page + 1) * PIN_MAP_PAGE_SIZE, allWires.length)} of {allWires.length}
+            <span className="ml-2 text-amber-300/70">
+              (paginated for performance — use the Wires table for the full list)
+            </span>
+          </span>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setPage(p => Math.max(0, p - 1))}
+              disabled={page === 0}
+              className="rounded-md border border-amber-500/30 px-2 py-1 text-[10px] font-medium text-amber-200 hover:bg-amber-500/10 disabled:opacity-40"
+              aria-label="Previous page of wires"
+            >
+              ◀
+            </button>
+            <span className="px-1 text-[10px] text-amber-200/80">
+              Page {page + 1} of {totalPages}
+            </span>
+            <button
+              type="button"
+              onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
+              disabled={page >= totalPages - 1}
+              className="rounded-md border border-amber-500/30 px-2 py-1 text-[10px] font-medium text-amber-200 hover:bg-amber-500/10 disabled:opacity-40"
+              aria-label="Next page of wires"
+            >
+              ▶
+            </button>
+          </div>
+        </div>
+      )}
       <svg viewBox={`0 0 ${width} ${height}`} className="w-full" preserveAspectRatio="xMidYMid meet">
         <defs>
           <linearGradient id="pinmap-body" x1="0" y1="0" x2="0" y2="1">
@@ -174,7 +258,7 @@ function PinMapSvg({
                 x={leftBodyX + 10} y={y - pinBoxH / 2}
                 width={pinBoxW} height={pinBoxH} rx={3}
                 fill={isHover ? '#0F172A' : '#0B1220'}
-                stroke={isHover ? wireColor((w as any).signal_type, w.wire_type) : '#334155'}
+                stroke={isHover ? wireColor(w.signal_type, w.wire_type) : '#334155'}
                 strokeWidth={isHover ? 1.5 : 1}
               />
               <text x={leftBodyX + 10 + pinBoxW / 2} y={y + 3} textAnchor="middle"
@@ -188,7 +272,7 @@ function PinMapSvg({
               </text>
               {/* Contact nub (where wire exits body) */}
               <circle cx={leftBodyX + connectorWidth} cy={y} r={3.5}
-                fill={wireColor((w as any).signal_type, w.wire_type)} />
+                fill={wireColor(w.signal_type, w.wire_type)} />
             </g>
           );
         })}
@@ -201,12 +285,12 @@ function PinMapSvg({
             <g key={`R-${w.id}`} onMouseEnter={() => onHover(w.id)} onMouseLeave={() => onHover(null)}
               style={{ cursor: 'pointer' }}>
               <circle cx={rightBodyX} cy={y} r={3.5}
-                fill={wireColor((w as any).signal_type, w.wire_type)} />
+                fill={wireColor(w.signal_type, w.wire_type)} />
               <rect
                 x={rightBodyX + connectorWidth - pinBoxW - 10} y={y - pinBoxH / 2}
                 width={pinBoxW} height={pinBoxH} rx={3}
                 fill={isHover ? '#0F172A' : '#0B1220'}
-                stroke={isHover ? wireColor((w as any).signal_type, w.wire_type) : '#334155'}
+                stroke={isHover ? wireColor(w.signal_type, w.wire_type) : '#334155'}
                 strokeWidth={isHover ? 1.5 : 1}
               />
               <text x={rightBodyX + connectorWidth - 10 - pinBoxW / 2} y={y + 3} textAnchor="middle"
@@ -227,7 +311,7 @@ function PinMapSvg({
           const x1 = leftBodyX + connectorWidth;
           const x2 = rightBodyX;
           const midX = (x1 + x2) / 2;
-          const color = wireColor((w as any).signal_type, w.wire_type);
+          const color = wireColor(w.signal_type, w.wire_type);
           const isHover = hoveredWireId === w.id;
           // Slight vertical jitter to avoid overlap when many wires share a row
           const dy = 0;
@@ -1866,7 +1950,7 @@ export default function HarnessDetailPage() {
                     <td className="px-3 py-2 font-semibold text-slate-200">{w.signal_name}</td>
                     <td className="px-3 py-2">
                       <div className="flex items-center gap-1.5">
-                        <WireColor type={w.wire_type} signalType={(w as any).signal_type} />
+                        <WireColor type={w.wire_type} signalType={w.signal_type} />
                         <span className="text-slate-400 text-[11px]">{labelize(w.wire_type)}</span>
                       </div>
                     </td>

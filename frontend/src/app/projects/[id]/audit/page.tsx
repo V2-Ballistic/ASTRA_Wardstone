@@ -17,6 +17,8 @@ import {
   Filter, Download, PackageCheck, CheckCircle, AlertTriangle,
 } from 'lucide-react';
 import api from '@/lib/api';
+// F-092: typed state for the chain-verify response.
+import type { AuditChainVerifyResult } from '@/lib/types';
 import { projectsAPI } from '@/lib/api';
 
 export default function AuditLogPage() {
@@ -30,7 +32,7 @@ export default function AuditLogPage() {
   const [page, setPage] = useState(0);
   const [entityType, setEntityType] = useState('');
   const [eventType, setEventType] = useState('');
-  const [verifyResult, setVerifyResult] = useState<any>(null);
+  const [verifyResult, setVerifyResult] = useState<AuditChainVerifyResult | null>(null);
   const [verifying, setVerifying] = useState(false);
   const [exporting, setExporting] = useState(false);
 
@@ -163,7 +165,7 @@ export default function AuditLogPage() {
             </div>
           </div>
           {/* Refresh */}
-          <button onClick={fetchLogs} className="rounded-full border border-astra-border p-2 text-slate-400 hover:text-slate-200">
+          <button onClick={fetchLogs} aria-label="Refresh audit log" className="rounded-full border border-astra-border p-2 text-slate-400 hover:text-slate-200">
             <RefreshCw className="h-3.5 w-3.5" />
           </button>
         </div>

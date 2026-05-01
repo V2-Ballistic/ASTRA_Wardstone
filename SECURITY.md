@@ -101,6 +101,24 @@ When exceeded, the server returns HTTP 429 with a `Retry-After: 60` header.
 
 nginx adds a second rate-limiting layer (50 req/sec API, 5 req/sec auth).
 
+### F-064: per-worker multiplier
+
+The token buckets are **process-local**. With `--workers N`, the
+effective ceiling per IP is `N × RATE_LIMIT_*` because the load
+balancer can distribute requests across workers and each worker thinks
+it has the full budget. Pick env-var values knowing this multiplier
+applies — e.g. for a 4-worker deployment that should accept ~400
+req/min per IP, set `RATE_LIMIT_DEFAULT=100`.
+
+This affects only the per-IP request-rate ceiling. **Account lockout
+(AC-7) is not affected** — the failure counter lives in the
+`account_lockouts` table and is shared across all workers, so brute-
+force protection still works correctly regardless of worker count.
+
+The proper fix is to back the buckets with Redis so the ceiling is
+shared across workers. That's deferred to a separate PR alongside the
+Redis stack introduction (tracked under AUDIT_FINDINGS F-064).
+
 ---
 
 ## 5. Account Lockout (AC-7)

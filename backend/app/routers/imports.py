@@ -343,12 +343,19 @@ async def preview_import(
 @router.post("/requirements/confirm", response_model=ImportConfirmResponse)
 def confirm_import(
     data: ImportConfirmRequest,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("requirements.create")),
 ):
     """
     Create requirements from the approved preview rows.
     Only rows with `included=True` are imported.
+
+    F-070: pass `request` through to `_audit` so the import.completed
+    event carries the originating IP / User-Agent. Pre-fix the audit
+    row had blank user_ip / user_agent because the dep chain didn't
+    take a Request, so the audit middleware's request-scoped
+    contextvar wasn't populated for this handler.
     """
     project = db.query(Project).filter(Project.id == data.project_id).first()
     if not project:
@@ -376,6 +383,11 @@ def confirm_import(
             skipped += 1
             continue
 
+        # F-055: per-row SAVEPOINT so a failure inside this row's
+        # add+flush+history block rolls back ONLY this row, not the
+        # whole batch. Pre-fix the outer try/except left orphan
+        # objects in the session that could taint subsequent rows.
+        sp = db.begin_nested()
         try:
             # Generate req_id
             count = db.query(func.count(Requirement.id)).filter(
@@ -421,6 +433,8 @@ def confirm_import(
                 changed_at=datetime.utcnow(),
             )
             db.add(history)
+            db.flush()
+            sp.commit()  # release savepoint — row's writes are durable on outer commit
 
             # Track for parent resolution of subsequent rows
             req_id_to_pk[req_id] = req.id
@@ -434,6 +448,7 @@ def confirm_import(
             created += 1
 
         except Exception as exc:
+            sp.rollback()  # F-055: roll back this row only
             errors.append(f"Row {row.row_number}: {str(exc)}")
             skipped += 1
 
@@ -443,7 +458,7 @@ def confirm_import(
         _audit(db, "import.completed", "project", data.project_id,
                current_user.id,
                {"created": created, "skipped": skipped, "errors": len(errors)},
-               project_id=data.project_id)
+               project_id=data.project_id, request=request)
     except Exception:
         pass
 
@@ -473,8 +488,16 @@ TEMPLATE_CSV = (
 
 
 @router.get("/template")
-def download_template():
-    """Download a pre-formatted CSV template with example rows."""
+def download_template(
+    current_user: User = Depends(get_current_user),
+):
+    """Download a pre-formatted CSV template with example rows.
+
+    F-072: requires auth. The template is innocuous (no project data,
+    just the column-header schema) but unauthenticated download
+    leaks the full requirements-import field set publicly. Cheap to
+    gate, so we gate it.
+    """
     return StreamingResponse(
         io.BytesIO(TEMPLATE_CSV.encode("utf-8")),
         media_type="text/csv",

@@ -1,10 +1,11 @@
 # ══════════════════════════════════════════════════════
 #  ASTRA — Docker Compose (Development)
 #  File: docker-compose.yml
-#  Path: C:\Users\Mason\Documents\ASTRA\docker-compose.yml
 # ══════════════════════════════════════════════════════
-
-version: "3.9"
+#
+# F-107: top-level `version:` key removed. The Compose v2 CLI ignores
+# the field, and v3 has been deprecated upstream. Keeping it in just
+# emitted a deprecation warning on every `docker compose up`.
 
 services:
   # ── PostgreSQL 16 ──
@@ -92,6 +93,15 @@ services:
         echo '── Starting ASTRA backend ──' &&
         uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
       "
+    # F-105: dev healthcheck mirrors the prod one in
+    # docker-compose.prod.yml so `docker compose ps` reports the
+    # backend's true readiness, and `depends_on … condition:
+    # service_healthy` works locally.
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 3
 
   # ── Next.js Frontend ──
   frontend:
@@ -108,6 +118,13 @@ services:
     depends_on:
       - backend
     command: npm run dev
+    # F-105: dev healthcheck for the Next.js dev server. wget -qO- on
+    # the root path returns 200 once Next is ready; before that it 502s.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
 
 volumes:
   postgres_data:

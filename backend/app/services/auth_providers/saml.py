@@ -32,10 +32,17 @@ def _get_saml_settings() -> dict:
 
     sp_cert = ""
     sp_key = ""
+    # F-082: use a context manager so the file handle is closed even
+    # if the read raises. Pre-fix the bare `open(...).read()` leaked
+    # the handle on any mid-read exception — and SAML reads the SP
+    # cert on every login, so under load that surfaces as
+    # "too many open files" in the auth hot path.
     if cert_file and os.path.isfile(cert_file):
-        sp_cert = open(cert_file).read()
+        with open(cert_file) as f:
+            sp_cert = f.read()
     if key_file and os.path.isfile(key_file):
-        sp_key = open(key_file).read()
+        with open(key_file) as f:
+            sp_key = f.read()
 
     return {
         "strict": True,

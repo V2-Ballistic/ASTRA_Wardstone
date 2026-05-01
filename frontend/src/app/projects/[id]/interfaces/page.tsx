@@ -22,7 +22,7 @@ import clsx from 'clsx';
 import { projectsAPI } from '@/lib/api';
 import { interfaceAPI } from '@/lib/interface-api';
 import type {
-  System, SystemDetail, UnitSummary, Connector, WireHarness,
+  System, SystemType, UnitSummary, Connector, WireHarness,
   N2MatrixResponse, N2MatrixCell, InterfaceCoverageResponse,
   Connection,
 } from '@/lib/interface-types';
@@ -109,7 +109,7 @@ function CreateSystemModal({ projectId, onClose, onCreated }: {
   projectId: number; onClose: () => void; onCreated: () => void;
 }) {
   const [name, setName] = useState('');
-  const [sysType, setSysType] = useState('subsystem');
+  const [sysType, setSysType] = useState<SystemType>('subsystem');
   const [abbr, setAbbr] = useState('');
   const [desc, setDesc] = useState('');
   const [wbs, setWbs] = useState('');
@@ -160,7 +160,7 @@ function CreateSystemModal({ projectId, onClose, onCreated }: {
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1 block">Type</label>
-              <select value={sysType} onChange={e => setSysType(e.target.value)}
+              <select value={sysType} onChange={e => setSysType(e.target.value as SystemType)}
                 className="w-full rounded-lg border border-astra-border bg-astra-bg px-3 py-2.5 text-sm text-slate-200 outline-none focus:border-blue-500/50">
                 {SYSTEM_TYPES.map(t => (
                   <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>
@@ -529,8 +529,14 @@ export default function InterfacesPage() {
   const [n2Data, setN2Data]       = useState<N2MatrixResponse | null>(null);
   const [coverage, setCoverage]   = useState<InterfaceCoverageResponse | null>(null);
 
-  // ── unit_id → system mapping (built from SystemDetail calls) ──
+  // ── unit_id → system mapping (now sourced from UnitSummary.system_id) ──
   const [unitSystemMap, setUnitSystemMap] = useState<Record<number, number>>({});
+
+  // F-089: track fetch failures so the page renders a banner instead
+  // of silently going blank when one of the parallel requests blows
+  // up. Pre-fix the `try { ... } catch { }` swallowed every error
+  // and `setLoading(false)` left the user staring at empty tables.
+  const [fetchError, setFetchError] = useState<string | null>(null);
 
   // ── UI state ──
   const [showCreateSystem, setShowCreateSystem]     = useState(false);
@@ -547,6 +553,7 @@ export default function InterfacesPage() {
   // ── Fetch everything ──
   const fetchData = useCallback(async () => {
     setLoading(true);
+    setFetchError(null);
     try {
       const [projRes, sysRes, unitRes, harnRes, n2Res, covRes, connRes] = await Promise.all([
         projectsAPI.get(projectId),
@@ -563,32 +570,45 @@ export default function InterfacesPage() {
       setProjectCode(projRes.data?.code || '');
       const sysList: System[] = sysRes.data || [];
       setSystems(sysList);
-      setUnits(unitRes.data || []);
+      const unitList: UnitSummary[] = unitRes.data || [];
+      setUnits(unitList);
       setHarnesses(harnRes.data || []);
       setConnections(connRes.data || []);
       setN2Data(n2Res.data || null);
       setCoverage(covRes.data || null);
 
-      // Build unit → system map by fetching SystemDetail for each system
+      // F-029: build unit → system map directly from each unit's
+      // `system_id` (now surfaced by UnitSummary). Pre-fix this
+      // issued one getSystem(id) call per system in the project to
+      // walk SystemDetail.units — N round-trips for what is now
+      // available in the unitList we already loaded.
       const map: Record<number, number> = {};
-      const detailPromises = sysList.map(s =>
-        interfaceAPI.getSystem(s.id).catch(() => ({ data: null }))
-      );
-      const details = await Promise.all(detailPromises);
-      for (const d of details) {
-        const sd = d.data as SystemDetail | null;
-        if (sd?.units) {
-          for (const u of sd.units) {
-            map[u.id] = sd.id;
-          }
-        }
+      for (const u of unitList) {
+        map[u.id] = u.system_id;
       }
       setUnitSystemMap(map);
 
       // Auto-expand all system groups
       const expandSet = new Set<number | 0>([0, ...sysList.map(s => s.id)]);
       setConnExpandedSys(expandSet);
-    } catch { }
+    } catch (err: unknown) {
+      // F-089: surface the failure rather than silently leaving the
+      // page blank. Most failures here are 401 (auth expired), 403
+      // (project membership lost), or a network error.
+      const msg =
+        (typeof err === 'object' && err && 'message' in err && typeof (err as { message: unknown }).message === 'string')
+          ? (err as { message: string }).message
+          : 'Failed to load interface data';
+      setFetchError(msg);
+      // Reset core lists so stale data from a previous project
+      // doesn't bleed through.
+      setSystems([]);
+      setUnits([]);
+      setHarnesses([]);
+      setConnections([]);
+      setN2Data(null);
+      setCoverage(null);
+    }
     setLoading(false);
   }, [projectId]);
 
@@ -632,7 +652,7 @@ export default function InterfacesPage() {
       // Apply filters
       if (connStatusFilter && h.status !== connStatusFilter) continue;
 
-      const sysId = unitSystemMap[h.from_unit_id] || 0;
+      const sysId = (h.from_unit_id != null ? unitSystemMap[h.from_unit_id] : 0) || 0;
       if (connSystemFilter && sysId !== Number(connSystemFilter)) continue;
 
       const group = groups.get(sysId) || groups.get(0)!;
@@ -726,6 +746,25 @@ export default function InterfacesPage() {
         </div>
       </div>
 
+      {/* F-089: surface fetch errors instead of going silently blank. */}
+      {fetchError && (
+        <div
+          className="mb-4 flex items-start justify-between gap-4 rounded-xl border border-red-500/20 bg-red-500/5 px-4 py-3"
+          role="alert"
+        >
+          <div className="text-xs text-red-300">
+            <div className="font-semibold">Failed to load interface data</div>
+            <div className="mt-1 text-red-300/80">{fetchError}</div>
+          </div>
+          <button
+            onClick={fetchData}
+            className="rounded-lg border border-red-500/30 px-3 py-1.5 text-xs font-medium text-red-300 hover:bg-red-500/10"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
       {/* Summary stats */}
       {!loading && (
         <div className="mb-5 flex items-center gap-6 rounded-xl border border-astra-border bg-astra-surface px-5 py-3">
@@ -797,6 +836,7 @@ export default function InterfacesPage() {
           Import from Excel
         </button>
         <button onClick={fetchData}
+          aria-label="Refresh interface data"
           className="rounded-lg p-2 text-slate-500 hover:text-slate-300" title="Refresh">
           <RefreshCw className={clsx('h-3.5 w-3.5', loading && 'animate-spin')} />
         </button>

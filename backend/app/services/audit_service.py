@@ -72,7 +72,7 @@ def record_event(
     concurrent writers so the sequence stays monotonic and the hash
     chain never forks.
     """
-    action_detail = action_detail or {}
+    action_detail = dict(action_detail) if action_detail else {}
 
     # Pull IP / UA from middleware context (or from explicit request)
     ctx = get_request_context()
@@ -81,6 +81,18 @@ def record_event(
     if request is not None:
         user_ip = user_ip or (request.client.host if request.client else "")
         user_agent = user_agent or request.headers.get("user-agent", "")
+
+    # F-080: events recorded outside of an HTTP request (cron jobs,
+    # scheduled tasks, background workers) leave both `user_ip` and
+    # `user_agent` empty. That's ambiguous — an empty IP could mean
+    # "we couldn't determine it" (suspicious) or "this fired from a
+    # cron" (expected). Stamp the row's `action_detail` with
+    # `context: "cron"` and the host that ran it so a forensic reader
+    # can tell the two cases apart.
+    if not user_ip and not user_agent and request is None:
+        import socket
+        action_detail.setdefault("context", "cron")
+        action_detail.setdefault("host", socket.gethostname())
 
     # ── Serialised read of the last record ──
     # FOR UPDATE SKIP LOCKED is not appropriate here — we WANT to wait

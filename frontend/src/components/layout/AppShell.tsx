@@ -12,15 +12,32 @@
  *   - LiveRegionProvider wraps entire app for screen reader announcements
  */
 
-import { usePathname } from 'next/navigation';
+import { useEffect } from 'react';
+import { usePathname, useRouter } from 'next/navigation';
 import { AuthProvider, useAuth } from '@/lib/auth';
 import { LiveRegionProvider } from '@/components/a11y/LiveRegion';
 import Sidebar from './Sidebar';
-import LoginPage from '@/app/login/page';
 import { Loader2 } from 'lucide-react';
 
 function AuthGate({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
+  const router = useRouter();
+  const pathname = usePathname();
+
+  // F-101: when unauthenticated, REDIRECT to /login with the current
+  // path captured in `next` rather than rendering <LoginPage /> in
+  // place. The pre-fix in-place render meant:
+  //   - the URL stayed at the protected route,
+  //   - hard-reload of /projects/1 lost context,
+  //   - back-button history was corrupted by the LoginPage render.
+  // The login flow honours `?next=` and pushes there on success.
+  useEffect(() => {
+    if (loading) return;
+    if (!user && pathname !== '/login') {
+      const next = pathname && pathname !== '/' ? `?next=${encodeURIComponent(pathname)}` : '';
+      router.replace(`/login${next}`);
+    }
+  }, [loading, user, pathname, router]);
 
   // ── Loading state ──
   if (loading) {
@@ -44,13 +61,18 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     );
   }
 
-  // ── Not authenticated ──
-  if (!user) {
-    return (
-      <div className="min-h-screen bg-astra-bg">
-        <LoginPage />
-      </div>
-    );
+  // ── Not authenticated and not on /login: render nothing (redirect
+  // is in-flight from the effect above). The /login route itself is
+  // a top-level page rendered outside AppShell's gate, so user-on-
+  // login won't recurse.
+  if (!user && pathname !== '/login') {
+    return null;
+  }
+
+  // ── On /login (authenticated or not), render children directly
+  // — no Sidebar wrapper.
+  if (pathname === '/login') {
+    return <>{children}</>;
   }
 
   // ── Authenticated ──

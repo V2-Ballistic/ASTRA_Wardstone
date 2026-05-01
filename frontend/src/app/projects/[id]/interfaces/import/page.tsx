@@ -104,7 +104,8 @@ export default function InterfaceImportPage() {
   const [error, setError] = useState('');
   const [dragOver, setDragOver] = useState(false);
   const [activeSheet, setActiveSheet] = useState<SheetKey>('units');
-  const [progress, setProgress] = useState(0);
+  // F-099: progress state removed — was driven by a fake setInterval
+  // tick. Spinner now carries the "work in progress" affordance.
 
   // ── Upload handler ──
   const handleFile = useCallback(async (file: File) => {
@@ -158,24 +159,24 @@ export default function InterfaceImportPage() {
   const handleConfirm = async () => {
     if (!uploadedFile) return;
     setStep('importing');
-    setProgress(0);
     setError('');
-
-    const interval = setInterval(() => {
-      setProgress(p => Math.min(p + 3, 90));
-    }, 120);
-
+    // F-099: pre-fix this set up a setInterval that crept the
+    // progress bar by 3% every 120ms toward 90% — fake progress, no
+    // signal from the server. Two issues: (a) the bar lied (it
+    // implied ETA the import flow doesn't expose), and (b) on a
+    // throw the interval was cleared AFTER the catch updated state,
+    // so the bar could continue ticking briefly during error handling
+    // depending on event loop order. Replaced with a plain spinner
+    // + indeterminate-feeling wide bar; no setInterval to leak.
     try {
       const res = await interfaceAPI.importConfirm(projectId, uploadedFile);
       setResult(res.data);
-      setProgress(100);
       setStep('done');
     } catch (e: any) {
       const detail = e.response?.data?.detail;
       setError(typeof detail === 'string' ? detail : 'Import failed');
       setStep('preview');
     }
-    clearInterval(interval);
   };
 
   const handleReset = () => {
@@ -184,7 +185,6 @@ export default function InterfaceImportPage() {
     setResult(null);
     setUploadedFile(null);
     setError('');
-    setProgress(0);
   };
 
   // ── Counts ──
@@ -523,16 +523,14 @@ export default function InterfaceImportPage() {
           STEP 3 — IMPORTING
           ═══════════════════════════════════ */}
       {step === 'importing' && (
-        <div className="rounded-2xl border border-astra-border bg-astra-surface py-16">
+        <div
+          className="rounded-2xl border border-astra-border bg-astra-surface py-16"
+          role="status"
+          aria-live="polite"
+        >
           <div className="flex flex-col items-center gap-4">
-            <Loader2 className="h-10 w-10 animate-spin text-blue-500" />
+            <Loader2 className="h-10 w-10 animate-spin text-blue-500" aria-hidden="true" />
             <h3 className="text-sm font-bold text-slate-200">Importing interfaces&hellip;</h3>
-            <div className="h-2 w-80 overflow-hidden rounded-full bg-astra-surface-alt">
-              <div
-                className="h-full bg-gradient-to-r from-blue-500 to-emerald-500 transition-all duration-300"
-                style={{ width: `${progress}%` }}
-              />
-            </div>
             <p className="text-[11px] text-slate-500">
               Creating units, connectors, pins, buses, messages, and fields&hellip;
             </p>

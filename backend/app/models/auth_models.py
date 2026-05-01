@@ -59,3 +59,33 @@ class AuthSession(Base):
     last_active = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User", backref="auth_sessions")
+
+
+class RevokedToken(Base):
+    """F-063: durable, cross-worker access-token revocation list.
+
+    The pre-fix implementation kept revoked JTIs in a process-local
+    ``set()`` (``auth_manager._BLACKLIST``) — a logout in worker A had
+    no effect on worker B, so the same JWT could keep authenticating
+    on the other worker(s) until it expired naturally. With access
+    tokens previously living for 8 hours that meant a stolen token
+    survived a logout for the rest of the work day.
+
+    Each access token now carries a ``jti`` claim; logout (and any
+    future "revoke session" admin action) inserts a row here, and
+    ``get_current_user`` rejects any token whose jti is present.
+    Rows older than ``exp`` can be reaped by a periodic cleanup —
+    once the underlying JWT expires the row is no longer load-bearing.
+    """
+    __tablename__ = "revoked_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    jti = Column(String(64), nullable=False, index=True)
+    exp = Column(DateTime, nullable=False, index=True)
+    revoked_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    reason = Column(String(50), nullable=True)  # 'logout', 'admin_revoke', etc.
+
+    __table_args__ = (
+        UniqueConstraint("jti", name="revoked_tokens_jti_key"),
+    )

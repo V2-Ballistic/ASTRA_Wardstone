@@ -13,7 +13,15 @@ import { useParams, useRouter } from 'next/navigation';
 import { Archive, Clock, Loader2, RefreshCw, Plus, ArrowLeftRight, ChevronRight, Trash2, X, GitBranch, FileText, CheckCircle, AlertTriangle, Minus, Edit3 } from 'lucide-react';
 import clsx from 'clsx';
 import { baselinesAPI, projectsAPI } from '@/lib/api';
-import { STATUS_COLORS, STATUS_LABELS, LEVEL_COLORS, type RequirementStatus, type RequirementLevel } from '@/lib/types';
+// F-091: replace native confirm() with the in-app modal so the
+// dialog matches the styling of every other action and is keyboard
+// + screen-reader accessible.
+import ConfirmDialog from '@/components/ConfirmDialog';
+import {
+  STATUS_COLORS, STATUS_LABELS, LEVEL_COLORS,
+  type RequirementStatus, type RequirementLevel,
+  type BaselineDetail, type BaselineCompareResult,
+} from '@/lib/types';
 
 export default function BaselinesPage() {
   const params = useParams();
@@ -21,15 +29,20 @@ export default function BaselinesPage() {
   const projectId = Number(params.id);
 
   const [projectCode, setProjectCode] = useState('');
-  const [baselines, setBaselines] = useState<any[]>([]);
+  // F-092: typed state. The compared / detail responses also have
+  // looser shapes than BaselineDetail (snapshots, diff arrays) — for
+  // the page-level state the high-level types are enough; per-row
+  // fields stay accessed loosely until the backend exposes them via
+  // a typed schema.
+  const [baselines, setBaselines] = useState<BaselineDetail[]>([]);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<'list' | 'detail' | 'compare'>('list');
-  const [selected, setSelected] = useState<any>(null);
+  const [selected, setSelected] = useState<BaselineDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
 
   const [compareA, setCompareA] = useState<number | null>(null);
   const [compareB, setCompareB] = useState<number | null>(null);
-  const [compareResult, setCompareResult] = useState<any>(null);
+  const [compareResult, setCompareResult] = useState<BaselineCompareResult | null>(null);
   const [comparing, setComparing] = useState(false);
 
   const [showCreate, setShowCreate] = useState(false);
@@ -68,15 +81,23 @@ export default function BaselinesPage() {
     setCreating(false);
   };
 
-  const handleDelete = async (id: number) => {
-    if (!confirm('Delete this baseline?')) return;
+  // F-091: confirm-via-modal. Pre-fix `if (!confirm(...))` blocked
+  // the main thread, looked like a system dialog, and was unstyled.
+  const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
+
+  const requestDelete = (id: number) => setPendingDeleteId(id);
+  const handleDelete = async () => {
+    if (pendingDeleteId == null) return;
+    const id = pendingDeleteId;
+    setPendingDeleteId(null);
     try { await baselinesAPI.delete(id); await fetchBaselines(); setView('list'); } catch {}
   };
 
   // Helper: get field from snapshot row (handles both plain and _snapshot suffixed names)
   const sf = (r: any, field: string) => r[field] || r[`${field}_snapshot`] || '';
 
-  const formatDate = (iso: string) => iso ? new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
+  const formatDate = (iso: string | null | undefined) =>
+    iso ? new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
 
   if (loading) return <div className="flex min-h-[60vh] items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-blue-500" /></div>;
 
@@ -90,7 +111,7 @@ export default function BaselinesPage() {
         <div className="flex gap-2">
           {view !== 'list' && <button onClick={() => setView('list')} className="rounded-lg border border-astra-border px-3 py-2 text-xs text-slate-400 hover:text-slate-200">← Back</button>}
           <button onClick={() => setShowCreate(true)} className="flex items-center gap-1.5 rounded-lg bg-blue-500 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-600"><Plus className="h-3.5 w-3.5" /> Create Baseline</button>
-          <button onClick={fetchBaselines} className="rounded-full border border-astra-border p-2 text-slate-400 hover:text-slate-200"><RefreshCw className="h-3.5 w-3.5" /></button>
+          <button onClick={fetchBaselines} aria-label="Refresh baselines" className="rounded-full border border-astra-border p-2 text-slate-400 hover:text-slate-200"><RefreshCw className="h-3.5 w-3.5" /></button>
         </div>
       </div>
 
@@ -120,7 +141,7 @@ export default function BaselinesPage() {
                     <button onClick={() => setCompareB(bl.id)} className="rounded-lg border border-astra-border px-2 py-1 text-[10px] text-slate-400 hover:text-slate-200">
                       {compareB === bl.id ? 'B ✓' : 'Set B'}
                     </button>
-                    <button onClick={() => handleDelete(bl.id)} className="rounded-lg border border-red-500/20 p-1 text-red-400/50 hover:text-red-400"><Trash2 className="h-3 w-3" /></button>
+                    <button onClick={() => requestDelete(bl.id)} className="rounded-lg border border-red-500/20 p-1 text-red-400/50 hover:text-red-400" aria-label={`Delete baseline ${bl.name}`}><Trash2 className="h-3 w-3" /></button>
                   </div>
                 </div>
               ))}
@@ -140,9 +161,9 @@ export default function BaselinesPage() {
           <div className="rounded-xl border border-astra-border bg-astra-surface p-5">
             <h2 className="text-base font-bold text-slate-100 mb-1">{selected.name}</h2>
             <p className="text-xs text-slate-500 mb-4">{selected.requirements_count || selected.requirements?.length || 0} requirements · {formatDate(selected.created_at)}</p>
-            {selected.requirements?.length > 0 && (
+            {(selected.requirements?.length ?? 0) > 0 && (
               <div className="overflow-hidden rounded-lg border border-astra-border">
-                {selected.requirements.map((r: any, i: number) => {
+                {selected.requirements!.map((r: any, i: number) => {
                   const lvl = (sf(r, 'level') || 'L1') as RequirementLevel;
                   const st = (sf(r, 'status') || 'draft') as RequirementStatus;
                   const sc = STATUS_COLORS[st];
@@ -174,44 +195,44 @@ export default function BaselinesPage() {
             <div className="grid grid-cols-3 gap-4 mb-4">
               <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3 text-center">
                 <Plus className="mx-auto h-4 w-4 text-emerald-400 mb-1" />
-                <div className="text-lg font-bold text-emerald-400">{compareResult.summary?.added ?? compareResult.added?.length ?? 0}</div>
+                <div className="text-lg font-bold text-emerald-400">{(compareResult.summary?.added as number | undefined) ?? compareResult.added?.length ?? 0}</div>
                 <div className="text-[10px] text-slate-500">Added</div>
               </div>
               <div className="rounded-lg border border-red-500/20 bg-red-500/5 p-3 text-center">
                 <Minus className="mx-auto h-4 w-4 text-red-400 mb-1" />
-                <div className="text-lg font-bold text-red-400">{compareResult.summary?.removed ?? compareResult.removed?.length ?? 0}</div>
+                <div className="text-lg font-bold text-red-400">{(compareResult.summary?.removed as number | undefined) ?? compareResult.removed?.length ?? 0}</div>
                 <div className="text-[10px] text-slate-500">Removed</div>
               </div>
               <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-center">
                 <Edit3 className="mx-auto h-4 w-4 text-amber-400 mb-1" />
-                <div className="text-lg font-bold text-amber-400">{compareResult.summary?.modified ?? compareResult.modified?.length ?? 0}</div>
+                <div className="text-lg font-bold text-amber-400">{(compareResult.summary?.modified as number | undefined) ?? compareResult.modified?.length ?? 0}</div>
                 <div className="text-[10px] text-slate-500">Changed</div>
               </div>
             </div>
-            {compareResult.added?.length > 0 && (
+            {(compareResult.added?.length ?? 0) > 0 && (
               <div className="mb-3">
                 <h4 className="text-[10px] font-semibold uppercase text-emerald-400 mb-1">Added</h4>
-                {compareResult.added.map((r: any, i: number) => (
+                {compareResult.added!.map((r: any, i: number) => (
                   <div key={i} className="text-xs text-slate-300 py-0.5">
                     <span className="font-mono text-blue-400">{sf(r, 'req_id')}</span> {sf(r, 'title')}
                   </div>
                 ))}
               </div>
             )}
-            {compareResult.removed?.length > 0 && (
+            {(compareResult.removed?.length ?? 0) > 0 && (
               <div className="mb-3">
                 <h4 className="text-[10px] font-semibold uppercase text-red-400 mb-1">Removed</h4>
-                {compareResult.removed.map((r: any, i: number) => (
+                {compareResult.removed!.map((r: any, i: number) => (
                   <div key={i} className="text-xs text-slate-300 py-0.5 line-through opacity-60">
                     <span className="font-mono text-blue-400">{sf(r, 'req_id')}</span> {sf(r, 'title')}
                   </div>
                 ))}
               </div>
             )}
-            {(compareResult.modified?.length > 0) && (
+            {((compareResult.modified?.length ?? 0) > 0) && (
               <div>
                 <h4 className="text-[10px] font-semibold uppercase text-amber-400 mb-1">Changed</h4>
-                {compareResult.modified.map((r: any, i: number) => (
+                {compareResult.modified!.map((r: any, i: number) => (
                   <div key={i} className="text-xs text-slate-300 py-0.5">
                     <span className="font-mono text-blue-400">{r.req_id}</span> {r.title}{' '}
                     <span className="text-[10px] text-amber-400">
@@ -252,6 +273,17 @@ export default function BaselinesPage() {
           </div>
         </div>
       )}
+
+      {/* F-091: in-app delete confirmation modal. */}
+      <ConfirmDialog
+        open={pendingDeleteId != null}
+        title="Delete this baseline?"
+        message="The baseline row will be removed; the requirements it snapshots are not affected."
+        confirmLabel="Delete"
+        destructive
+        onCancel={() => setPendingDeleteId(null)}
+        onConfirm={handleDelete}
+      />
     </div>
   );
 }

@@ -1,20 +1,40 @@
-"""add auto_req_approval_required
+"""add auto_req_approval_required + integration / AI / sync tables
 
-Revision ID: 4bd35db2ef64
+Revision ID: 0007a
 Revises: 0007
 Create Date: 2026-03-14 03:55:15.962957
 
-FIXED: Removed autogenerate DROP TABLE statements for workflow tables
-       and hundreds of unnecessary alter_column/index changes.
-       Only keeps legitimate new table creation + column addition.
+F-109: was previously named ``4bd35db2ef64_add_auto_req_approval_required.py``
+with revision id ``4bd35db2ef64``. Renamed to ``0007a`` so the file
+sorts predictably alongside the rest of the chain (0007 → 0007a →
+0008 → … → 0022) and the migration list reads in chronological order
+without random-hex outliers. ``0008``'s ``down_revision`` was updated
+in the same commit so the chain still resolves.
+
+F-108: the original migration ended with a ``DO $$ … IF NOT EXISTS …
+ALTER TABLE …`` PL/pgSQL block to add the ``auto_req_approval_required``
+column with a runtime existence check. That made the migration
+non-reversible in autogenerate diffs (alembic can't reason about raw
+SQL) and bypassed the normal ``op.add_column`` machinery, so a future
+``alembic check`` always reported drift even when the column was
+present. Replaced with ``op.add_column(...)`` wrapped in a small
+try/except so the IF-NOT-EXISTS semantics survive — needed because
+some early dev environments hand-applied this column before the
+migration existed.
+
+History note: this migration also creates four "extra" tables
+(integration_configs, ai_analysis_cache, ai_feedback, sync_logs).
+Original commit message says it was rescued from an autogenerate run
+that had also tried to drop the workflow tables; the four creates
+above were the real intent. They live here for chain integrity.
 """
 from typing import Sequence, Union
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = '4bd35db2ef64'
+revision: str = '0007a'
 down_revision: Union[str, None] = '0007'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -97,19 +117,26 @@ def upgrade() -> None:
     op.create_index(op.f('ix_sync_logs_id'), 'sync_logs', ['id'], unique=False)
     op.create_index('ix_synclog_config', 'sync_logs', ['integration_config_id', 'started_at'], unique=False)
 
-    # ── Add auto_req_approval_required to projects (if not already present) ──
-    # Using raw SQL with IF NOT EXISTS to be safe on re-runs
-    op.execute("""
-        DO $$
-        BEGIN
-            IF NOT EXISTS (
-                SELECT 1 FROM information_schema.columns
-                WHERE table_name = 'projects' AND column_name = 'auto_req_approval_required'
-            ) THEN
-                ALTER TABLE projects ADD COLUMN auto_req_approval_required BOOLEAN DEFAULT TRUE;
-            END IF;
-        END $$;
-    """)
+    # ── Add auto_req_approval_required to projects ──
+    # F-108: was previously a DO $$ … IF NOT EXISTS … block. Now a
+    # plain op.add_column wrapped in a try/except so the IF NOT EXISTS
+    # semantics still cover dev environments that hand-applied the
+    # column. The DuplicateColumn exception (PG SQLSTATE 42701) means
+    # the column is already there — fine, swallow.
+    try:
+        op.add_column(
+            'projects',
+            sa.Column(
+                'auto_req_approval_required',
+                sa.Boolean(),
+                nullable=True,
+                server_default=sa.true(),
+            ),
+        )
+    except Exception as exc:
+        # Re-raise unless it's the duplicate-column case.
+        if 'already exists' not in str(exc).lower() and 'duplicatecolumn' not in str(type(exc)).lower():
+            raise
 
 
 def downgrade() -> None:

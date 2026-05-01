@@ -262,6 +262,9 @@ class UnitSummary(BaseModel):
     manufacturer: str
     unit_type: str
     status: str
+    # F-029: surface system_id so the frontend can group units by system
+    # without issuing one getSystem(id) call per system.
+    system_id: int
     connector_count: int = 0
     bus_count: int = 0
 

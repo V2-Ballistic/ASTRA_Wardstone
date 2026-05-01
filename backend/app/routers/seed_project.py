@@ -610,6 +610,7 @@ def seed_project_data(
                 description=f"Decomposition: {parent_req.req_id} → {child_req.req_id}",
                 status="active",
                 created_by_id=owner.id,
+                project_id=project_id,  # F-035 NOT NULL alignment
             )
             db.add(link)
             trace_links_created += 1
@@ -648,6 +649,7 @@ def seed_project_data(
                 description=f"Satisfies: {art_id} → {req_key}",
                 status="active",
                 created_by_id=owner.id,
+                project_id=project_id,  # F-035 NOT NULL alignment
             )
             db.add(link)
             trace_links_created += 1
@@ -672,6 +674,7 @@ def seed_project_data(
                 description=f"Dependency: {src_key} → {tgt_key}",
                 status="active",
                 created_by_id=owner.id,
+                project_id=project_id,  # F-035 NOT NULL alignment
             )
             db.add(link)
             trace_links_created += 1
@@ -697,23 +700,27 @@ def seed_project_data(
             completed_at=datetime.utcnow() - timedelta(days=5) if v["status"] in ("pass", "fail") else None,
         )
         db.add(verif)
+        # F-060: flush the Verification FIRST so its id is assigned,
+        # then create the TraceLink with the real id. Pre-fix the link
+        # was inserted with target_id=0 and patched after flush —
+        # relying on flush ordering meant a constraint violation
+        # between the two flushes could leave the project with a
+        # committed link pointing at id=0.
+        db.flush()
         verif_count += 1
 
-        # Also create verification trace links
         link = TraceLink(
             source_type="requirement",
             source_id=req.id,
             target_type="verification",
-            target_id=0,  # Will be updated after flush
+            target_id=verif.id,
             link_type="verification",
             description=f"Verification: {req.req_id} ({v['method']})",
             status="active",
             created_by_id=owner.id,
+            project_id=req.project_id,  # F-035 alignment
         )
         db.add(link)
-        db.flush()
-        # Update the target_id now that verification has an ID
-        link.target_id = verif.id
         trace_links_created += 1
 
     db.flush()
@@ -735,18 +742,33 @@ def seed_project_data(
     db.add(baseline1)
     db.flush()
 
-    for req in srr_reqs:
-        br = BaselineRequirement(
-            baseline_id=baseline1.id,
+    # F-061: snapshot the requirement's ACTUAL fields, matching the
+    # POST /baselines/ handler. Pre-fix the seed wrote
+    # status_snapshot="approved" for every row regardless of the
+    # requirement's real status, AND omitted type / priority /
+    # quality_score / version / parent_id snapshots entirely. The
+    # legitimate baseline endpoint persists all of these.
+    def _snap(req: Requirement, baseline_id: int) -> BaselineRequirement:
+        def _ev(v):
+            return v.value if hasattr(v, "value") else (str(v) if v else "")
+        return BaselineRequirement(
+            baseline_id=baseline_id,
             requirement_id=req.id,
             req_id_snapshot=req.req_id,
             title_snapshot=req.title,
             statement_snapshot=req.statement,
             rationale_snapshot=req.rationale or "",
-            status_snapshot="approved",
-            level_snapshot=req.level if isinstance(req.level, str) else (req.level.value if hasattr(req.level, "value") else str(req.level)),
+            status_snapshot=_ev(req.status),
+            level_snapshot=_ev(req.level) or "L1",
+            type_snapshot=_ev(req.req_type),
+            priority_snapshot=_ev(req.priority),
+            quality_score_snapshot=req.quality_score or 0.0,
+            version_snapshot=req.version or 1,
+            parent_id_snapshot=req.parent_id,
         )
-        db.add(br)
+
+    for req in srr_reqs:
+        db.add(_snap(req, baseline1.id))
 
     # Baseline 2: PDR — all 48 requirements
     all_reqs = list(req_map.values())
@@ -762,17 +784,7 @@ def seed_project_data(
     db.flush()
 
     for req in all_reqs:
-        br = BaselineRequirement(
-            baseline_id=baseline2.id,
-            requirement_id=req.id,
-            req_id_snapshot=req.req_id,
-            title_snapshot=req.title,
-            statement_snapshot=req.statement,
-            rationale_snapshot=req.rationale or "",
-            status_snapshot="approved",
-            level_snapshot=req.level if isinstance(req.level, str) else (req.level.value if hasattr(req.level, "value") else str(req.level)),
-        )
-        db.add(br)
+        db.add(_snap(req, baseline2.id))
 
     # ══════════════════════════════════════
     #  Step 6: A few seed comments for realism

@@ -31,13 +31,19 @@ except ImportError:
         return {"score": 0, "passed": False, "issues": [], "warnings": []}
 
 
-# Prohibited terms from NASA Appendix C
-PROHIBITED_TERMS = [
-    "adequate", "appropriate", "as applicable", "as required",
-    "be able to", "be capable of", "but not limited to", "capability of",
-    "effective", "etc", "if practical", "normal", "provide for",
-    "sufficient", "suitable", "timely", "TBD", "TBR",
-]
+# F-079: prohibited terms come from the canonical list in
+# `app.services.quality.nasa_terms`. Pre-fix this module had its own
+# divergent list (missing several terms quality_checker enforced and
+# adding TBD/TBR which lived in their own placeholder bucket), so a
+# requirement could pass quality_checker and still fail the report.
+from app.services.quality.nasa_terms import (
+    PROHIBITED_TERMS as _CANONICAL_PROHIBITED,
+    TBD_TERMS as _CANONICAL_TBD,
+)
+
+# Quality report flags both prohibited terms and TBD placeholders in
+# the same column, so we combine them here for the renderer.
+PROHIBITED_TERMS = list(_CANONICAL_PROHIBITED) + list(_CANONICAL_TBD)
 
 
 class QualityReport(ReportGenerator):

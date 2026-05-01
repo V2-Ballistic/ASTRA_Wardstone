@@ -265,6 +265,20 @@ export const interfaceAPI = {
   listReqLinks: (params: { entity_type?: string; entity_id?: number; requirement_id?: number }) =>
     api.get<InterfaceRequirementLink[]>(`${BASE}/req-links`, { params }),
 
+  // F-086: project-wide bulk req-links — replaces the per-requirement
+  // batched-with-delay pattern in /interfaces/auto-requirements/page.tsx.
+  listReqLinksForProject: (
+    projectId: number,
+    params?: { auto_generated?: boolean; status?: string },
+  ) =>
+    api.get<{
+      project_id: number;
+      total: number;
+      items: InterfaceRequirementLink[];
+    }>(`${BASE}/req-links/by-project`, {
+      params: { project_id: projectId, ...(params || {}) },
+    }),
+
   deleteReqLink: (id: number) =>
     api.delete(`${BASE}/req-links/${id}`),
 
@@ -295,7 +309,10 @@ export const interfaceAPI = {
   // ══════════════════════════════════════
 
   downloadTemplate: () =>
-    api.post(`${IO}/import/template`, null, { responseType: 'blob' }),
+    // F-071: backend route flipped from POST to GET — the call had no
+    // body anyway. Frontend must update at the same time as the backend
+    // since they ship together; see backend/app/routers/interface_import.py.
+    api.get(`${IO}/import/template`, { responseType: 'blob' }),
 
   importPreview: (file: File) => {
     const formData = new FormData();

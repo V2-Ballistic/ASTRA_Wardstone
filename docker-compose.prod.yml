@@ -15,8 +15,10 @@
 #    ✓ PostgreSQL SSL required
 #    ✓ Health checks on all services
 # ══════════════════════════════════════════════════════════════
-
-version: "3.9"
+#
+# F-107: top-level `version:` key removed (Compose v2 ignores it,
+# v3 is deprecated upstream — kept emitting a warning on every
+# `docker compose up`).
 
 services:
   # ── nginx TLS reverse proxy ──

@@ -12,14 +12,18 @@ import logging
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
+from jose import JWTError, jwt
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.database import get_db
 from app.models import User, UserRole
 from app.schemas import UserCreate, UserResponse, Token
 from app.services import account_lockout
 from app.services.auth import (
     verify_password, get_password_hash, create_access_token, get_current_user,
+    revoke_access_token_jti, oauth2_scheme,
 )
 
 # Optional audit integration. The router REQUIRES audit_service in
@@ -205,3 +209,76 @@ def login(
 @router.get("/me", response_model=UserResponse)
 def get_me(current_user: User = Depends(get_current_user)):
     return current_user
+
+
+# ══════════════════════════════════════
+#  Logout (F-063)
+# ══════════════════════════════════════
+
+@router.post("/logout", status_code=204)
+def logout(
+    request: Request,
+    token: str = Depends(oauth2_scheme),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """F-063: write the access token's jti to the durable revocation
+    list so the same token can't keep authenticating on other workers
+    after this call returns. Pre-fix logout was a no-op on the server
+    (the only "logout" was the frontend dropping the token from local
+    storage), so a stolen token survived as long as its 8-hour expiry."""
+    try:
+        payload = jwt.decode(
+            token, settings.SECRET_KEY.get_secret_value(),
+            algorithms=[settings.ALGORITHM],
+            options={"verify_exp": False},  # already validated by get_current_user
+        )
+        jti = payload.get("jti")
+        exp_ts = payload.get("exp")
+    except JWTError:
+        # Caller had a valid token to reach this dep but somehow we
+        # can't re-decode it — surface as 401 rather than silently
+        # accepting an unrevoked token.
+        raise HTTPException(401, "Invalid token")
+
+    if jti and exp_ts:
+        exp_dt = datetime.utcfromtimestamp(exp_ts)
+        revoke_access_token_jti(
+            db, jti, exp_dt, user_id=current_user.id, reason="logout",
+        )
+
+    _audit(
+        db, "auth.logout", "user", current_user.id, current_user.id,
+        {"jti": jti}, request=request,
+    )
+
+    return None
+
+
+# ══════════════════════════════════════
+#  Refresh-token rotation (F-068)
+# ══════════════════════════════════════
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
+@router.post("/refresh", response_model=Token)
+def refresh(payload: RefreshRequest, db: Session = Depends(get_db)):
+    """F-068: rotate the refresh token. Returns a new
+    (access_token, refresh_token) pair; the incoming refresh token is
+    revoked atomically so a stolen refresh can be used at most once
+    before the legitimate user's next refresh invalidates it."""
+    from app.services.auth_manager import refresh_access_token
+
+    result = refresh_access_token(db, payload.refresh_token)
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired refresh token",
+        )
+    return {
+        "access_token": result["access_token"],
+        "refresh_token": result["refresh_token"],
+        "token_type": "bearer",
+    }

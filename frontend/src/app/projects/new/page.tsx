@@ -146,13 +146,14 @@ export default function CreateProjectPage() {
       <div className="space-y-5 rounded-2xl border border-astra-border bg-astra-surface p-6">
         {/* Project Code */}
         <div>
-          <label className="mb-1.5 flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-slate-500">
+          <label htmlFor="new-project-code" className="mb-1.5 flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-slate-500">
             Project Code
             <span className="font-normal normal-case tracking-normal text-slate-600">
               — unique identifier, 2-20 chars
             </span>
           </label>
           <input
+            id="new-project-code"
             type="text"
             value={code}
             onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9_-]/g, ''))}
@@ -175,10 +176,11 @@ export default function CreateProjectPage() {
 
         {/* Project Name */}
         <div>
-          <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-widest text-slate-500">
+          <label htmlFor="new-project-name" className="mb-1.5 block text-[10px] font-bold uppercase tracking-widest text-slate-500">
             Project Name
           </label>
           <input
+            id="new-project-name"
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -190,11 +192,12 @@ export default function CreateProjectPage() {
 
         {/* Description */}
         <div>
-          <label className="mb-1.5 flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-slate-500">
+          <label htmlFor="new-project-description" className="mb-1.5 flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-slate-500">
             Description
             <span className="font-normal normal-case tracking-normal text-slate-600">— optional</span>
           </label>
           <textarea
+            id="new-project-description"
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             placeholder="Describe the project scope, applicable standards (NASA, DO-178C, ISO 26262), system context, and key engineering domains..."

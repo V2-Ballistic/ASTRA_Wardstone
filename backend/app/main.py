@@ -25,6 +25,41 @@ logger = logging.getLogger("astra")
 if hasattr(settings, "enforce_production_guards"):
     settings.enforce_production_guards()
 
+# ── F-069: refuse to start in production if RBAC is unavailable ──
+# Multiple routers wrap `from app.services.rbac import require_permission`
+# in `try/except ImportError` and fall back to a permissive shim that
+# reduces every guarded endpoint to a plain authn check (any logged-in
+# user can do anything). That shim is fine — necessary, even — for
+# barebones test fixtures, but in production it silently downgrades
+# every authorization decision in the app. Pre-fix the failure was
+# logged at WARNING from individual modules and easy to miss.
+#
+# Now: a startup probe imports rbac directly. In production, an
+# ImportError is fatal. In dev/test, it's logged as critical so
+# operators see it but the app still boots.
+_rbac_is_prod = (
+    getattr(settings, "is_production", False)
+    or settings.ENVIRONMENT == "production"
+)
+try:
+    from app.services import rbac as _rbac  # noqa: F401
+except ImportError as _rbac_exc:
+    if _rbac_is_prod:
+        logger.critical(
+            "RBAC module failed to import in production: %s. "
+            "Routers fall back to permissive shims that bypass authorization. "
+            "Refusing to start.", _rbac_exc,
+        )
+        raise RuntimeError(
+            "RBAC unavailable in production — refusing to start. "
+            "See AUDIT_FINDINGS F-069."
+        ) from _rbac_exc
+    logger.critical(
+        "RBAC module not loaded (%s). Per-router permission checks will "
+        "fall back to permissive shims. Acceptable in dev/test only.",
+        _rbac_exc,
+    )
+
 # ── Core Routers (always loaded) ──
 from app.routers.auth import router as auth_router
 from app.routers.requirements import router as requirements_router

@@ -114,8 +114,20 @@ export default function ForceGraph({ nodes, edges, onNodeClick }: ForceGraphProp
   const panStart = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
 
   // ── Force simulation ──
+  // F-088: rAF-chunked instead of one synchronous 60-iteration block.
+  // Pre-fix this ran 60 × N²/2 repulsion ops on the main thread inside
+  // a single useEffect — for a 200-node graph that's ~1.2M ops, which
+  // froze the UI for 1-2s on every mount. The rewrite seeds positions
+  // synchronously (so first paint has nodes in place) then runs the
+  // simulation in 5-iteration chunks across requestAnimationFrame
+  // ticks, painting between chunks. The browser stays responsive.
+  // A Web Worker would be cleaner but adds a worker file + message
+  // passing — defer if/when this gets too slow even chunked.
   useEffect(() => {
-    if (nodes.length === 0) return;
+    if (nodes.length === 0) {
+      setPositions({});
+      return;
+    }
 
     const pos: Record<number, { x: number; y: number; vx: number; vy: number }> = {};
 
@@ -127,7 +139,6 @@ export default function ForceGraph({ nodes, edges, onNodeClick }: ForceGraphProp
       levelGroups[lv].push(n);
     });
 
-    // L1 at top, L5 at bottom — vertical layout
     const levels = ['L1', 'L2', 'L3', 'L4', 'L5'];
     const usedLevels = levels.filter((l) => levelGroups[l]?.length > 0);
 
@@ -145,68 +156,87 @@ export default function ForceGraph({ nodes, edges, onNodeClick }: ForceGraphProp
       });
     });
 
-    // Run force simulation (60 iterations)
-    const nodeIds = new Set(nodes.map((n) => n.id));
+    // Seed initial positions so first paint isn't blank.
+    const seed: Record<number, { x: number; y: number }> = {};
+    Object.entries(pos).forEach(([id, p]) => { seed[Number(id)] = { x: p.x, y: p.y }; });
+    setPositions(seed);
+
     const nodeArr = Object.keys(pos).map(Number);
+    const TOTAL_ITERS = 60;
+    const ITERS_PER_FRAME = 5;
+    let iter = 0;
+    let cancelled = false;
+    let rafId = 0;
 
-    for (let iter = 0; iter < 60; iter++) {
-      const alpha = 0.3 * (1 - iter / 60);
+    const runChunk = () => {
+      if (cancelled) return;
+      const stop = Math.min(iter + ITERS_PER_FRAME, TOTAL_ITERS);
+      for (; iter < stop; iter++) {
+        const alpha = 0.3 * (1 - iter / TOTAL_ITERS);
 
-      // Repulsion between all nodes
-      for (let i = 0; i < nodeArr.length; i++) {
-        for (let j = i + 1; j < nodeArr.length; j++) {
-          const a = pos[nodeArr[i]];
-          const b = pos[nodeArr[j]];
-          let dx = b.x - a.x;
-          let dy = b.y - a.y;
-          const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-          if (dist < 120) {
-            const force = (120 - dist) * 0.15 * alpha;
-            const fx = (dx / dist) * force;
-            const fy = (dy / dist) * force;
-            a.vx -= fx;
-            a.vy -= fy;
-            b.vx += fx;
-            b.vy += fy;
+        // Repulsion (O(N²) inner loop)
+        for (let i = 0; i < nodeArr.length; i++) {
+          for (let j = i + 1; j < nodeArr.length; j++) {
+            const a = pos[nodeArr[i]];
+            const b = pos[nodeArr[j]];
+            const dx = b.x - a.x;
+            const dy = b.y - a.y;
+            const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+            if (dist < 120) {
+              const force = (120 - dist) * 0.15 * alpha;
+              const fx = (dx / dist) * force;
+              const fy = (dy / dist) * force;
+              a.vx -= fx; a.vy -= fy;
+              b.vx += fx; b.vy += fy;
+            }
           }
         }
+
+        // Attraction along edges
+        edges.forEach((e) => {
+          if (pos[e.source] && pos[e.target]) {
+            const a = pos[e.source];
+            const b = pos[e.target];
+            const dx = b.x - a.x;
+            const dy = b.y - a.y;
+            const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+            const force = (dist - 150) * 0.02 * alpha;
+            const fx = (dx / dist) * force;
+            const fy = (dy / dist) * force;
+            a.vx += fx; a.vy += fy;
+            b.vx -= fx; b.vy -= fy;
+          }
+        });
+
+        // Apply velocity + clamp
+        nodeArr.forEach((id) => {
+          const p = pos[id];
+          p.x += p.vx; p.y += p.vy;
+          p.vx *= 0.8; p.vy *= 0.8;
+          p.x = Math.max(40, Math.min(W - 40, p.x));
+          p.y = Math.max(40, Math.min(H - 40, p.y));
+        });
       }
 
-      // Attraction along edges
-      edges.forEach((e) => {
-        if (pos[e.source] && pos[e.target]) {
-          const a = pos[e.source];
-          const b = pos[e.target];
-          const dx = b.x - a.x;
-          const dy = b.y - a.y;
-          const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-          const force = (dist - 150) * 0.02 * alpha;
-          const fx = (dx / dist) * force;
-          const fy = (dy / dist) * force;
-          a.vx += fx;
-          a.vy += fy;
-          b.vx -= fx;
-          b.vy -= fy;
-        }
+      // Push the latest positions to React after each chunk so users
+      // see the simulation settle in real time.
+      const snapshot: Record<number, { x: number; y: number }> = {};
+      Object.entries(pos).forEach(([id, p]) => {
+        snapshot[Number(id)] = { x: p.x, y: p.y };
       });
+      setPositions(snapshot);
 
-      // Apply velocity and clamp
-      nodeArr.forEach((id) => {
-        const p = pos[id];
-        p.x += p.vx;
-        p.y += p.vy;
-        p.vx *= 0.8;
-        p.vy *= 0.8;
-        p.x = Math.max(40, Math.min(W - 40, p.x));
-        p.y = Math.max(40, Math.min(H - 40, p.y));
-      });
-    }
+      if (iter < TOTAL_ITERS) {
+        rafId = requestAnimationFrame(runChunk);
+      }
+    };
 
-    const result: Record<number, { x: number; y: number }> = {};
-    Object.entries(pos).forEach(([id, p]) => {
-      result[Number(id)] = { x: p.x, y: p.y };
-    });
-    setPositions(result);
+    rafId = requestAnimationFrame(runChunk);
+
+    return () => {
+      cancelled = true;
+      if (rafId) cancelAnimationFrame(rafId);
+    };
   }, [nodes, edges]);
 
   // ── Drag handlers ──
@@ -413,8 +443,11 @@ export default function ForceGraph({ nodes, edges, onNodeClick }: ForceGraphProp
 
         {/* Transform group for pan & zoom */}
         <g transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}>
-          {/* Edges */}
-          {edges.map((e, i) => {
+          {/* Edges — F-088: keyed by (source,target,link_type) so React
+              can preserve identity across re-renders even when the
+              edges array order changes (which happens when the
+              parent re-fetches and edges arrive in a different order). */}
+          {edges.map((e) => {
             const s = positions[e.source];
             const t = positions[e.target];
             if (!s || !t) return null;
@@ -423,10 +456,11 @@ export default function ForceGraph({ nodes, edges, onNodeClick }: ForceGraphProp
             const color = LINK_COLORS[e.link_type] || '#475569';
             const markerId = LINK_COLORS[e.link_type] ? `arrow-${e.link_type}` : 'arrow-default';
             const isDashed = e.link_type !== 'parent_child' && e.link_type !== 'decomposition';
+            const key = `${e.source}-${e.target}-${e.link_type}`;
 
             return (
               <line
-                key={`edge-${i}`}
+                key={key}
                 x1={s.x}
                 y1={s.y}
                 x2={t.x}

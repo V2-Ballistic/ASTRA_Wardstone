@@ -46,8 +46,18 @@ class Settings(BaseSettings):
     # ── Auth / JWT ──
     SECRET_KEY: SecretStr = SecretStr("dev-secret-key-change-in-production")
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 480
-    SESSION_TIMEOUT_MINUTES: int = 60
+    # F-068: dropped from 480 (8 hours) to 30 minutes. The pre-fix value
+    # was the worst of both worlds — long enough that a stolen token
+    # owned the user's session for the work day, short enough that a
+    # frontend without refresh-token wiring still got hit with periodic
+    # forced re-logins. Refresh-token rotation now does the long-lived
+    # heavy lifting (see auth_manager.refresh_access_token), so the
+    # access token can be aggressively short-lived.
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    # NB: SESSION_TIMEOUT_MINUTES used to live here. F-068: dropped —
+    # it was never read by any code path (idle-timeout was never wired
+    # up). Real session lifetime is governed by ACCESS_TOKEN_EXPIRE_MINUTES
+    # for the JWT and REFRESH_TOKEN_EXPIRE_DAYS for the refresh token.
 
     # ── Encryption at rest (SC-28) ──
     ENCRYPTION_KEY: SecretStr = SecretStr("")

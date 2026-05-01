@@ -136,22 +136,50 @@ def update_user(user_id: int, data: AdminUserUpdate, request: Request,
     return user
 
 
-@router.delete("/users/{user_id}", status_code=200,
-               dependencies=[Depends(require_permission("users.manage"))])
+@router.post("/users/{user_id}/deactivate", status_code=200,
+             dependencies=[Depends(require_permission("users.manage"))])
 def deactivate_user(user_id: int, request: Request,
                     db: Session = Depends(get_db),
                     current_user: User = Depends(get_current_user)):
+    """
+    Deactivate a user.
+
+    F-073: was previously a `DELETE /users/{id}` route, which conflicted
+    with REST conventions (DELETE implies destruction; deactivation is a
+    state flip the row survives) and didn't cascade — leaving stale
+    `project_members` rows for a now-inactive user. The cascade matters
+    because membership rows authorize project access; an "inactive" user
+    whose memberships are still live can have their token replayed and
+    pass `_check_membership` until the JWT expires.
+
+    The route is now `POST /users/{id}/deactivate` and removes the
+    user's `project_members` rows in the same transaction.
+    """
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(404, "User not found")
     if user.id == current_user.id:
         raise HTTPException(400, "Cannot deactivate yourself")
+
     user.is_active = False
+
+    membership_count = 0
+    if ProjectMember is not None:
+        membership_count = db.query(ProjectMember).filter(
+            ProjectMember.user_id == user_id
+        ).delete(synchronize_session=False)
+
     db.commit()
 
     record_event(db, "user.deactivated", "user", user_id, current_user.id,
-                 {"username": user.username}, request=request)
-    return {"status": "deactivated", "user_id": user_id, "username": user.username}
+                 {"username": user.username, "memberships_removed": membership_count},
+                 request=request)
+    return {
+        "status": "deactivated",
+        "user_id": user_id,
+        "username": user.username,
+        "memberships_removed": membership_count,
+    }
 
 
 # ══════════════════════════════════════
@@ -197,15 +225,26 @@ def add_project_member(project_id: int, data: ProjectMemberAdd, request: Request
             dependencies=[Depends(require_any_role(UserRole.ADMIN, UserRole.PROJECT_MANAGER))])
 def list_project_members(project_id: int, db: Session = Depends(get_db),
                          current_user: User = Depends(get_current_user)):
+    """F-042: previously issued TWO User queries per member inside the
+    response builder. Replaced with a single LEFT OUTER JOIN so the
+    query count is 1 regardless of project size."""
     if not ProjectMember:
         return []
-    members = db.query(ProjectMember).filter(ProjectMember.project_id == project_id).all()
-    return [ProjectMemberResponse(
-        id=m.id, project_id=m.project_id, user_id=m.user_id,
-        role_override=m.role_override, added_at=m.added_at,
-        username=(db.query(User).filter(User.id == m.user_id).first() or User(username="?")).username,
-        full_name=(db.query(User).filter(User.id == m.user_id).first() or User(full_name="?")).full_name,
-    ) for m in members]
+    rows = (
+        db.query(ProjectMember, User)
+        .outerjoin(User, User.id == ProjectMember.user_id)
+        .filter(ProjectMember.project_id == project_id)
+        .all()
+    )
+    return [
+        ProjectMemberResponse(
+            id=m.id, project_id=m.project_id, user_id=m.user_id,
+            role_override=m.role_override, added_at=m.added_at,
+            username=u.username if u else "?",
+            full_name=u.full_name if u else "?",
+        )
+        for m, u in rows
+    ]
 
 
 @router.delete("/projects/{project_id}/members/{user_id}", status_code=204,

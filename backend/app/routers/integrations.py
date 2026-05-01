@@ -397,6 +397,15 @@ def trigger_sync(
     db.commit()
     db.refresh(log)
 
+    # F-057: connector call inside a SAVEPOINT. If it raises, only
+    # the connector's partial inserts roll back — the SyncLog row
+    # (created above and committed) survives, so the failure is
+    # visible in /sync/logs. Pre-fix the connector's writes
+    # accumulated in the outer transaction; the catch-all `except`
+    # then committed `last_sync_at = now` AND every partially-added
+    # ORM object together. A "failed" sync could leave half-imported
+    # requirements behind.
+    sp = db.begin_nested()
     try:
         if direction == "import":
             result = connector.sync_requirements_from(
@@ -407,6 +416,8 @@ def trigger_sync(
                 db, ic.project_id, ic.external_project, current_user.id,
             )
 
+        sp.commit()  # release SAVEPOINT — connector's writes durable
+
         log.created_count = result.created
         log.updated_count = result.updated
         log.skipped_count = result.skipped
@@ -416,6 +427,7 @@ def trigger_sync(
                      else "partial" if result.errors else "success"
 
     except Exception as exc:
+        sp.rollback()  # F-057: discard connector's partial writes
         log.status = "failed"
         log.error_count = 1
         log.details = {"errors": [str(exc)]}

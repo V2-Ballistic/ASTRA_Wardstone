@@ -20,17 +20,17 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { requirementsAPI } from '@/lib/api';
+// F-091: in-app modal replaces native confirm() for the delete flow.
+import ConfirmDialog from '@/components/ConfirmDialog';
 import {
   STATUS_COLORS, STATUS_LABELS, LEVEL_COLORS, LEVEL_LABELS,
   PRIORITY_COLORS, TYPE_PREFIXES,
   type RequirementStatus, type RequirementLevel, type Priority,
 } from '@/lib/types';
 
-// Optional AI APIs — graceful if not present
-let aiAPI: any = null;
-let aiWriterAPI: any = null;
-try { aiAPI = require('@/lib/ai-api').aiAPI; } catch {}
-try { aiWriterAPI = require('@/lib/ai-writer-api').aiWriterAPI; } catch {}
+// F-084: runtime require() shims replaced with normal typed imports.
+import { aiAPI } from '@/lib/ai-api';
+import { aiWriterAPI } from '@/lib/ai-writer-api';
 
 // ══════════════════════════════════════
 //  Status transitions
@@ -550,8 +550,11 @@ export default function RequirementDetailPage() {
     setPostingComment(false);
   };
 
+  // F-091: in-app modal confirm replaces native confirm().
+  const [pendingDelete, setPendingDelete] = useState(false);
+  const requestDelete = () => setPendingDelete(true);
   const handleDelete = async () => {
-    if (!confirm(`Soft-delete ${req.req_id}? This can be restored.`)) return;
+    setPendingDelete(false);
     try {
       await requirementsAPI.delete(reqId);
       router.push(`/projects/${projectId}/requirements`);
@@ -638,9 +641,9 @@ export default function RequirementDetailPage() {
           <button onClick={handleClone} className="rounded-lg border border-astra-border p-2 text-slate-400 hover:text-slate-200">
             <Copy className="h-3.5 w-3.5" />
           </button>
-          {/* Delete */}
+          {/* Delete — opens the in-app ConfirmDialog */}
           {!isDeleted && (
-            <button onClick={handleDelete} className="rounded-lg border border-red-500/20 p-2 text-red-400/60 hover:text-red-400 hover:bg-red-500/10">
+            <button onClick={requestDelete} aria-label={`Soft-delete ${req.req_id}`} className="rounded-lg border border-red-500/20 p-2 text-red-400/60 hover:text-red-400 hover:bg-red-500/10">
               <Trash2 className="h-3.5 w-3.5" />
             </button>
           )}
@@ -802,6 +805,17 @@ export default function RequirementDetailPage() {
           </div>
         </div>
       </div>
+
+      {/* F-091: in-app delete confirmation. */}
+      <ConfirmDialog
+        open={pendingDelete}
+        title={`Soft-delete ${req?.req_id ?? 'this requirement'}?`}
+        message="The requirement will be hidden from lists but can be restored from the audit history."
+        confirmLabel="Delete"
+        destructive
+        onCancel={() => setPendingDelete(false)}
+        onConfirm={handleDelete}
+      />
     </div>
   );
 }

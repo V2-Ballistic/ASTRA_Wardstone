@@ -21,7 +21,10 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
 
 from app.database import get_db
-from app.dependencies.project_access import _check_membership
+from app.dependencies.project_access import (
+    _check_membership,
+    project_member_required,
+)
 from app.models import (
     User, Project, RequirementHistory, TraceLink,
 )
@@ -225,15 +228,40 @@ def list_systems(
         query = query.filter(System.parent_system_id.is_(None))
 
     systems = query.order_by(System.name).all()
+    if not systems:
+        return []
+
+    # F-039: replace 2N per-row count queries with two GROUP BY queries.
+    sys_ids = [s.id for s in systems]
+    unit_counts = dict(
+        db.query(Unit.system_id, func.count(Unit.id))
+          .filter(Unit.system_id.in_(sys_ids))
+          .group_by(Unit.system_id)
+          .all()
+    )
+    # An Interface row counts toward each system it touches, so we sum
+    # both source and target counts in one round trip via UNION ALL.
+    iface_src = (
+        db.query(Interface.source_system_id.label("sid"), func.count(Interface.id).label("c"))
+          .filter(Interface.source_system_id.in_(sys_ids))
+          .group_by(Interface.source_system_id)
+    )
+    iface_tgt = (
+        db.query(Interface.target_system_id.label("sid"), func.count(Interface.id).label("c"))
+          .filter(Interface.target_system_id.in_(sys_ids))
+          .group_by(Interface.target_system_id)
+    )
+    iface_counts: dict[int, int] = {}
+    for sid, c in iface_src.all():
+        iface_counts[sid] = iface_counts.get(sid, 0) + c
+    for sid, c in iface_tgt.all():
+        iface_counts[sid] = iface_counts.get(sid, 0) + c
+
     results = []
     for s in systems:
-        unit_count = db.query(func.count(Unit.id)).filter(Unit.system_id == s.id).scalar()
-        iface_count = db.query(func.count(Interface.id)).filter(
-            (Interface.source_system_id == s.id) | (Interface.target_system_id == s.id)
-        ).scalar()
         resp = SystemResponse.model_validate(s)
-        resp.unit_count = unit_count
-        resp.interface_count = iface_count
+        resp.unit_count = unit_counts.get(s.id, 0)
+        resp.interface_count = iface_counts.get(s.id, 0)
         results.append(resp)
     return results
 
@@ -401,13 +429,29 @@ def list_units(
         )
 
     units = query.order_by(Unit.designation).offset(skip).limit(limit).all()
+    if not units:
+        return []
+
+    # F-039: replace 2N per-row count queries with two GROUP BY queries.
+    unit_ids = [u.id for u in units]
+    conn_counts = dict(
+        db.query(Connector.unit_id, func.count(Connector.id))
+          .filter(Connector.unit_id.in_(unit_ids))
+          .group_by(Connector.unit_id)
+          .all()
+    )
+    bus_counts = dict(
+        db.query(BusDefinition.unit_id, func.count(BusDefinition.id))
+          .filter(BusDefinition.unit_id.in_(unit_ids))
+          .group_by(BusDefinition.unit_id)
+          .all()
+    )
+
     results = []
     for u in units:
-        conn_count = db.query(func.count(Connector.id)).filter(Connector.unit_id == u.id).scalar()
-        bus_count = db.query(func.count(BusDefinition.id)).filter(BusDefinition.unit_id == u.id).scalar()
         s = UnitSummary.model_validate(u)
-        s.connector_count = conn_count
-        s.bus_count = bus_count
+        s.connector_count = conn_counts.get(u.id, 0)
+        s.bus_count = bus_counts.get(u.id, 0)
         results.append(s)
     return results
 
@@ -467,60 +511,160 @@ def get_unit(
         raise HTTPException(404, "Unit not found")
     _assert_member_for_entity(db, current_user, unit)
 
-    # Connectors with pins
-    connectors = db.query(Connector).filter(Connector.unit_id == unit.id).order_by(Connector.designator).all()
+    # F-039: previously this section issued O(connectors) + O(pins) +
+    # O(messages) + O(pin_assignments) + O(pin_assignments × 2)
+    # per-row queries. The rewrite below pre-fetches each child
+    # collection in a single query and uses dict lookups in the loops.
+    # Net query count is now ~10 regardless of unit size.
+
+    # ── Connectors + their pins + their pin-bus assignments ──
+    connectors = (
+        db.query(Connector)
+        .filter(Connector.unit_id == unit.id)
+        .order_by(Connector.designator)
+        .all()
+    )
+    connector_ids = [c.id for c in connectors]
+
+    pins_by_conn: dict[int, list[Pin]] = {cid: [] for cid in connector_ids}
+    all_pins: list[Pin] = []
+    if connector_ids:
+        for p in (
+            db.query(Pin)
+            .filter(Pin.connector_id.in_(connector_ids))
+            .order_by(Pin.pin_number)
+            .all()
+        ):
+            pins_by_conn.setdefault(p.connector_id, []).append(p)
+            all_pins.append(p)
+
+    pin_ids = [p.id for p in all_pins]
+    assignments_by_pin: dict[int, PinBusAssignment] = {}
+    if pin_ids:
+        for a in (
+            db.query(PinBusAssignment)
+            .filter(PinBusAssignment.pin_id.in_(pin_ids))
+            .all()
+        ):
+            # If multiple assignments somehow exist on a pin, prefer the
+            # latest by id — matches the "first()" behaviour pre-fix.
+            existing = assignments_by_pin.get(a.pin_id)
+            if existing is None or a.id > existing.id:
+                assignments_by_pin[a.pin_id] = a
+
+    assigned_count_by_conn: dict[int, int] = dict(
+        db.query(Pin.connector_id, func.count(PinBusAssignment.id))
+        .join(PinBusAssignment, PinBusAssignment.pin_id == Pin.id)
+        .filter(Pin.connector_id.in_(connector_ids))
+        .group_by(Pin.connector_id)
+        .all()
+    ) if connector_ids else {}
+
+    # F-039: pre-fetch every mating Unit referenced by any pin so the
+    # per-pin _populate_pin_mating call can use an in-memory dict
+    # instead of issuing one Unit query per pin.
+    mating_unit_ids = list({
+        getattr(p, "mating_unit_id", None) for p in all_pins
+        if getattr(p, "mating_unit_id", None) is not None
+    })
+    mating_unit_by_id: dict[int, Unit] = {}
+    if mating_unit_ids:
+        for u in db.query(Unit).filter(Unit.id.in_(mating_unit_ids)).all():
+            mating_unit_by_id[u.id] = u
+
+    def _populate_pin_mating_cached(pr: PinResponse, p: Pin) -> None:
+        mid = getattr(p, "mating_unit_id", None)
+        if not mid:
+            return
+        mu = mating_unit_by_id.get(mid)
+        if mu:
+            pr.mating_unit_designation = mu.designation
+            pr.mating_unit_name = mu.name
+
     connector_list = []
     total_pin_count = 0
     for c in connectors:
-        pins = db.query(Pin).filter(Pin.connector_id == c.id).order_by(Pin.pin_number).all()
+        pins = pins_by_conn.get(c.id, [])
         pin_responses = []
         for p in pins:
             pr = PinResponse.model_validate(p)
-            # Load bus assignment if exists
-            assignment = db.query(PinBusAssignment).filter(PinBusAssignment.pin_id == p.id).first()
+            assignment = assignments_by_pin.get(p.id)
             if assignment:
                 pr.bus_assignment = PinBusAssignmentResponse.model_validate(assignment)
-            _populate_pin_mating(db, pr, p)
+            _populate_pin_mating_cached(pr, p)
             pin_responses.append(pr)
         total_pin_count += len(pin_responses)
-
-        assigned_count = db.query(func.count(PinBusAssignment.id)).join(Pin).filter(
-            Pin.connector_id == c.id
-        ).scalar()
 
         cwp = ConnectorWithPins.model_validate(c)
         cwp.pins = pin_responses
         cwp.pin_count = len(pin_responses)
-        cwp.assigned_pin_count = assigned_count
+        cwp.assigned_pin_count = assigned_count_by_conn.get(c.id, 0)
         connector_list.append(cwp)
 
-    # Bus definitions with messages
+    # ── Bus definitions + messages + assignments + assigned-pin/connector lookups ──
     bus_defs = db.query(BusDefinition).filter(BusDefinition.unit_id == unit.id).all()
+    bus_def_ids = [bd.id for bd in bus_defs]
+
+    messages_by_bus: dict[int, list[MessageDefinition]] = {bid: [] for bid in bus_def_ids}
+    all_messages: list[MessageDefinition] = []
+    if bus_def_ids:
+        for m in (
+            db.query(MessageDefinition)
+            .filter(MessageDefinition.bus_def_id.in_(bus_def_ids))
+            .all()
+        ):
+            messages_by_bus.setdefault(m.bus_def_id, []).append(m)
+            all_messages.append(m)
+
+    field_counts_by_msg: dict[int, int] = dict(
+        db.query(MessageField.message_id, func.count(MessageField.id))
+        .filter(MessageField.message_id.in_([m.id for m in all_messages]))
+        .group_by(MessageField.message_id)
+        .all()
+    ) if all_messages else {}
+
+    pa_by_bus: dict[int, list[PinBusAssignment]] = {bid: [] for bid in bus_def_ids}
+    all_pas: list[PinBusAssignment] = []
+    if bus_def_ids:
+        for pa in (
+            db.query(PinBusAssignment)
+            .filter(PinBusAssignment.bus_def_id.in_(bus_def_ids))
+            .all()
+        ):
+            pa_by_bus.setdefault(pa.bus_def_id, []).append(pa)
+            all_pas.append(pa)
+
+    # Pre-fetch pin + connector for every assignment in this unit.
+    pa_pin_ids = list({pa.pin_id for pa in all_pas})
+    pin_by_id: dict[int, Pin] = {}
+    conn_by_id: dict[int, Connector] = {}
+    if pa_pin_ids:
+        for p in db.query(Pin).filter(Pin.id.in_(pa_pin_ids)).all():
+            pin_by_id[p.id] = p
+        conn_id_set = {p.connector_id for p in pin_by_id.values() if p.connector_id}
+        if conn_id_set:
+            for cn in db.query(Connector).filter(Connector.id.in_(conn_id_set)).all():
+                conn_by_id[cn.id] = cn
+
     bus_list = []
     total_msg_count = 0
     for bd in bus_defs:
-        messages = db.query(MessageDefinition).filter(MessageDefinition.bus_def_id == bd.id).all()
+        messages = messages_by_bus.get(bd.id, [])
         msg_summaries = []
         for m in messages:
-            field_count = db.query(func.count(MessageField.id)).filter(
-                MessageField.message_id == m.id
-            ).scalar()
             ms = MessageSummary.model_validate(m)
-            ms.field_count = field_count
+            ms.field_count = field_counts_by_msg.get(m.id, 0)
             msg_summaries.append(ms)
         total_msg_count += len(msg_summaries)
 
-        pin_assignments = db.query(PinBusAssignment).filter(
-            PinBusAssignment.bus_def_id == bd.id
-        ).all()
         pa_list = []
-        for pa in pin_assignments:
+        for pa in pa_by_bus.get(bd.id, []):
             par = PinBusAssignmentResponse.model_validate(pa)
-            pin = db.query(Pin).filter(Pin.id == pa.pin_id).first()
+            pin = pin_by_id.get(pa.pin_id)
             if pin:
                 par.pin_number = pin.pin_number
                 par.signal_name = pin.signal_name
-                conn = db.query(Connector).filter(Connector.id == pin.connector_id).first()
+                conn = conn_by_id.get(pin.connector_id)
                 if conn:
                     par.connector_designator = conn.designator
             pa_list.append(par)
@@ -596,59 +740,77 @@ def update_unit(
     return resp
 
 
-@router.delete("/units/{unit_pk}", status_code=200)
-def delete_unit(
-    unit_pk: int,
-    confirm: bool = Query(False),
-    request: Request = None,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("interfaces.delete")),
-):
-    unit = db.query(Unit).filter(Unit.id == unit_pk).first()
-    if not unit:
-        raise HTTPException(404, "Unit not found")
-    _assert_member_for_entity(db, current_user, unit)
-
-    # Impact preview
-    conn_count = db.query(func.count(Connector.id)).filter(Connector.unit_id == unit.id).scalar()
-    bus_count = db.query(func.count(BusDefinition.id)).filter(BusDefinition.unit_id == unit.id).scalar()
-    pin_count = db.query(func.count(Pin.id)).join(Connector).filter(Connector.unit_id == unit.id).scalar()
+def _impact_unit(db: Session, unit: Unit) -> dict:
+    """Cascade impact for a unit deletion. Used by GET …/delete-impact
+    and the DELETE force-gate. Pure read — no writes."""
+    conn_count = db.query(func.count(Connector.id)).filter(Connector.unit_id == unit.id).scalar() or 0
+    bus_count = db.query(func.count(BusDefinition.id)).filter(BusDefinition.unit_id == unit.id).scalar() or 0
+    pin_count = db.query(func.count(Pin.id)).join(Connector).filter(Connector.unit_id == unit.id).scalar() or 0
     wire_count = (
         db.query(func.count(Wire.id))
         .join(Pin, Wire.from_pin_id == Pin.id)
         .join(Connector)
         .filter(Connector.unit_id == unit.id)
         .scalar()
-    )
+    ) or 0
+    return {
+        "connectors": conn_count,
+        "pins": pin_count,
+        "bus_definitions": bus_count,
+        "wires_affected": wire_count,
+    }
 
-    if not confirm:
-        return {
-            "status": "preview",
-            "message": "Use confirm=true to proceed with deletion",
-            "impact": {
-                "connectors": conn_count,
-                "pins": pin_count,
-                "bus_definitions": bus_count,
-                "wires_affected": wire_count,
-            },
-        }
+
+@router.get("/units/{unit_pk}/delete-impact")
+def get_unit_delete_impact(
+    unit_pk: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """F-047: read-only preview of what `DELETE /units/{pk}` would
+    cascade. Pre-Phase-3C the same dict was returned by the DELETE
+    endpoint when called with `confirm=false`, conflating two semantics
+    (read vs. write) under one verb. Now: GET previews, DELETE always
+    deletes (gated by `force=true` if there's a cascade)."""
+    unit = db.query(Unit).filter(Unit.id == unit_pk).first()
+    if not unit:
+        raise HTTPException(404, "Unit not found")
+    _assert_member_for_entity(db, current_user, unit)
+    return {"entity": "unit", "id": unit_pk, "impact": _impact_unit(db, unit)}
+
+
+@router.delete("/units/{unit_pk}", status_code=200)
+def delete_unit(
+    unit_pk: int,
+    force: bool = Query(False),
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("interfaces.delete")),
+):
+    """F-047: contract change. DELETE always deletes; pass `force=true`
+    to override the cascade-safety gate. Use GET …/delete-impact for a
+    dry-run."""
+    unit = db.query(Unit).filter(Unit.id == unit_pk).first()
+    if not unit:
+        raise HTTPException(404, "Unit not found")
+    _assert_member_for_entity(db, current_user, unit)
+
+    impact = _impact_unit(db, unit)
+    if any(impact.values()) and not force:
+        raise HTTPException(
+            409,
+            f"Unit has dependent entities ({impact}). "
+            f"Use force=true to cascade-delete, or GET /units/{unit_pk}/delete-impact to inspect.",
+        )
 
     _audit(db, "unit.deleted", "unit", unit.id, current_user.id,
-           {"unit_id": unit.unit_id, "designation": unit.designation},
+           {"unit_id": unit.unit_id, "designation": unit.designation, "force": force, "cascade": impact},
            project_id=unit.project_id, request=request)
 
     _cascade_delete_unit(db, unit)
     db.commit()
 
-    return {
-        "status": "deleted",
-        "id": unit_pk,
-        "cascade": {
-            "connectors": conn_count,
-            "pins": pin_count,
-            "bus_definitions": bus_count,
-        },
-    }
+    return {"status": "deleted", "id": unit_pk, "cascade": impact}
 
 
 @router.get("/units/{unit_pk}/specifications")
@@ -1589,41 +1751,56 @@ def update_bus(
     return resp
 
 
-@router.delete("/buses/{bus_pk}", status_code=200)
-def delete_bus(
+def _impact_bus(db: Session, bus_pk: int) -> dict:
+    return {
+        "messages": db.query(func.count(MessageDefinition.id)).filter(
+            MessageDefinition.bus_def_id == bus_pk
+        ).scalar() or 0,
+        "pin_assignments": db.query(func.count(PinBusAssignment.id)).filter(
+            PinBusAssignment.bus_def_id == bus_pk
+        ).scalar() or 0,
+        "requirement_links": db.query(func.count(InterfaceRequirementLink.id)).filter(
+            InterfaceRequirementLink.entity_type == "bus_definition",
+            InterfaceRequirementLink.entity_id == bus_pk,
+        ).scalar() or 0,
+    }
+
+
+@router.get("/buses/{bus_pk}/delete-impact")
+def get_bus_delete_impact(
     bus_pk: int,
-    confirm: bool = Query(False),
-    request: Request = None,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("interfaces.delete")),
+    current_user: User = Depends(get_current_user),
 ):
     bd = db.query(BusDefinition).filter(BusDefinition.id == bus_pk).first()
     if not bd:
         raise HTTPException(404, "Bus definition not found")
     _assert_member_for_entity(db, current_user, bd)
+    return {"entity": "bus_definition", "id": bus_pk, "impact": _impact_bus(db, bus_pk)}
 
-    msg_count = db.query(func.count(MessageDefinition.id)).filter(
-        MessageDefinition.bus_def_id == bus_pk
-    ).scalar()
-    pa_count = db.query(func.count(PinBusAssignment.id)).filter(
-        PinBusAssignment.bus_def_id == bus_pk
-    ).scalar()
-    req_link_count = db.query(func.count(InterfaceRequirementLink.id)).filter(
-        InterfaceRequirementLink.entity_type == "bus_definition",
-        InterfaceRequirementLink.entity_id == bus_pk,
-    ).scalar()
 
-    if not confirm:
-        return {
-            "status": "preview",
-            "impact": {
-                "messages": msg_count,
-                "pin_assignments": pa_count,
-                "requirement_links": req_link_count,
-            },
-        }
+@router.delete("/buses/{bus_pk}", status_code=200)
+def delete_bus(
+    bus_pk: int,
+    force: bool = Query(False),
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("interfaces.delete")),
+):
+    """F-047: see delete_unit for the contract rationale."""
+    bd = db.query(BusDefinition).filter(BusDefinition.id == bus_pk).first()
+    if not bd:
+        raise HTTPException(404, "Bus definition not found")
+    _assert_member_for_entity(db, current_user, bd)
 
-    # Cascade: fields → messages, pin_assignments
+    impact = _impact_bus(db, bus_pk)
+    if any(impact.values()) and not force:
+        raise HTTPException(
+            409,
+            f"Bus has dependent entities ({impact}). "
+            f"Use force=true to cascade-delete, or GET /buses/{bus_pk}/delete-impact to inspect.",
+        )
+
     msgs = db.query(MessageDefinition).filter(MessageDefinition.bus_def_id == bus_pk).all()
     for m in msgs:
         db.query(MessageField).filter(MessageField.message_id == m.id).delete()
@@ -1635,12 +1812,12 @@ def delete_bus(
     ).delete()
 
     _audit(db, "bus.deleted", "bus_definition", bd.id, current_user.id,
-           {"bus_def_id": bd.bus_def_id, "messages_deleted": msg_count},
+           {"bus_def_id": bd.bus_def_id, "force": force, "cascade": impact},
            project_id=bd.project_id, request=request)
 
     db.delete(bd)
     db.commit()
-    return {"status": "deleted", "id": bus_pk, "messages_deleted": msg_count}
+    return {"status": "deleted", "id": bus_pk, "cascade": impact}
 
 
 @router.post("/buses/{bus_pk}/pin-assignments", response_model=List[PinBusAssignmentResponse], status_code=201)
@@ -1946,27 +2123,52 @@ def update_message(
     return resp
 
 
-@router.delete("/messages/{msg_pk}", status_code=200)
-def delete_message(
+def _impact_message(db: Session, msg_pk: int) -> dict:
+    return {
+        "fields": db.query(func.count(MessageField.id)).filter(
+            MessageField.message_id == msg_pk
+        ).scalar() or 0,
+        "requirement_links": db.query(func.count(InterfaceRequirementLink.id)).filter(
+            InterfaceRequirementLink.entity_type == "message_definition",
+            InterfaceRequirementLink.entity_id == msg_pk,
+        ).scalar() or 0,
+    }
+
+
+@router.get("/messages/{msg_pk}/delete-impact")
+def get_message_delete_impact(
     msg_pk: int,
-    confirm: bool = Query(False),
-    request: Request = None,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("interfaces.delete")),
+    current_user: User = Depends(get_current_user),
 ):
     msg = db.query(MessageDefinition).filter(MessageDefinition.id == msg_pk).first()
     if not msg:
         raise HTTPException(404, "Message definition not found")
     _assert_member_for_entity(db, current_user, msg)
+    return {"entity": "message_definition", "id": msg_pk, "impact": _impact_message(db, msg_pk)}
 
-    fc = db.query(func.count(MessageField.id)).filter(MessageField.message_id == msg_pk).scalar()
-    rl = db.query(func.count(InterfaceRequirementLink.id)).filter(
-        InterfaceRequirementLink.entity_type == "message_definition",
-        InterfaceRequirementLink.entity_id == msg_pk,
-    ).scalar()
 
-    if not confirm:
-        return {"status": "preview", "impact": {"fields": fc, "requirement_links": rl}}
+@router.delete("/messages/{msg_pk}", status_code=200)
+def delete_message(
+    msg_pk: int,
+    force: bool = Query(False),
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("interfaces.delete")),
+):
+    """F-047: see delete_unit for the contract rationale."""
+    msg = db.query(MessageDefinition).filter(MessageDefinition.id == msg_pk).first()
+    if not msg:
+        raise HTTPException(404, "Message definition not found")
+    _assert_member_for_entity(db, current_user, msg)
+
+    impact = _impact_message(db, msg_pk)
+    if any(impact.values()) and not force:
+        raise HTTPException(
+            409,
+            f"Message has dependent entities ({impact}). "
+            f"Use force=true to cascade-delete, or GET /messages/{msg_pk}/delete-impact to inspect.",
+        )
 
     db.query(MessageField).filter(MessageField.message_id == msg_pk).delete()
     db.query(InterfaceRequirementLink).filter(
@@ -1975,12 +2177,12 @@ def delete_message(
     ).delete()
 
     _audit(db, "message.deleted", "message_definition", msg.id, current_user.id,
-           {"msg_def_id": msg.msg_def_id, "fields_deleted": fc},
+           {"msg_def_id": msg.msg_def_id, "force": force, "cascade": impact},
            project_id=msg.project_id, request=request)
 
     db.delete(msg)
     db.commit()
-    return {"status": "deleted", "id": msg_pk, "fields_deleted": fc}
+    return {"status": "deleted", "id": msg_pk, "cascade": impact}
 
 
 # ══════════════════════════════════════════════════════════════
@@ -2046,26 +2248,73 @@ def update_field(
     return MessageFieldResponse.model_validate(field)
 
 
+def _impact_field(db: Session, field_pk: int) -> dict:
+    return {
+        "requirement_links_flagged": db.query(func.count(InterfaceRequirementLink.id)).filter(
+            InterfaceRequirementLink.entity_type == "message_field",
+            InterfaceRequirementLink.entity_id == field_pk,
+        ).scalar() or 0,
+    }
+
+
+@router.get("/fields/{field_pk}/delete-impact")
+def get_field_delete_impact(
+    field_pk: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """F-048: preview for `DELETE /fields/{pk}`. The link rows aren't
+    destroyed — they're flipped to `pending_review` so the auto-derived
+    requirement gets re-triaged after the field changes shape."""
+    field = db.query(MessageField).filter(MessageField.id == field_pk).first()
+    if not field:
+        raise HTTPException(404, "Message field not found")
+    _assert_member_for_entity(db, current_user, field)
+    return {"entity": "message_field", "id": field_pk, "impact": _impact_field(db, field_pk)}
+
+
 @router.delete("/fields/{field_pk}", status_code=200)
 def delete_field(
     field_pk: int,
+    force: bool = Query(False),
+    request: Request = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("interfaces.delete")),
 ):
+    """F-048: gained the same `force=true` gate + audit emit as the
+    other DELETE handlers. Pre-fix this route silently flipped any
+    auto-requirement links to `pending_review` and dropped no audit
+    row, so a deletion that quietly invalidated downstream traceability
+    left no breadcrumb."""
     field = db.query(MessageField).filter(MessageField.id == field_pk).first()
     if not field:
         raise HTTPException(404, "Message field not found")
     _assert_member_for_entity(db, current_user, field)
 
-    # Mark linked auto-requirements for review
+    impact = _impact_field(db, field_pk)
+    if any(impact.values()) and not force:
+        raise HTTPException(
+            409,
+            f"Field has dependent requirement links ({impact}). "
+            f"Use force=true to flag them for review and delete, "
+            f"or GET /fields/{field_pk}/delete-impact to inspect.",
+        )
+
     db.query(InterfaceRequirementLink).filter(
         InterfaceRequirementLink.entity_type == "message_field",
         InterfaceRequirementLink.entity_id == field_pk,
     ).update({"status": "pending_review"})
 
+    msg = db.query(MessageDefinition).filter(MessageDefinition.id == field.message_id).first()
+    _audit(
+        db, "field.deleted", "message_field", field.id, current_user.id,
+        {"field_name": field.field_name, "force": force, "cascade": impact},
+        project_id=msg.project_id if msg else None, request=request,
+    )
+
     db.delete(field)
     db.commit()
-    return {"status": "deleted", "id": field_pk}
+    return {"status": "deleted", "id": field_pk, "cascade": impact}
 
 
 @router.get("/messages/{msg_pk}/byte-map")
@@ -2269,27 +2518,50 @@ def update_harness(
     return resp
 
 
-@router.delete("/harnesses/{har_pk}", status_code=200)
-def delete_harness(
+def _impact_harness(db: Session, har_pk: int) -> dict:
+    return {
+        "wires": db.query(func.count(Wire.id)).filter(Wire.harness_id == har_pk).scalar() or 0,
+        "requirement_links": db.query(func.count(InterfaceRequirementLink.id)).filter(
+            InterfaceRequirementLink.entity_type == "wire_harness",
+            InterfaceRequirementLink.entity_id == har_pk,
+        ).scalar() or 0,
+    }
+
+
+@router.get("/harnesses/{har_pk}/delete-impact")
+def get_harness_delete_impact(
     har_pk: int,
-    confirm: bool = Query(False),
-    request: Request = None,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("interfaces.delete")),
+    current_user: User = Depends(get_current_user),
 ):
     harness = db.query(WireHarness).filter(WireHarness.id == har_pk).first()
     if not harness:
         raise HTTPException(404, "Wire harness not found")
     _assert_member_for_entity(db, current_user, harness)
+    return {"entity": "wire_harness", "id": har_pk, "impact": _impact_harness(db, har_pk)}
 
-    wc = db.query(func.count(Wire.id)).filter(Wire.harness_id == har_pk).scalar()
-    rl = db.query(func.count(InterfaceRequirementLink.id)).filter(
-        InterfaceRequirementLink.entity_type == "wire_harness",
-        InterfaceRequirementLink.entity_id == har_pk,
-    ).scalar()
 
-    if not confirm:
-        return {"status": "preview", "impact": {"wires": wc, "requirement_links": rl}}
+@router.delete("/harnesses/{har_pk}", status_code=200)
+def delete_harness(
+    har_pk: int,
+    force: bool = Query(False),
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("interfaces.delete")),
+):
+    """F-047: see delete_unit for the contract rationale."""
+    harness = db.query(WireHarness).filter(WireHarness.id == har_pk).first()
+    if not harness:
+        raise HTTPException(404, "Wire harness not found")
+    _assert_member_for_entity(db, current_user, harness)
+
+    impact = _impact_harness(db, har_pk)
+    if any(impact.values()) and not force:
+        raise HTTPException(
+            409,
+            f"Harness has dependent entities ({impact}). "
+            f"Use force=true to cascade-delete, or GET /harnesses/{har_pk}/delete-impact to inspect.",
+        )
 
     db.query(Wire).filter(Wire.harness_id == har_pk).delete()
     db.query(InterfaceRequirementLink).filter(
@@ -2298,12 +2570,12 @@ def delete_harness(
     ).delete()
 
     _audit(db, "harness.deleted", "wire_harness", harness.id, current_user.id,
-           {"harness_id": harness.harness_id, "wires_deleted": wc},
+           {"harness_id": harness.harness_id, "force": force, "cascade": impact},
            project_id=harness.project_id, request=request)
 
     db.delete(harness)
     db.commit()
-    return {"status": "deleted", "id": har_pk, "wires_deleted": wc}
+    return {"status": "deleted", "id": har_pk, "cascade": impact}
 
 
 # ══════════════════════════════════════════════════════════════
@@ -3207,62 +3479,144 @@ def reject_auto_requirements(
 def update_wire(
     wire_pk: int,
     data: WireUpdate,
+    request: Request = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("interfaces.update")),
 ):
+    """F-049: a wire whose endpoints move from one LRU pair to another
+    has to update the Connection rollup table — otherwise the rollup
+    accumulates stale rows for pairs that no longer have any wires
+    between them, and is missing rows for the new pair the wire just
+    joined. Pre-fix the PATCH only `setattr`'d the new values and
+    committed, leaving the rollup desynchronized."""
     wire = db.query(Wire).filter(Wire.id == wire_pk).first()
     if not wire:
         raise HTTPException(404, "Wire not found")
     _assert_member_for_entity(db, current_user, wire)
 
     updates = data.model_dump(exclude_unset=True)
+    pin_changed = (
+        ("from_pin_id" in updates and updates["from_pin_id"] != wire.from_pin_id)
+        or ("to_pin_id" in updates and updates["to_pin_id"] != wire.to_pin_id)
+    )
+
+    from app.services.interface.auto_grow import (
+        maybe_delete_connection_for_wire,
+        upsert_connection_for_wire,
+    )
+
+    old_pins = (wire.from_pin_id, wire.to_pin_id)
+
+    if pin_changed:
+        # Tear down the rollup for the OLD pair before mutating the wire
+        # — `maybe_delete_connection_for_wire` reads `wire.from_pin_id`
+        # / `wire.to_pin_id` to resolve the LRUs.
+        try:
+            maybe_delete_connection_for_wire(db, wire)
+        except Exception as e:
+            logger.warning(f"connection rollup teardown on wire update failed: {e}")
+
     for field, value in updates.items():
         setattr(wire, field, value)
+    db.flush()  # so upsert reads the new pin ids
+
+    if pin_changed:
+        try:
+            upsert_connection_for_wire(db, wire)
+        except Exception as e:
+            logger.warning(f"connection rollup upsert on wire update failed: {e}")
+
     db.commit()
     db.refresh(wire)
+
+    if pin_changed:
+        harness = db.query(WireHarness).filter(WireHarness.id == wire.harness_id).first()
+        _audit(
+            db, "wire.endpoints_changed", "wire", wire.id, current_user.id,
+            {
+                "wire_number": wire.wire_number,
+                "old_from_pin_id": old_pins[0],
+                "old_to_pin_id": old_pins[1],
+                "new_from_pin_id": wire.from_pin_id,
+                "new_to_pin_id": wire.to_pin_id,
+            },
+            project_id=harness.project_id if harness else None,
+            request=request,
+        )
 
     resp = WireResponse.model_validate(wire)
     _populate_wire_joins(db, resp, wire)
     return resp
 
 
-@router.delete("/wires/{wire_pk}", status_code=200)
-def delete_wire(
+def _impact_wire(db: Session, wire_pk: int) -> dict:
+    return {
+        "requirement_links": db.query(func.count(InterfaceRequirementLink.id)).filter(
+            InterfaceRequirementLink.entity_type == "wire",
+            InterfaceRequirementLink.entity_id == wire_pk,
+        ).scalar() or 0,
+    }
+
+
+@router.get("/wires/{wire_pk}/delete-impact")
+def get_wire_delete_impact(
     wire_pk: int,
-    confirm: bool = Query(False),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("interfaces.delete")),
+    current_user: User = Depends(get_current_user),
 ):
     wire = db.query(Wire).filter(Wire.id == wire_pk).first()
     if not wire:
         raise HTTPException(404, "Wire not found")
     _assert_member_for_entity(db, current_user, wire)
+    return {"entity": "wire", "id": wire_pk, "impact": _impact_wire(db, wire_pk)}
 
-    rl = db.query(func.count(InterfaceRequirementLink.id)).filter(
-        InterfaceRequirementLink.entity_type == "wire",
-        InterfaceRequirementLink.entity_id == wire_pk,
-    ).scalar()
 
-    if not confirm and rl > 0:
-        return {"status": "preview", "impact": {"requirement_links": rl}}
+@router.delete("/wires/{wire_pk}", status_code=200)
+def delete_wire(
+    wire_pk: int,
+    force: bool = Query(False),
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("interfaces.delete")),
+):
+    """F-047: see delete_unit for the contract rationale."""
+    wire = db.query(Wire).filter(Wire.id == wire_pk).first()
+    if not wire:
+        raise HTTPException(404, "Wire not found")
+    _assert_member_for_entity(db, current_user, wire)
+
+    impact = _impact_wire(db, wire_pk)
+    if any(impact.values()) and not force:
+        raise HTTPException(
+            409,
+            f"Wire has dependent requirement links ({impact}). "
+            f"Use force=true to cascade-delete, or GET /wires/{wire_pk}/delete-impact to inspect.",
+        )
 
     db.query(InterfaceRequirementLink).filter(
         InterfaceRequirementLink.entity_type == "wire",
         InterfaceRequirementLink.entity_id == wire_pk,
     ).delete()
 
-    # Phase 2: check if this is the last wire between its two LRUs; if so
-    # remove the Connection rollup row. Done BEFORE db.delete(wire) so the
-    # helper can still query the wire's pins.
+    # If this was the last wire between its two LRUs, remove the
+    # Connection rollup row. Done BEFORE db.delete(wire) so the helper
+    # can still query the wire's pins.
     try:
         from app.services.interface.auto_grow import maybe_delete_connection_for_wire
         maybe_delete_connection_for_wire(db, wire)
     except Exception as e:
         logger.warning(f"connection cleanup after wire delete failed: {e}")
 
+    harness = db.query(WireHarness).filter(WireHarness.id == wire.harness_id).first()
+    _audit(
+        db, "wire.deleted", "wire", wire.id, current_user.id,
+        {"wire_number": wire.wire_number, "force": force, "cascade": impact},
+        project_id=harness.project_id if harness else None, request=request,
+    )
+
     db.delete(wire)
     db.commit()
-    return {"status": "deleted", "id": wire_pk}
+    return {"status": "deleted", "id": wire_pk, "cascade": impact}
 
 
 @router.get("/wires/search")
@@ -3532,6 +3886,19 @@ def create_req_link(
     db.commit()
     db.refresh(link)
 
+    # F-050: trace-link create/delete used to leave no audit trail, so a
+    # forensic question like "who linked req X to bus Y?" had no answer.
+    _audit(
+        db, "interface_req_link.created", "interface_req_link", link.id, current_user.id,
+        {
+            "requirement_id": link.requirement_id,
+            "requirement_req_id": req.req_id,
+            "entity_type": _ev(link.entity_type),
+            "entity_id": link.entity_id,
+        },
+        project_id=req.project_id, request=request,
+    )
+
     resp = InterfaceReqLinkResponse.model_validate(link)
     resp.requirement_req_id = req.req_id
     resp.requirement_title = req.title
@@ -3605,9 +3972,58 @@ def list_req_links(
     return results
 
 
+@router.get("/req-links/by-project")
+def list_req_links_for_project(
+    project_id: int = Query(...),
+    auto_generated: Optional[bool] = None,
+    status: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    project: Project = Depends(project_member_required),
+):
+    """F-086: project-scoped bulk endpoint for InterfaceRequirementLink.
+
+    The auto-requirements review page used to issue one
+    /interfaces/req-links?requirement_id=X call per requirement,
+    batched 5-at-a-time with 100ms delays. For a 100-requirement
+    project that's 20 batches × ~100ms = ~2s before the UI render.
+
+    This endpoint joins through Requirement to filter by project_id
+    in a single query, returns every link in one round-trip, and
+    optionally filters by `auto_generated` and `status`.
+    """
+    q = (
+        db.query(InterfaceRequirementLink, Requirement)
+        .join(Requirement, Requirement.id == InterfaceRequirementLink.requirement_id)
+        .filter(
+            Requirement.project_id == project_id,
+            Requirement.status != "deleted",
+        )
+    )
+    if auto_generated is not None:
+        q = q.filter(InterfaceRequirementLink.auto_generated.is_(auto_generated))
+    if status:
+        q = q.filter(InterfaceRequirementLink.status == status)
+
+    rows = q.order_by(InterfaceRequirementLink.created_at.desc()).all()
+
+    results = []
+    for lk, req in rows:
+        resp = InterfaceReqLinkResponse.model_validate(lk)
+        resp.requirement_req_id = req.req_id
+        resp.requirement_title = req.title
+        results.append(resp)
+    return {
+        "project_id": project_id,
+        "total": len(results),
+        "items": results,
+    }
+
+
 @router.delete("/req-links/{link_pk}", status_code=200)
 def delete_req_link(
     link_pk: int,
+    request: Request = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("interfaces.delete")),
 ):
@@ -3615,8 +4031,27 @@ def delete_req_link(
     if not link:
         raise HTTPException(404, "Requirement link not found")
     _assert_member_for_entity(db, current_user, link)
+
+    # F-050: snapshot the link's identifying fields BEFORE delete so the
+    # audit row carries the broken-link forensic context.
+    req = db.query(Requirement).filter(Requirement.id == link.requirement_id).first()
+    snapshot = {
+        "requirement_id": link.requirement_id,
+        "requirement_req_id": req.req_id if req else None,
+        "entity_type": _ev(link.entity_type),
+        "entity_id": link.entity_id,
+    }
+    project_id = req.project_id if req else None
+
     db.delete(link)
     db.commit()
+
+    _audit(
+        db, "interface_req_link.deleted", "interface_req_link", link_pk, current_user.id,
+        snapshot,
+        project_id=project_id, request=request,
+    )
+
     return {"status": "deleted", "id": link_pk}
 
 
@@ -3637,10 +4072,21 @@ def get_interface_coverage(
         Interface.project_id == project_id
     ).scalar()
 
-    # Interfaces with at least one requirement link
-    linked_ifaces = db.query(func.count(func.distinct(InterfaceRequirementLink.entity_id))).filter(
-        InterfaceRequirementLink.entity_type == "interface",
-    ).scalar()
+    # F-051: scope `linked_ifaces` by joining through Interface so the
+    # count only includes interface-typed links whose target Interface
+    # belongs to *this* project. The pre-fix query returned the global
+    # count of distinct entity_ids — a project's coverage % was
+    # contaminated by every other project's interfaces.
+    linked_ifaces = (
+        db.query(func.count(func.distinct(InterfaceRequirementLink.entity_id)))
+        .join(
+            Interface,
+            (Interface.id == InterfaceRequirementLink.entity_id)
+            & (InterfaceRequirementLink.entity_type == "interface"),
+        )
+        .filter(Interface.project_id == project_id)
+        .scalar()
+    )
 
     # Units with env specs
     units_total = db.query(func.count(Unit.id)).filter(Unit.project_id == project_id).scalar()
@@ -3648,18 +4094,31 @@ def get_interface_coverage(
         Unit.project_id == project_id
     ).scalar()
 
-    # Auto-generated link stats
-    auto_total = db.query(func.count(InterfaceRequirementLink.id)).filter(
-        InterfaceRequirementLink.auto_generated.is_(True),
-    ).scalar()
-    auto_approved = db.query(func.count(InterfaceRequirementLink.id)).filter(
-        InterfaceRequirementLink.auto_generated.is_(True),
+    # F-051: auto-generated link stats — InterfaceRequirementLink carries
+    # `requirement_id` which points at a Requirement with project_id.
+    # Join through Requirement to scope the counts.
+    auto_base = (
+        db.query(func.count(InterfaceRequirementLink.id))
+        .join(Requirement, Requirement.id == InterfaceRequirementLink.requirement_id)
+        .filter(
+            Requirement.project_id == project_id,
+            InterfaceRequirementLink.auto_generated.is_(True),
+        )
+    )
+    auto_total = auto_base.scalar()
+    auto_approved = auto_base.filter(
         InterfaceRequirementLink.status == "approved",
     ).scalar()
-    auto_pending = db.query(func.count(InterfaceRequirementLink.id)).filter(
-        InterfaceRequirementLink.auto_generated.is_(True),
-        InterfaceRequirementLink.status == "pending_review",
-    ).scalar()
+    auto_pending = (
+        db.query(func.count(InterfaceRequirementLink.id))
+        .join(Requirement, Requirement.id == InterfaceRequirementLink.requirement_id)
+        .filter(
+            Requirement.project_id == project_id,
+            InterfaceRequirementLink.auto_generated.is_(True),
+            InterfaceRequirementLink.status == "pending_review",
+        )
+        .scalar()
+    )
 
     coverage_pct = round(linked_ifaces / total_interfaces * 100, 1) if total_interfaces > 0 else 0.0
 
@@ -4224,10 +4683,32 @@ def update_harness_endpoint(
     return resp
 
 
+def _impact_harness_endpoint(db: Session, ep: HarnessEndpoint) -> dict:
+    return {
+        "wires": (db.query(func.count(Wire.id))
+                  .join(Pin, (Pin.id == Wire.from_mating_pin_id) | (Pin.id == Wire.to_mating_pin_id))
+                  .filter(Pin.connector_id == ep.mating_connector_id)
+                  .scalar()) or 0,
+    }
+
+
+@router.get("/endpoints/{ep_pk}/delete-impact")
+def get_endpoint_delete_impact(
+    ep_pk: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    ep = db.query(HarnessEndpoint).filter(HarnessEndpoint.id == ep_pk).first()
+    if not ep:
+        raise HTTPException(404, "Harness endpoint not found")
+    _assert_member_for_entity(db, current_user, ep)
+    return {"entity": "harness_endpoint", "id": ep_pk, "impact": _impact_harness_endpoint(db, ep)}
+
+
 @router.delete("/endpoints/{ep_pk}", status_code=200)
 def delete_harness_endpoint(
     ep_pk: int,
-    confirm: bool = Query(False),
+    force: bool = Query(False),
     request: Request = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("interfaces.delete")),
@@ -4236,7 +4717,8 @@ def delete_harness_endpoint(
     (and its pins via cascade) and any wires that touch this endpoint's
     mating pins on either side.
 
-    Requires confirm=true if there are wires to avoid surprises.
+    F-047: pass `force=true` to override the wire-cascade safety gate.
+    Use GET /endpoints/{pk}/delete-impact for a dry-run.
     """
     ep = db.query(HarnessEndpoint).filter(HarnessEndpoint.id == ep_pk).first()
     if not ep:
@@ -4246,14 +4728,15 @@ def delete_harness_endpoint(
     mating_connector_id = ep.mating_connector_id
     harness_id = ep.harness_id
 
-    # Count wires touching this endpoint's mating pins
-    wire_count = (db.query(func.count(Wire.id))
-                  .join(Pin, (Pin.id == Wire.from_mating_pin_id) | (Pin.id == Wire.to_mating_pin_id))
-                  .filter(Pin.connector_id == mating_connector_id)
-                  .scalar()) or 0
+    impact = _impact_harness_endpoint(db, ep)
+    wire_count = impact["wires"]
 
-    if wire_count > 0 and not confirm:
-        return {"status": "preview", "impact": {"wires": wire_count}}
+    if any(impact.values()) and not force:
+        raise HTTPException(
+            409,
+            f"Endpoint has dependent wires ({impact}). "
+            f"Use force=true to cascade-delete, or GET /endpoints/{ep_pk}/delete-impact to inspect.",
+        )
 
     # Delete wires touching this endpoint's mating pins
     if wire_count > 0:
