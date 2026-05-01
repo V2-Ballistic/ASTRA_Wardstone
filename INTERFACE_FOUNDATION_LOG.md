@@ -22,7 +22,7 @@
 |---|---|---|---|---|---|
 | 0 — Pre-flight | ✅ complete | n/a (pre-branch) | 0 | n/a | Phase 4 merged to main, branch + snapshot + log in place |
 | 1 — Schema & migration | ✅ complete | `66fcb97..94bf662` | 0 | green (242/242) | migration 0023, down/up tested, JSONB→JSON variant for SQLite tests |
-| 2 — Catalog CRUD backend | ⏳ pending | — | — | — | — |
+| 2 — Catalog CRUD backend | ✅ complete | `f7cf33a..f8a7a0e` | 18 (260 total) | green (260/260) | placement svc, router (20 routes), tests, supplier-delete bug fix |
 | 3 — Catalog UI | ⏳ pending | — | — | — | — |
 | 4 — Connection Builder + auto-wire | ⏳ pending | — | — | — | — |
 | 5 — Reactive Requirement Sync | ⏳ pending | — | — | — | — |
@@ -68,6 +68,46 @@
 - JSONB columns ship as `JSON().with_variant(JSONB(), "postgresql")` so the SQLite test environment can render them; PG schema is unaffected (still `jsonb` on the wire).
 - `app.models.interface` now imports `app.models.catalog` (module, not symbol) so `Pin.direction_override` can reference the catalog `SignalDirection`. Catalog has no reverse dependency on interface, so no cycle.
 
+### Phase 2 — Catalog CRUD backend
+
+**Files touched:**
+- New service package: `backend/app/services/catalog/__init__.py`, `backend/app/services/catalog/placement.py`
+- New router: `backend/app/routers/catalog.py` (20 routes mounted at `/api/v1/catalog`)
+- New tests: `backend/tests/test_catalog_crud.py` (18 tests across 5 classes)
+- Modified: `backend/app/main.py` — registered `app.routers.catalog` and added `catalog` / `req_sync` / `coverage_exception` to the explicit `_model_path` import list
+- Modified: `backend/app/routers/catalog.py` — supplier delete admin_force path now explicitly deletes child CatalogParts first (NOT NULL FK without ondelete=CASCADE; explicit Python cascade rather than a schema change is the smaller blast-radius fix)
+
+**Endpoints implemented (20 total):**
+- §9.1 Suppliers: GET/POST list+create, GET/PATCH/DELETE detail (5)
+- §9.2 Documents: POST upload, GET metadata, GET file, DELETE (4)
+- §9.3 Catalog parts: GET/POST list+create, GET/PATCH/DELETE detail, GET usage, POST place, POST variant (8)
+- §9.4 Pending imports (read-only slice — write side ships in Phase 7): GET list, GET detail, PATCH (3)
+
+**Endpoints deferred to Phase 7 (per phase prompt scope):**
+- POST `/catalog/documents/{id}/extract`
+- POST `/catalog/documents/{id}/preview`
+- POST `/catalog/pending-imports/{id}/approve`
+- POST `/catalog/pending-imports/{id}/reject`
+
+**Placement service highlights:**
+- `place_catalog_part(...)` — atomic SAVEPOINT clones CatalogPart → Unit, CatalogConnector → Connector, CatalogPin → Pin
+- `place_brand_new_part(...)` — admin/req_eng catalog-create + place in one transaction
+- `is_part_in_use(part_id)` — fast exists-style probe used by DELETE handler
+- Cross-perspective enum mapping inline (catalog `PartClass` → project `UnitType`, catalog `ConnectorGender` → project `ConnectorGender` legacy values, catalog `SignalType` → project `SignalType` finer-grained, catalog `SignalDirection` → project `PinDirection`). Unmapped values fall back to safe `CUSTOM` / `LRU` / `GENDERLESS` / `PASSIVE`.
+- RESTRICTED parts refuse non-admin placement (403); OBSOLETE parts require admin + admin_force=true (400). Supplier inactive guard is bypassed for admin.
+
+**Verification gate output:**
+- `pytest tests/test_catalog_crud.py -v --tb=short` → **18 passed**
+- `pytest tests/ -q --tb=no` → **260 passed** (242 baseline + 18 new, zero regressions, ~124 s)
+
+**Anomalies / observations:**
+- Catalog-part DELETE handler uses Python-level cascade rather than a schema change because the FK from `catalog_parts.supplier_id` is NOT NULL with default RESTRICT. Phase 1 schema is "locked" so adding ondelete=CASCADE would require a new migration; the Python cascade is functionally equivalent for the supplier-delete-with-admin-force path and avoids touching the migration head. Pending — could be tightened to ondelete=CASCADE in the next migration if that fits the broader cleanup plan.
+- `place_catalog_part` does NOT yet create `RequirementSourceLink` rows tagged `template_id="legacy_import"` (digest §10 anomaly #11). The reactive sync layer arrives in Phase 5 — placement will be revisited then.
+- The project-side `SignalType` enum is much finer-grained than catalog's broad categories (37 vs 10 members). The catalog→project map picks the most generic project enum value (e.g. catalog `digital` → project `SIGNAL_DIGITAL_SINGLE`). Cleaning this up to a richer mapping is a Phase 8 polish item.
+- Project-side `PinDirection` has logic-family values (TRI_STATE, OPEN_COLLECTOR, OPEN_DRAIN, etc.) that the catalog `SignalDirection` doesn't carry — the catalog→project map collapses to the basic INPUT/OUTPUT/BIDIRECTIONAL/POWER_SOURCE/GROUND/PASSIVE set. Auto-wire (Phase 4) reads from `Pin.direction_override` (catalog enum) so this lossy map only affects the legacy `Pin.direction` column.
+- `SUPPLIER_DOC_DIR` defaults to `/data/supplier_docs/` (created lazily); tests use `monkeypatch` to redirect to `tmp_path` so they never write to the real volume.
+- Reused existing `interfaces.update` permission key for catalog writes (RBAC matrix has no per-action catalog keys yet); explicit `_require_req_eng_plus` / `_require_admin` helpers gate every write/delete handler. Adding dedicated `catalog.*` permission keys is a Phase 8 polish item, but the role gates are correct as-is.
+
 ## Anomalies & Tangential Findings
 
 | Date | Phase | Description | Severity | Disposition |
@@ -75,6 +115,9 @@
 | 2026-04-30 | 1 | Spec §5.1 step 14 cites `pins.name`; actual column is `pins.signal_name`. Backfill sources `signal_name` instead — same intent. | INFO | Migrated as-is; documented above. |
 | 2026-04-30 | 1 | Spec §4.6 cites "existing `interface.SignalDirection`" enum; no such enum exists in current code. Used the new catalog `SignalDirection`. | INFO | Tracked here; matches §11 auto-wire usage. |
 | 2026-04-30 | 1 | Pre-existing `app.models.workflow` triggers a `PydanticDeprecatedSince20` warning (class-based Config). Pre-Phase-1, not Phase-1's regression. | INFO | Out of scope — leave for unrelated tidy-up. |
+| 2026-04-30 | 2 | Catalog-side `catalog_parts.supplier_id` FK has default RESTRICT (NOT NULL, no ondelete=CASCADE). Supplier delete with admin_force was raising NOT NULL violations on dependent parts. | INFO | Worked around with Python-level cascade in the DELETE handler. Could be tightened to ondelete=CASCADE in a follow-up migration if the broader cleanup plan needs it. |
+| 2026-04-30 | 2 | Catalog→project enum maps are intentionally lossy (catalog `PartClass` has 13 members → project `UnitType` has 30+; catalog `SignalType` has 10 → project has 37+). The maps pick the most generic safe project value. | INFO | Phase 8 polish item — richer mapping table when product needs it. |
+| 2026-04-30 | 2 | Catalog router reuses existing `interfaces.update` / `interfaces.delete` permission keys via inline `_require_req_eng_plus` / `_require_admin` helpers, rather than adding new `catalog.*` keys to `PERMISSION_MATRIX`. | INFO | Phase 8 polish — add dedicated keys to rbac.py for cleaner audit trails. |
 
 ## Out of Scope (explicitly deferred)
 
