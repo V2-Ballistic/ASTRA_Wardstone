@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from app.database import get_db
+from app.dependencies.project_access import _check_membership
 from app.models import Requirement, Project, User, RequirementHistory
 from app.schemas import RequirementResponse
 from app.services.auth import get_current_user
@@ -274,6 +275,10 @@ async def preview_import(
     if not project:
         raise HTTPException(404, "Project not found")
 
+    # F-211: enforce membership so a user with `requirements.create`
+    # cannot preview-import into a project they were never added to.
+    _check_membership(db, project_id, current_user)
+
     # Read file
     content = await file.read()
 
@@ -360,6 +365,10 @@ def confirm_import(
     project = db.query(Project).filter(Project.id == data.project_id).first()
     if not project:
         raise HTTPException(404, "Project not found")
+
+    # F-211: enforce membership before writing N requirements + N
+    # history rows + an audit row attributed to current_user.
+    _check_membership(db, data.project_id, current_user)
 
     # Build parent lookup
     existing = db.query(Requirement).filter(
