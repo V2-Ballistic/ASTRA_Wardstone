@@ -40,6 +40,7 @@ class GeneratedRequirement(BaseModel):
 
 class ProseConvertRequest(BaseModel):
     prose: str = Field(..., min_length=10, max_length=20000)
+    project_id: Optional[int] = None  # F-201: when set, membership is enforced
     project_context: str = ""        # Project description / domain for better extraction
     target_level: str = "L1"         # Default level for extracted requirements
     domain_hint: str = ""            # e.g., "aerospace", "medical device", "automotive"
@@ -66,6 +67,7 @@ class RewriteSuggestion(BaseModel):
 
 class ImproveRequest(BaseModel):
     statement: str = Field(..., min_length=5)
+    project_id: Optional[int] = None  # F-201: when set, membership is enforced
     title: str = ""
     rationale: str = ""
     issues: List[str] = Field(default_factory=list)           # Quality issues from the checker
@@ -84,6 +86,7 @@ class ImproveResponse(BaseModel):
 
 class DecomposeRequest(BaseModel):
     statement: str = Field(..., min_length=5)
+    project_id: Optional[int] = None  # F-201: when set, membership is enforced
     title: str = ""
     current_level: str = "L1"
     target_level: str = ""           # Auto-detect if empty (L1→L2, L2→L3, etc.)
@@ -125,6 +128,7 @@ class VerificationCriteria(BaseModel):
 
 class GenerateVerificationRequest(BaseModel):
     statement: str = Field(..., min_length=5)
+    project_id: Optional[int] = None  # F-201: when set, membership is enforced
     title: str = ""
     method: str = "test"             # test, analysis, inspection, demonstration
     domain_context: str = ""
@@ -136,6 +140,7 @@ class GenerateVerificationRequest(BaseModel):
 
 class GenerateRationaleRequest(BaseModel):
     statement: str = Field(..., min_length=5)
+    project_id: Optional[int] = None  # F-201: when set, membership is enforced
     title: str = ""
     req_type: str = "functional"
     project_context: str = ""
@@ -153,6 +158,7 @@ class GenerateRationaleResponse(BaseModel):
 
 class SummarizeChangesRequest(BaseModel):
     changes: List[Dict[str, Any]] = Field(default_factory=list)    # List of {req_id, field, old_value, new_value}
+    project_id: Optional[int] = None  # F-201: when set, membership is enforced
     project_name: str = ""
     board_type: str = "CCB"               # CCB, PRR, CDR, etc.
 
