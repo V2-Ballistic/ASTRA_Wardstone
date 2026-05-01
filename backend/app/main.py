@@ -82,6 +82,7 @@ for _mod, _attr in [
     ("app.routers.imports", "router"),       # CSV/XLSX import
     ("app.routers.interface", "router"),
     ("app.routers.interface_import", "router"),
+    ("app.routers.catalog", "router"),
 ]:
     try:
         _m = __import__(_mod, fromlist=[_attr])
@@ -124,6 +125,9 @@ for _model_path in [
     "app.models.report_job",
     "app.models.step_up_token",
     "app.models.id_sequence",
+    "app.models.catalog",
+    "app.models.req_sync",
+    "app.models.coverage_exception",
 ]:
     try:
         __import__(_model_path)
