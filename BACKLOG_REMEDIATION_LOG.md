@@ -38,7 +38,13 @@
 - [x] Phase 4 — Data Integrity & Contract (F-203, F-204, F-205) — full suite: 319 passed (+3). Migration 0026 applied; db backup at `astra-db-1:/tmp/pre-0026-1777669474.sql`.
 - [x] Phase 5 — Medium Severity (F-206–F-215) — full suite: 319 passed, 0 failed (no new tests; existing coverage protects the touched paths).
 - [x] Phase 6 — Low Severity & Cleanup (F-217–F-220) — full suite: 319 passed; FE typecheck clean for touched files.
-- [ ] Final verification gate
+- [x] Final verification gate
+  - `pytest tests/ -q -m 'not performance'` → **319 passed, 0 failed** (was 295 at baseline; +24 net new tests across phases 1–4).
+  - Backend route count: 249.
+  - `alembic current` → `0026 (head)`. Migration 0026 applied cleanly.
+  - `alembic check` → reports the pre-existing baseline schema drift (account_lockouts / ai_suggestions / workflow_stages defaults + indexes). This drift was already present at baseline commit `00b562a` and is tolerated per operating rule §3 ("the codebase has known schema drift; never run `alembic revision --autogenerate`"). No drift was introduced by this remediation cycle.
+  - Frontend `npx tsc --noEmit` → no errors in any file touched by this remediation (`interface-api.ts`, `auth.tsx`, `api.ts`). Pre-existing TS errors in `__tests__/`, `src/tests/`, and a handful of unrelated `interfaces/*` pages are out of scope.
+  - `git status` → no untracked `.bak` files; only the un-tracked input prompt remains (intentional).
 
 ## New findings discovered during remediation
 
