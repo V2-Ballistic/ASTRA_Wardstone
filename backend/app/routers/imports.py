@@ -398,12 +398,18 @@ def confirm_import(
         # objects in the session that could taint subsequent rows.
         sp = db.begin_nested()
         try:
-            # Generate req_id
-            count = db.query(func.count(Requirement.id)).filter(
-                Requirement.project_id == data.project_id,
-                Requirement.req_type == row.req_type,
-            ).scalar()
-            req_id = generate_requirement_id(project.code, row.req_type, count + 1)
+            # F-203: next_human_id replaces the race-prone `count + 1` —
+            # in-batch IDs are now contiguous because each loop iteration
+            # increments the sequence row inside the same transaction.
+            from app.services.id_sequence import next_human_id
+            _PREFIX = generate_requirement_id(project.code, row.req_type, 1).rsplit("-", 1)[0]
+            req_id = next_human_id(
+                db,
+                project_id=data.project_id,
+                prefix=_PREFIX,
+                source_model=Requirement,
+                id_field="req_id",
+            )
 
             # Resolve parent
             parent_id = None
