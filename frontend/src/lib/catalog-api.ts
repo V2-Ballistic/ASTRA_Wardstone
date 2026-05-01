@@ -178,16 +178,36 @@ export const catalogAPI = {
     api.patch<PendingCatalogImport>(`${BASE}/pending-imports/${id}`, data),
 
   // ══════════════════════════════════════
-  //  Phase 7 stubs — approve / reject pending imports
-  //  Wired to a clear "coming soon" so Tab 3 of <PlaceLruModal> can call
-  //  through without compile-error coupling later.
+  //  Phase 7 — ICD ingestion endpoints
   // ══════════════════════════════════════
 
-  approvePendingImport: (_id: number): Promise<never> => {
-    throw new Error('Pending import approval ships in Phase 7 (ICD ingestion).');
-  },
+  /**
+   * Trigger ICD extraction for an UPLOADED supplier document. Returns
+   * 202 + {job_id, status, started_at}; clients poll
+   * `getDocument(doc_id)` for `extraction_status` to hit `pending_review`
+   * (then navigate to `/catalog/documents/[id]/review`) or `failed`.
+   */
+  triggerExtraction: (docId: number) =>
+    api.post<{ job_id: number; status: string; started_at: string }>(
+      `${BASE}/documents/${docId}/extract`,
+    ),
 
-  rejectPendingImport: (_id: number, _reason: string): Promise<never> => {
-    throw new Error('Pending import rejection ships in Phase 7 (ICD ingestion).');
-  },
+  /**
+   * Approve a PendingCatalogImport. Atomic on the backend — Supplier
+   * (if new), CatalogPart, CatalogConnectors, CatalogPins all created or
+   * none. Returns the new CatalogPartDetail so the UI can navigate to it.
+   */
+  approvePendingImport: (id: number) =>
+    api.post<CatalogPartDetail>(`${BASE}/pending-imports/${id}/approve`),
+
+  /**
+   * Reject a PendingCatalogImport. The source SupplierDocument moves to
+   * REJECTED; no catalog data is created. Optional reason is stored on
+   * the pending row for audit.
+   */
+  rejectPendingImport: (id: number, reason?: string) =>
+    api.post<PendingCatalogImport>(
+      `${BASE}/pending-imports/${id}/reject`,
+      { reason: reason || null },
+    ),
 };

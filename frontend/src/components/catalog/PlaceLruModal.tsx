@@ -889,35 +889,278 @@ function BrandNewTab({
 }
 
 // ══════════════════════════════════════════════════════════════
-//  Tab 3 — Upload ICD (disabled in Phase 3)
+//  Tab 3 — Upload ICD (Phase 7 — live)
 // ══════════════════════════════════════════════════════════════
+//
+// The flow:
+//   1. Pick a supplier (existing-only — brand-new supplier is created on
+//      approval if the AI extracts a previously unknown name).
+//   2. Choose an ICD / datasheet file (PDF, DOCX, XLSX) and a title.
+//   3. Click "Upload & Extract" — backend creates the SupplierDocument,
+//      we immediately POST /extract, then poll the document until status
+//      moves PENDING_REVIEW (success) or FAILED (error). Typical duration
+//      is 30-90 s for a 50-page datasheet.
+//   4. On PENDING_REVIEW we surface a "Review extracted data" CTA that
+//      navigates to the side-by-side review page; the user approves there
+//      and the resulting CatalogPart can then be placed via Tab 1.
+//
+// We deliberately don't auto-place — the operator wants to inspect the AI
+// extraction before committing. That's the whole point of the human-in-the-
+// loop pattern (spec §10).
 
-const PHASE_7_TOOLTIP = 'Available in Phase 7 — ICD ingestion not yet enabled.';
+function UploadIcdTab({
+  onClose,
+}: { onClose: () => void }) {
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [supplierId, setSupplierId] = useState<number | null>(null);
+  const [file, setFile] = useState<File | null>(null);
+  const [title, setTitle] = useState('');
+  const [docType, setDocType] = useState<string>('icd');
+  const [error, setError] = useState('');
 
-function UploadIcdTab() {
-  return (
-    <div className="flex min-h-[420px] flex-col items-center justify-center gap-4 text-center" aria-disabled="true">
-      <div className="flex h-12 w-12 items-center justify-center rounded-full bg-amber-500/10 ring-1 ring-amber-500/30">
-        <AlertTriangle className="h-6 w-6 text-amber-400" aria-hidden="true" />
+  // Job state
+  type JobStage = 'idle' | 'uploading' | 'extracting' | 'pending_review' | 'failed';
+  const [stage, setStage] = useState<JobStage>('idle');
+  const [docId, setDocId] = useState<number | null>(null);
+  const [failMsg, setFailMsg] = useState('');
+
+  useEffect(() => {
+    catalogAPI.listSuppliers({ is_active: true, limit: 200 })
+      .then((r) => setSuppliers(r.data))
+      .catch(() => setError('Failed to load supplier list'));
+  }, []);
+
+  // Poll the document while extraction is running.
+  useEffect(() => {
+    if (stage !== 'extracting' || !docId) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const resp = await catalogAPI.getDocument(docId);
+        const status = resp.data.extraction_status;
+        if (status === 'pending_review') {
+          if (!cancelled) setStage('pending_review');
+          return;
+        }
+        if (status === 'failed') {
+          if (!cancelled) {
+            setStage('failed');
+            const log = resp.data.extraction_log as { message?: string; code?: string } | null;
+            setFailMsg(log?.message || `Extraction failed (code: ${log?.code || 'unknown'})`);
+          }
+          return;
+        }
+        // Still uploaded / extracting — poll again in 3 s.
+        if (!cancelled) setTimeout(poll, 3000);
+      } catch {
+        if (!cancelled) setTimeout(poll, 5000);
+      }
+    };
+    poll();
+    return () => { cancelled = true; };
+  }, [stage, docId]);
+
+  const docTypeOptions: { value: string; label: string }[] = [
+    { value: 'icd', label: 'ICD' },
+    { value: 'datasheet', label: 'Datasheet' },
+    { value: 'spec_sheet', label: 'Spec sheet' },
+    { value: 'drawing', label: 'Drawing' },
+    { value: 'app_note', label: 'Application note' },
+    { value: 'user_manual', label: 'User manual' },
+    { value: 'other', label: 'Other' },
+  ];
+
+  const canUpload = !!supplierId && !!file && !!title.trim() && stage === 'idle';
+
+  const handleUpload = useCallback(async () => {
+    if (!supplierId || !file || !title.trim()) return;
+    setError('');
+    setStage('uploading');
+    try {
+      const upload = await catalogAPI.uploadDocument(
+        supplierId,
+        file,
+        // SupplierDocumentType type-cast; UI options match backend enum strings.
+        docType as 'icd' | 'datasheet' | 'spec_sheet' | 'drawing' | 'app_note' | 'user_manual' | 'other',
+        title.trim(),
+      );
+      const newId = upload.data.id;
+      setDocId(newId);
+      // Trigger extraction immediately — the backend returns 202.
+      await catalogAPI.triggerExtraction(newId);
+      setStage('extracting');
+    } catch (e) {
+      const ax = e as { response?: { data?: { detail?: string }; status?: number } };
+      const msg = ax?.response?.data?.detail || 'Upload failed';
+      const dup = ax?.response?.status === 409 ? ' (this document was already uploaded for this supplier — see Pending Imports)' : '';
+      setError(msg + dup);
+      setStage('idle');
+    }
+  }, [supplierId, file, title, docType]);
+
+  // ── UI states ──
+  if (stage === 'pending_review' && docId) {
+    return (
+      <div className="flex min-h-[420px] flex-col items-center justify-center gap-3 text-center px-6">
+        <div className="flex h-12 w-12 items-center justify-center rounded-full bg-emerald-500/15 ring-1 ring-emerald-500/30">
+          <Check className="h-6 w-6 text-emerald-400" aria-hidden="true" />
+        </div>
+        <div>
+          <div className="text-sm font-bold text-slate-100">Extraction complete — ready for review</div>
+          <p className="mt-1 max-w-md text-xs text-slate-400">
+            The AI has extracted catalog data from your document. Review and edit
+            the extraction before approving — any field can be changed, and the
+            backend re-validates on approve.
+          </p>
+        </div>
+        <a
+          href={`/catalog/documents/${docId}/review`}
+          className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-xs font-bold text-white hover:bg-blue-500"
+        >
+          Review extracted data <ChevronRight className="h-3.5 w-3.5" />
+        </a>
+        <button
+          type="button"
+          onClick={onClose}
+          className="mt-1 text-[11px] text-slate-500 hover:text-slate-300"
+        >
+          Close — review later from the Catalog page
+        </button>
       </div>
+    );
+  }
+
+  if (stage === 'failed') {
+    return (
+      <div className="flex min-h-[420px] flex-col items-center justify-center gap-3 text-center px-6">
+        <div className="flex h-12 w-12 items-center justify-center rounded-full bg-rose-500/15 ring-1 ring-rose-500/30">
+          <AlertTriangle className="h-6 w-6 text-rose-400" aria-hidden="true" />
+        </div>
+        <div>
+          <div className="text-sm font-bold text-slate-100">Extraction failed</div>
+          <p className="mt-1 max-w-md text-xs text-rose-300/80">{failMsg}</p>
+          {docId && (
+            <p className="mt-2 text-[11px] text-slate-500">
+              The document is still uploaded. Edit your AI configuration and
+              re-trigger extraction from the document detail page (doc {docId}).
+            </p>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={() => { setStage('idle'); setDocId(null); setFailMsg(''); setFile(null); setTitle(''); }}
+          className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-astra-border px-4 py-2 text-xs font-semibold text-slate-300 hover:bg-astra-surface-alt"
+        >
+          Try again
+        </button>
+      </div>
+    );
+  }
+
+  if (stage === 'uploading' || stage === 'extracting') {
+    return (
+      <div className="flex min-h-[420px] flex-col items-center justify-center gap-3 text-center px-6">
+        <Loader2 className="h-8 w-8 animate-spin text-blue-400" aria-hidden="true" />
+        <div>
+          <div className="text-sm font-bold text-slate-200">
+            {stage === 'uploading' ? 'Uploading document…' : 'Running AI extraction…'}
+          </div>
+          <p className="mt-1 max-w-md text-xs text-slate-500">
+            {stage === 'uploading'
+              ? 'Sending file to /catalog/suppliers/{id}/documents/upload (SHA-256 dedup applies).'
+              : 'Pre-extracting text + tables, then asking the LLM. Typically 30-90 s for a 50-page datasheet.'}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Idle / form state
+  return (
+    <div className="space-y-3 min-h-[420px]">
+      {error && <ErrorBanner message={error} />}
+      <div className="rounded-lg border border-blue-500/30 bg-blue-500/5 px-3 py-2 text-[11px] text-blue-200/90">
+        Upload a supplier ICD or datasheet (PDF, DOCX, or XLSX). The AI will
+        extract supplier, part identity, physical / power / environmental specs,
+        and pinouts. After extraction, review and approve to add the part to
+        the catalog — then place it via the From Catalog tab.
+      </div>
+
       <div>
-        <div className="text-sm font-bold text-slate-200">Upload ICD &amp; Auto-Extract</div>
-        <p className="mt-1 max-w-sm text-xs text-slate-500">
-          {PHASE_7_TOOLTIP}{' '}
-          When live, this tab will accept a supplier ICD PDF, run the ASTRA AI
-          ingestion pipeline, and let you review the extracted catalog part
-          before placing it.
+        <FieldLabel htmlFor="upi-supplier" required>Supplier</FieldLabel>
+        <select
+          id="upi-supplier"
+          value={supplierId ?? ''}
+          onChange={(e) => setSupplierId(e.target.value ? Number(e.target.value) : null)}
+          className="w-full rounded-lg border border-astra-border bg-astra-bg px-3 py-2 text-sm text-slate-200 outline-none focus:border-blue-500/50"
+        >
+          <option value="">— Select supplier —</option>
+          {suppliers.map((s) => (
+            <option key={s.id} value={s.id}>{s.name}{s.cage_code ? ` (CAGE ${s.cage_code})` : ''}</option>
+          ))}
+        </select>
+        <p className="mt-1 text-[10px] text-slate-500">
+          Don&apos;t see your supplier? Create it under <Globe className="inline h-2.5 w-2.5" /> Catalog → Suppliers, then return here.
         </p>
       </div>
-      <button
-        type="button"
-        disabled
-        aria-disabled="true"
-        title={PHASE_7_TOOLTIP}
-        className="flex cursor-not-allowed items-center gap-1.5 rounded-lg border border-astra-border bg-astra-surface-alt px-4 py-2 text-xs font-semibold text-slate-500 opacity-50"
-      >
-        <FileUp className="h-3.5 w-3.5" aria-hidden="true" /> Choose ICD File
-      </button>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <FieldLabel htmlFor="upi-title" required>Document title</FieldLabel>
+          <input
+            id="upi-title"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="e.g. Glenair Mil-DTL-38999/III ICD Rev C"
+            className="w-full rounded-lg border border-astra-border bg-astra-bg px-3 py-2 text-sm text-slate-200 outline-none focus:border-blue-500/50"
+          />
+        </div>
+        <div>
+          <FieldLabel htmlFor="upi-doctype">Document type</FieldLabel>
+          <select
+            id="upi-doctype"
+            value={docType}
+            onChange={(e) => setDocType(e.target.value)}
+            className="w-full rounded-lg border border-astra-border bg-astra-bg px-3 py-2 text-sm text-slate-200 outline-none focus:border-blue-500/50"
+          >
+            {docTypeOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </div>
+      </div>
+
+      <div>
+        <FieldLabel htmlFor="upi-file" required>ICD / datasheet file</FieldLabel>
+        <input
+          id="upi-file"
+          type="file"
+          accept=".pdf,.docx,.xlsx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+          onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+          className="w-full rounded-lg border border-astra-border bg-astra-bg px-3 py-2 text-xs text-slate-300 file:mr-3 file:rounded file:border-0 file:bg-blue-600 file:px-2.5 file:py-1 file:text-xs file:font-bold file:text-white hover:file:bg-blue-500"
+        />
+        {file && (
+          <p className="mt-1 text-[10px] text-slate-500">
+            {file.name} • {(file.size / 1024).toFixed(0)} KB
+          </p>
+        )}
+      </div>
+
+      <div className="flex items-center justify-end gap-2 pt-1">
+        <button
+          type="button"
+          onClick={onClose}
+          className="rounded-lg border border-astra-border px-4 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={handleUpload}
+          disabled={!canUpload}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-xs font-bold text-white hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          <FileUp className="h-3.5 w-3.5" /> Upload &amp; Extract
+        </button>
+      </div>
     </div>
   );
 }
@@ -1011,9 +1254,7 @@ export default function PlaceLruModal({
             id="icd-tab"
             panelId="icd-panel"
             active={tab === 'upload_icd'}
-            onClick={() => { /* disabled */ }}
-            disabled
-            tooltip={PHASE_7_TOOLTIP}
+            onClick={() => setTab('upload_icd')}
             icon={<FileUp className="h-3.5 w-3.5" aria-hidden="true" />}
           >
             Upload ICD
@@ -1047,7 +1288,7 @@ export default function PlaceLruModal({
           )}
           {tab === 'upload_icd' && (
             <div role="tabpanel" id="icd-panel" aria-labelledby="icd-tab">
-              <UploadIcdTab />
+              <UploadIcdTab onClose={onClose} />
             </div>
           )}
         </div>
