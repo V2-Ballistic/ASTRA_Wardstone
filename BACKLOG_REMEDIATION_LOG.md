@@ -12,8 +12,8 @@
 | F-210 | Medium | ✅ Fixed | `backend/app/routers/seed_project.py`, tests | `fa3b86d` | `pytest -k F210` → 1 passed | — |
 | F-211 | Medium | ✅ Fixed | `backend/app/routers/imports.py`, tests | `2e58456` | `pytest -k F211` → 1 passed | Both preview and confirm gated |
 | F-201 | High | ✅ Fixed | `backend/app/routers/workflows.py` (`fdb1553`), `backend/app/routers/ai.py` (`c37e095`), `backend/app/routers/ai_writer.py` + schema (`2de8daa`), tests (`e5accca`) | three commits | `pytest -k F201` → 9 passed | ai_writer added optional `project_id` to each schema; gate is no-op when absent (backward-compatible) |
-| F-202 | High | ⏳ Pending | — | — | — | Phase 3 |
-| F-216 | Medium | ⏳ Pending | — | — | — | Phase 3 |
+| F-202 | High | ✅ Fixed | `backend/app/routers/dev.py`, `backend/tests/test_phase3_dev_router.py` | `ef6e990` | `pytest tests/test_phase3_dev_router.py` → 7 passed | ADMIN auth + X-Dev-Reset-Confirm header + dev.reset audit emitted |
+| F-216 | Medium | ✅ Fixed | `backend/app/routers/dev.py` | `ef6e990` | covered by reset test | `_RESET_IN_PROGRESS` shim returns 503 during drop/create window (single-worker only) |
 | F-203 | High | ⏳ Pending | — | — | — | Phase 4 |
 | F-204 | High | ⏳ Pending | — | — | — | Phase 4 |
 | F-205 | High | ⏳ Pending | — | — | — | Phase 4 |
@@ -34,7 +34,7 @@
 
 - [x] Phase 1 — Auth / Token Hardening (F-200, F-221) — full suite: 295 passed, 0 failed (`pytest tests/ -x -q -m 'not performance'`, 178s). Backend route count: 332. `alembic check` reports pre-existing schema drift (per operating rule §3 — known and tolerated on this baseline; no migration introduced this phase).
 - [x] Phase 2 — Project Membership Sweep (F-201, F-208, F-210, F-211) — full suite: 309 passed, 0 failed (was 295 before; +14 negative tests). 7 commits on `fix/backlog-phase-2-membership`.
-- [ ] Phase 3 — Dev Router Hardening (F-202, F-216)
+- [x] Phase 3 — Dev Router Hardening (F-202, F-216) — full suite: 316 passed (+7).
 - [ ] Phase 4 — Data Integrity & Contract (F-203, F-204, F-205)
 - [ ] Phase 5 — Medium Severity (F-206–F-215)
 - [ ] Phase 6 — Low Severity & Cleanup (F-217–F-220)
