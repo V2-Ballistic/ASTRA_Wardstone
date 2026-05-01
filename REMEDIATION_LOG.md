@@ -76,9 +76,34 @@
   - [x] 2D — Workflow integrity, schema hygiene, triage cleanup (F-035, F-142, F-143/F-078, F-145, F-036, F-037, F-065, F-038, F-074, F-075, F-076, schema-drift) — full pytest 221/222 (only F-144 remains, routed to Phase 3); alembic head 0019; 6 of 7 originally-failing tests now passing; alembic check residual drift is cosmetic only (PK-redundant `ix_<table>_id` declarations + server-default notation deltas).
   - [ ] 2D — Hardening + sweep (F-010, F-011, F-012, F-024, F-025, F-026, F-027, F-028, F-029, F-030, F-033 onwards as scoped)
 - [ ] Phase 3 — Medium Severity
-- [~] Phase 4 — Low Severity & Cleanup (branch `fix/phase-4-cleanup`, in progress)
+- [x] Phase 4 — Low Severity & Cleanup (branch `fix/phase-4-cleanup`, gate green)
 - [ ] Phase 5 — Info & Follow-ups
 - [ ] Post-remediation audit re-run
+
+## Final tally (2026-05-01, end of Phase 4)
+
+| Category | Count |
+|---|---:|
+| Original audit findings | 121 |
+| Discovered during remediation (F-142, F-143, F-144, F-145, frontend test-infra) | 5 |
+| **Total tracked** | **126** |
+| ✅ Fixed | 116 |
+| ✅ Verified-closed (covered by another finding) | 7 |
+| ⏸ Deferred with rationale | 5 |
+
+Deferred breakdown (5):
+1. **F-045** — pgvector migration (separate prep PR, infra image swap).
+2. **delete-impact UI integration** — frontend modals don't yet consume
+   the new GET endpoints from F-047 cluster.
+3. **/auth/refresh interceptor** — frontend axios layer needs the 401
+   retry-with-rotation flow added.
+4. **Frontend test-infra cleanup** — `@types/jest`, downlevelIteration,
+   `next lint` configuration. One PR after Phase 4 closes.
+5. **F-134** — `mating_connector_designator` + `mating_pin_number` on
+   `PinResponse`. Requires either a Pin model migration or a Wire-table
+   join; exceeded Phase 4's 30-min cosmetic budget.
+
+Verified-closed (7): F-120, F-121, F-138, F-124, F-139, F-140, F-141.
 
 ## Phase 4 — verified-closed findings (covered by earlier phases)
 
