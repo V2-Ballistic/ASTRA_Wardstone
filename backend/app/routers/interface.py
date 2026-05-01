@@ -35,6 +35,8 @@ from app.models.interface import (
     UnitEnvironmentalSpec, InterfaceRequirementLink,
     AutoRequirementLog, InterfaceChangeImpact,
     HarnessEndpoint, Connection,
+    # INTF-002 Phase 4 — Connection Builder uses these enums for cb_start
+    InterfaceType, InterfaceDirection, InterfaceStatus, InterfaceCriticality,
 )
 from app.models import Requirement
 from app.schemas.interface import (

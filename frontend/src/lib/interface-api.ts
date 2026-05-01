@@ -402,6 +402,45 @@ export const interfaceAPI = {
    *  wires will be removed. */
   deleteHarnessEndpoint: (endpointId: number, confirm = false) =>
     api.delete(`${BASE}/endpoints/${endpointId}`, { params: { confirm } }),
+
+  // ══════════════════════════════════════
+  //  INTF-002 Phase 4 — Connection Builder (§9.5)
+  // ══════════════════════════════════════
+
+  /** Start a new Connection Builder session — creates a draft Interface
+   *  tied to the (source_unit, target_unit) pair. */
+  cbStart: (data: {
+    project_id: number;
+    source_unit_id: number;
+    target_unit_id: number;
+    name?: string;
+    interface_type?: string;
+    direction?: string;
+    description?: string;
+  }) => api.post<import('./interface-types').CbStartResponse>(
+    `${BASE}/connection-builder/start`, data
+  ),
+
+  /** Run the three-way auto-wire engine and return the AutoWireResult. */
+  cbAutoSuggest: (
+    interfaceId: number,
+    options?: import('./interface-types').AutoWireOptions,
+  ) => api.post<import('./interface-types').AutoWireResult>(
+    `${BASE}/connection-builder/${interfaceId}/auto-suggest-wires`,
+    options ?? {},
+  ),
+
+  /** Atomic commit: creates a WireHarness + N Wires from the user's
+   *  accepted set. Either every wire + the harness lands, or none. */
+  cbCommit: (
+    interfaceId: number,
+    body: {
+      accepted_wires: import('./interface-types').CbAcceptedWire[];
+      harness: import('./interface-types').CbHarnessMetadata;
+    },
+  ) => api.post<import('./interface-types').CbCommitResponse>(
+    `${BASE}/connection-builder/${interfaceId}/commit`, body,
+  ),
 };
 
 // ══════════════════════════════════════

@@ -692,13 +692,13 @@ export default function InterfacesPage() {
             >
               <Package className="h-3.5 w-3.5" aria-hidden="true" /> Add Unit
             </button>
-            {/* Phase 4 placeholder — wires the future Connection Builder */}
+            {/* Phase 4 — Connection Builder wizard. */}
             <button
               type="button"
-              onClick={() => setPhase4Toast('Connection Builder ships in Phase 4 of the Interface Foundation refactor.')}
-              className="flex items-center gap-1.5 rounded-lg border border-astra-border px-4 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200"
+              onClick={() => router.push(`${p}/interfaces/connect`)}
+              className="flex items-center gap-1.5 rounded-lg border border-blue-500/30 px-4 py-2 text-xs font-semibold text-blue-300 hover:bg-blue-500/10"
             >
-              <Clock className="h-3.5 w-3.5" aria-hidden="true" /> Connect Two Units
+              <Cable className="h-3.5 w-3.5" aria-hidden="true" /> Connect Two Units
             </button>
           </div>
 

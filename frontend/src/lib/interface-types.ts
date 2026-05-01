@@ -1458,3 +1458,118 @@ export function labelize(value: string | null | undefined): string {
     return word.charAt(0).toUpperCase() + word.slice(1);
   }).join(' ');
 }
+
+
+// ══════════════════════════════════════════════════════════════
+//  INTF-002 Phase 4 — Connection Builder
+// ══════════════════════════════════════════════════════════════
+
+export type SignalDirection6 =
+  | 'input' | 'output' | 'bidirectional' | 'power' | 'ground' | 'unknown';
+
+export interface CbPinSummary {
+  id: number;
+  pin_number: string;
+  pin_label: string | null;
+  internal_signal_name: string | null;
+  mfr_pin_name: string | null;
+  direction: string;       // SignalDirection6 from the backend
+  signal_type: string;
+  connector_id: number;
+  connector_designator: string;
+}
+
+export interface CbWireSuggestion {
+  gauge: string;
+  color: string;
+  insulation: string;
+  max_length_m: number | null;
+  rationale: string;
+}
+
+export interface CbProposedWire {
+  source_pin: CbPinSummary;
+  target_pin: CbPinSummary;
+  matched_signal_name: string;
+  direction_pair: [string, string];
+  confidence: 'high' | 'medium' | 'low';
+  suggestion: CbWireSuggestion;
+  warning: string | null;
+}
+
+export interface CbAmbiguousMatch {
+  source_pin: CbPinSummary;
+  candidates: CbPinSummary[];
+}
+
+export interface CbDirectionConflict {
+  source_pin: CbPinSummary;
+  target_pin: CbPinSummary;
+  src_direction: string;
+  tgt_direction: string;
+  reason: string;
+}
+
+export interface CbTypeMismatch {
+  source_pin: CbPinSummary;
+  target_pin: CbPinSummary;
+  src_signal_type: string;
+  tgt_signal_type: string;
+}
+
+export interface AutoWireResult {
+  interface_id: number;
+  proposed_wires: CbProposedWire[];
+  unmatched_source: CbPinSummary[];
+  unmatched_target: CbPinSummary[];
+  ambiguous: CbAmbiguousMatch[];
+  direction_conflicts: CbDirectionConflict[];
+  type_mismatches: CbTypeMismatch[];
+  lru_validation_errors: string[];
+  summary: Record<string, number>;
+}
+
+export interface AutoWireOptions {
+  require_signal_type_match?: boolean;
+  require_direction_compatibility?: boolean;
+  enforce_lru_endpoints?: boolean;
+  exclude_no_connect?: boolean;
+  exclude_chassis_ground?: boolean;
+  case_sensitive_names?: boolean;
+  only_unmatched_pins?: boolean;
+}
+
+export interface CbStartResponse {
+  interface_id: number;
+  name: string;
+  source_unit_id: number;
+  target_unit_id: number;
+  status: string;
+  project_id: number;
+}
+
+export interface CbAcceptedWire {
+  source_pin_id: number;
+  target_pin_id: number;
+  wire_gauge?: string;
+  wire_color?: string;
+  wire_type?: string;
+  length_m?: number;
+  notes?: string;
+}
+
+export interface CbHarnessMetadata {
+  name: string;
+  cable_type?: string;
+  overall_length_m?: number;
+  jacket_color?: string;
+  shield_type?: string;
+  description?: string;
+}
+
+export interface CbCommitResponse {
+  interface_id: number;
+  harness_id: number;
+  wires_created: number;
+  wire_ids: number[];
+}
