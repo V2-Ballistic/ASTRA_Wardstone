@@ -91,7 +91,10 @@ def refresh_access_token(db: Session, raw_refresh: str) -> dict | None:
         db.query(RefreshToken)
         .filter(
             RefreshToken.token_hash == token_hash,
-            RefreshToken.revoked == False,  # noqa: E712
+            # F-113: SQLAlchemy boolean column comparison wants .is_(False),
+            # not `== False` (which trips PEP 8 E712 and was suppressed
+            # with `# noqa`). Same emitted SQL, lint-clean source.
+            RefreshToken.revoked.is_(False),
             RefreshToken.expires_at > datetime.utcnow(),
         )
         .first()

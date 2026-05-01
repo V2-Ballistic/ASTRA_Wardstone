@@ -26,7 +26,17 @@ from app.services.reports.base import ReportGenerator, ReportOutput
 
 try:
     from app.services.quality_checker import check_requirement_quality
-except ImportError:
+except ImportError as _qc_exc:
+    # F-115: log the fallback so an operator can see WHY a generated
+    # quality report has all-zero scores. Pre-fix the import failure
+    # was silent and the report just looked broken.
+    import logging
+    logging.getLogger("astra.reports.quality").warning(
+        "quality_checker import failed (%s) — quality report will use "
+        "an all-zero stub. Reports generated until this is fixed will "
+        "be useless.", _qc_exc,
+    )
+
     def check_requirement_quality(s, t="", r=""):
         return {"score": 0, "passed": False, "issues": [], "warnings": []}
 

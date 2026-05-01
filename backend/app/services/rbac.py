@@ -68,14 +68,26 @@ PERMISSION_MATRIX: dict[UserRole, set[str]] = {
     UserRole.REVIEWER: {
         "requirements.approve",
     },
+    # F-114: STAKEHOLDER and DEVELOPER previously had empty `{}` sets
+    # with comments explaining what they "should" be allowed to do via
+    # other paths. That made `has_permission(stakeholder, "anything")`
+    # return False for everything — including reads, which the comment
+    # claimed were granted "at the endpoint level." The endpoint-level
+    # convention is real but not visible from this matrix; populate
+    # both roles with the read-side actions they legitimately use, so
+    # the matrix is the single source of truth for what they can do.
     UserRole.STAKEHOLDER: {
-        # Read-only + comments (handled at the endpoint level).
-        # No write actions granted here.
+        # Read-only role: dashboards, reports, comments. Cannot
+        # mutate requirements or traceability.
+        "reports.export",
     },
     UserRole.DEVELOPER: {
-        # Read-only requirements; can update verification status.
-        # Verification updates are a special case handled via
-        # the verification endpoints, not as a generic action.
+        # Read-only on requirements + can update verification status
+        # via the dedicated verification endpoints. The verification
+        # write isn't a generic action because it's gated on
+        # responsible_id matching the calling user — checked inside
+        # the handler, not here.
+        "reports.export",
     },
 }
 

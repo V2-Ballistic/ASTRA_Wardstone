@@ -284,10 +284,13 @@ def analyze_impact(
 
     req = db.query(Requirement).filter(Requirement.id == requirement_id).first()
     if not req:
-        return ImpactReport(
-            change_description=change_description,
-            ai_summary="Requirement not found.",
-        )
+        # F-116: was returning an empty ImpactReport with
+        # `ai_summary="Requirement not found."` — the router then
+        # serialised that as a 200 OK. The caller had no way to tell
+        # "no impact because the change is harmless" from "no impact
+        # because the requirement doesn't exist." Raise so the router
+        # can map to a clean 404.
+        raise ValueError(f"Requirement {requirement_id} not found")
 
     # Build graph
     graph = _TraceGraph(db, req.project_id)

@@ -10,6 +10,7 @@ trail for both successful AND failed authentication attempts
 
 import logging
 from datetime import datetime
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from jose import JWTError, jwt
@@ -25,6 +26,24 @@ from app.services.auth import (
     verify_password, get_password_hash, create_access_token, get_current_user,
     revoke_access_token_jti, oauth2_scheme,
 )
+
+
+# F-122: dedicated /me response shape, decoupled from UserResponse.
+# Pre-fix /me serialised through `UserResponse`, which is the
+# admin-facing shape ("show me a user"). Coupling them meant any
+# future field added to UserResponse for an admin view would silently
+# leak into the /me endpoint that every authenticated frontend calls
+# on every page load. Splitting them gives /me an explicit contract.
+class MeResponse(BaseModel):
+    id: int
+    username: str
+    email: str
+    full_name: str
+    role: str
+    department: Optional[str] = None
+
+    class Config:
+        from_attributes = True
 
 # Optional audit integration. The router REQUIRES audit_service in
 # the success/failure paths below; the shim only protects the import
@@ -206,7 +225,7 @@ def login(
 #  Me
 # ══════════════════════════════════════
 
-@router.get("/me", response_model=UserResponse)
+@router.get("/me", response_model=MeResponse)
 def get_me(current_user: User = Depends(get_current_user)):
     return current_user
 
