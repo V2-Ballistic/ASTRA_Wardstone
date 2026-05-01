@@ -3810,16 +3810,40 @@ def get_n2_matrix(
 @router.get("/block-diagram", response_model=BlockDiagramResponse)
 def get_block_diagram(
     project_id: int = Query(...),
+    layout: str = Query("grid", pattern="^(grid|none)$"),
+    cols: int = Query(4, ge=1, le=16),
+    col_spacing: int = Query(250, ge=50, le=1000),
+    row_spacing: int = Query(200, ge=50, le=1000),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """System-level block diagram: nodes = systems, edges = interfaces."""
+    """System-level block diagram: nodes = systems, edges = interfaces.
+
+    F-135: layout coords are now query-controlled instead of hard-coded
+    `idx % 4 / idx // 4` math.
+      - `layout=grid` (default) keeps the historical grid placement,
+        but `cols`, `col_spacing`, `row_spacing` are tunable so the
+        frontend can pick a layout that matches its viewport without
+        the diagram overflowing or being too sparse.
+      - `layout=none` returns nodes with `x=0, y=0` so a client-side
+        layout engine (D3, dagre, …) can take over.
+
+    Persisting per-system layout coords on the System model is the
+    longer-term fix; this query-knob approach is the smaller of the
+    two paths called out in F-135 and ships in Phase 4.
+    """
     _require_project(db, project_id, current_user)
 
     systems = db.query(System).filter(System.project_id == project_id).order_by(System.name).all()
     nodes = []
     for idx, s in enumerate(systems):
         uc = db.query(func.count(Unit.id)).filter(Unit.system_id == s.id).scalar()
+        if layout == "grid":
+            x = float(idx % cols) * col_spacing
+            y = float(idx // cols) * row_spacing
+        else:
+            x = 0.0
+            y = 0.0
         nodes.append(BlockDiagramNode(
             id=s.id,
             system_id=s.system_id,
@@ -3827,8 +3851,8 @@ def get_block_diagram(
             abbreviation=s.abbreviation,
             type=_ev(s.system_type),
             unit_count=uc,
-            x=float(idx % 4) * 250,
-            y=float(idx // 4) * 200,
+            x=x,
+            y=y,
         ))
 
     interfaces = db.query(Interface).filter(Interface.project_id == project_id).all()

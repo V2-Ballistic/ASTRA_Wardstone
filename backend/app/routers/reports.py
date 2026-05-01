@@ -219,6 +219,11 @@ def report_change_history(
     return _stream(output)
 
 
+# ── ICD report (interface control document — xlsx-only) ──
+# F-119: kept here at the bottom of the sync block rather than
+# alongside the other multi-format generators because it doesn't take
+# a `format` query param (always xlsx). The sub-banner above makes
+# the grouping explicit instead of implying it from physical proximity.
 @router.get("/icd")
 def report_icd(
     project_id: int,
@@ -231,6 +236,40 @@ def report_icd(
     _persist_sync(db, project_id=project_id, report_type="icd",
                   fmt="xlsx", options=opts, user=current_user, output=output)
     return _stream(output)
+
+
+# ── Persistent generation history (F-032) ──
+# F-131: kept under the sync-reports umbrella because the history view
+# is paired with the sync endpoints in the UI (the "Reports" page lists
+# what's been generated). Originally lived in its own banner block
+# further down; promoted here so the /reports/* surface is ordered
+# top-to-bottom by user-flow rather than by when the endpoint landed.
+@router.get("/history")
+def get_report_history(
+    project_id: int = Query(...),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Return the project-scoped report-generation log. Backed by the
+    ``report_jobs`` table — survives restarts and is consistent across
+    workers (F-032). Membership is enforced (F-014).
+    """
+    _check_membership(db, project_id, current_user)
+
+    base_q = (
+        db.query(ReportJob)
+        .filter(ReportJob.project_id == project_id)
+        .order_by(ReportJob.created_at.desc())
+    )
+    total = base_q.count()
+    rows = base_q.offset(skip).limit(limit).all()
+    return {
+        "total": total,
+        "items": [r.to_summary() for r in rows],
+    }
 
 
 # ══════════════════════════════════════
@@ -318,38 +357,6 @@ def download_report_job(
 ):
     job = get_job_for_user(db, job_id, current_user)
     return _stream_job(job)
-
-
-# ══════════════════════════════════════
-#  Persistent history (F-032)
-# ══════════════════════════════════════
-
-@router.get("/history")
-def get_report_history(
-    project_id: int = Query(...),
-    skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=200),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """
-    Return the project-scoped report-generation log. Backed by the
-    ``report_jobs`` table — survives restarts and is consistent across
-    workers (F-032). Membership is enforced (F-014).
-    """
-    _check_membership(db, project_id, current_user)
-
-    base_q = (
-        db.query(ReportJob)
-        .filter(ReportJob.project_id == project_id)
-        .order_by(ReportJob.created_at.desc())
-    )
-    total = base_q.count()
-    rows = base_q.offset(skip).limit(limit).all()
-    return {
-        "total": total,
-        "items": [r.to_summary() for r in rows],
-    }
 
 
 # ══════════════════════════════════════
