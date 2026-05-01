@@ -127,3 +127,39 @@ class CoverageReport(BaseModel):
     by_level: Dict[str, CoverageLevelSummary] = Field(default_factory=dict)
     orphans: List[CoverageOrphanRow] = Field(default_factory=list)
     exception_count: int = 0
+
+
+# ══════════════════════════════════════════════════════════════
+#  Phase 5 — endpoint payloads
+# ══════════════════════════════════════════════════════════════
+
+class RequirementSyncProposalDetailResponse(RequirementSyncProposalResponse):
+    """Detail view — adds requirement context the list view doesn't carry."""
+    requirement_req_id: Optional[str] = None
+    requirement_title: Optional[str] = None
+    requirement_status: Optional[str] = None
+    requirement_level: Optional[str] = None
+    project_id: Optional[int] = None
+
+
+class SyncProposalListResponse(BaseModel):
+    total: int = 0
+    items: List[RequirementSyncProposalResponse] = Field(default_factory=list)
+
+
+class BulkProposalActionResult(BaseModel):
+    proposal_id: int
+    success: bool
+    error: Optional[str] = None
+
+
+class BulkProposalActionResponse(BaseModel):
+    total: int = 0
+    succeeded: int = 0
+    failed: int = 0
+    results: List[BulkProposalActionResult] = Field(default_factory=list)
+
+
+class SourceLinksResponse(BaseModel):
+    requirement_id: int
+    items: List[RequirementSourceLinkResponse] = Field(default_factory=list)

@@ -83,6 +83,7 @@ for _mod, _attr in [
     ("app.routers.interface", "router"),
     ("app.routers.interface_import", "router"),
     ("app.routers.catalog", "router"),
+    ("app.routers.req_sync", "router"),
 ]:
     try:
         _m = __import__(_mod, fromlist=[_attr])
@@ -133,6 +134,15 @@ for _model_path in [
         __import__(_model_path)
     except ImportError as exc:
         logger.warning("Failed to import model module %s: %s", _model_path, exc)
+
+# ── INTF-002 Phase 5: register reactive sync listeners ──
+# Idempotent — wires after_update/after_delete on every source-entity model.
+# Listener errors are logged + swallowed so source edits never abort.
+try:
+    from app.services.req_sync.listener import register_sync_listeners
+    register_sync_listeners()
+except Exception as exc:  # pragma: no cover
+    logger.warning("req_sync listener registration failed: %s", exc)
 
 # ── Optional Middleware ──
 _middlewares: list = []
