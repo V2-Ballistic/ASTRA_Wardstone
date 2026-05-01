@@ -1944,10 +1944,28 @@ export default function HarnessDetailPage() {
                 </tr>
               </thead>
               <tbody>
-                {filteredWires.map(w => (
+                {filteredWires.map(w => {
+                  // Phase 3 — INTF-002: dual-name secondary line.
+                  // Backend may surface the wire's catalog mfr names via these
+                  // fields (not yet in WireResponse schema; safe fallback to
+                  // undefined when absent — pre-INTF-002 wires render only the
+                  // existing internal signal_name without the secondary line).
+                  const augmented = w as typeof w & {
+                    from_mfr_pin_name?: string | null;
+                    to_mfr_pin_name?: string | null;
+                  };
+                  const mfrSubtitle = augmented.from_mfr_pin_name || augmented.to_mfr_pin_name;
+                  return (
                   <tr key={w.id} className="border-b border-astra-border/50 hover:bg-astra-surface-alt/50 transition">
                     <td className="px-3 py-2 font-mono font-bold text-slate-300">{w.wire_number}</td>
-                    <td className="px-3 py-2 font-semibold text-slate-200">{w.signal_name}</td>
+                    <td className="px-3 py-2">
+                      <div className="font-semibold text-slate-200">{w.signal_name}</div>
+                      {mfrSubtitle && (
+                        <div className="text-[10px] font-mono text-slate-500" title="Manufacturer pin name from catalog">
+                          mfr: {mfrSubtitle}
+                        </div>
+                      )}
+                    </td>
                     <td className="px-3 py-2">
                       <div className="flex items-center gap-1.5">
                         <WireColor type={w.wire_type} signalType={w.signal_type} />
@@ -1965,7 +1983,8 @@ export default function HarnessDetailPage() {
                     <td className="px-3 py-2 text-slate-500 font-mono">{w.wire_gauge || '—'}</td>
                     <td className="px-3 py-2 text-slate-500">{w.wire_color_primary || '—'}</td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>

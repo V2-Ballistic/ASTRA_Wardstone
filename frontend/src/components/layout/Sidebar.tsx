@@ -18,7 +18,7 @@ import {
   FileText, Network, Archive, Settings, LayoutDashboard,
   ChevronDown, ChevronRight, LogOut, Shield, FolderOpen,
   Sparkles, Search, Zap, CheckSquare, FileBarChart, Upload,
-  Users, Home, ChevronLeft, Loader2, Cable,
+  Users, Home, ChevronLeft, Loader2, Cable, Package,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useAuth } from '@/lib/auth';
@@ -56,6 +56,8 @@ interface ProjectInfo {
 
 const GLOBAL_NAV: NavItem[] = [
   { href: '/', label: 'Projects', icon: Home },
+  // Phase 3 — INTF-002: global supplier catalog landing.
+  { href: '/catalog', label: 'Catalog', icon: Package },
 ];
 
 function getProjectNav(projectId: number): NavGroup[] {

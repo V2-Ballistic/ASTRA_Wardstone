@@ -24,12 +24,29 @@ import { useParams, useRouter } from 'next/navigation';
 import {
   ArrowLeft, Loader2, Edit3, Save, X, Plus, Trash2, RefreshCw,
   Cable, ChevronRight, ChevronDown, AlertTriangle, Search,
-  Zap, Sparkles, ArrowUpDown, CheckCircle,
+  Zap, Sparkles, ArrowUpDown, CheckCircle, Lock, Wand2, Copy,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { interfaceAPI } from '@/lib/interface-api';
 import type { ConnectorWithPins, Pin } from '@/lib/interface-types';
 import { SIGNAL_TYPE_COLORS, labelize } from '@/lib/interface-types';
+
+/**
+ * Phase 3 — INTF-002: dual-name pin row.
+ *
+ * The backend Pin row carries `mfr_pin_name` (cached from the catalog at
+ * placement time, locked) alongside the legacy `signal_name` field which is
+ * the project-side editable internal name. The PinResponse Pydantic schema
+ * doesn't surface mfr_pin_name yet — we read it via this augmented type
+ * and display "—" when absent (legacy pins or pre-INTF-002 connectors).
+ */
+interface PinDualName extends Pin {
+  mfr_pin_name?: string | null;
+  /** internal_signal_name on the model — exposed as `signal_name` already
+   *  on PinResponse, but we keep this alias here for naming clarity in the
+   *  Phase 3 dual-column UI. */
+  internal_signal_name?: string | null;
+}
 
 type Tab = 'overview' | 'pins';
 
@@ -445,6 +462,14 @@ export default function ConnectorDetailPage() {
   const [deleteConfirmPin, setDeleteConfirmPin] = useState<number | null>(null);
   const [expandedPin, setExpandedPin]       = useState<number | null>(null);
 
+  // ── Phase 3 — INTF-002: dual-name pin table state ──
+  // Multi-select for bulk actions (Rename pattern, Copy mfr → internal).
+  // Inline edit-on-blur for the internal_signal_name column.
+  const [selectedPinIds, setSelectedPinIds] = useState<Set<number>>(new Set());
+  const [internalDraft, setInternalDraft]   = useState<Record<number, string>>({});
+  const [showRenameModal, setShowRenameModal] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
+
   // ── Pin edit state ──
   // When a pin is being edited, its id is held here and editPinFields holds
   // the in-flight changes. Saving calls interfaceAPI.updatePin(id, fields).
@@ -689,6 +714,92 @@ export default function ConnectorDetailPage() {
       setDeleteConfirmPin(null);
       fetchConnector();
     } catch (e: any) { flash(e?.response?.data?.detail || 'Delete failed'); }
+  };
+
+  // ══════════════════════════════════════
+  //  Phase 3 — INTF-002: dual-name pin handlers
+  // ══════════════════════════════════════
+
+  /** Toggle a pin's selection in the bulk-action set. */
+  const togglePinSelected = (pinId: number) => {
+    setSelectedPinIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(pinId)) next.delete(pinId);
+      else next.add(pinId);
+      return next;
+    });
+  };
+
+  /** Select / deselect every visible pin (for the header checkbox). */
+  const toggleAllSelected = (pins: Pin[]) => {
+    setSelectedPinIds((prev) => {
+      const allSelected = pins.length > 0 && pins.every((p) => prev.has(p.id));
+      if (allSelected) return new Set();
+      return new Set(pins.map((p) => p.id));
+    });
+  };
+
+  /** Commit one pin's internal_signal_name on blur. Skips the round-trip
+   *  if the value is unchanged from the server-side row. */
+  const commitInternalName = async (pin: Pin, value: string) => {
+    if (value === pin.signal_name) {
+      // No-op — clear local draft so the input syncs back to server data.
+      setInternalDraft((d) => { const n = { ...d }; delete n[pin.id]; return n; });
+      return;
+    }
+    try {
+      await interfaceAPI.updatePin(pin.id, { signal_name: value });
+      setInternalDraft((d) => { const n = { ...d }; delete n[pin.id]; return n; });
+      fetchConnector();
+    } catch (e: any) {
+      flash(e?.response?.data?.detail || 'Failed to save internal signal name');
+    }
+  };
+
+  /** Bulk action — copy each selected pin's mfr_pin_name into its
+   *  internal signal_name. Skips pins that don't have a mfr_pin_name
+   *  (legacy units pre-INTF-002). */
+  const handleCopyMfrToInternal = async () => {
+    if (!connector || selectedPinIds.size === 0) return;
+    setBulkBusy(true);
+    try {
+      const pins = (connector.pins as PinDualName[]).filter((p) => selectedPinIds.has(p.id) && p.mfr_pin_name);
+      await Promise.all(
+        pins.map((p) => interfaceAPI.updatePin(p.id, { signal_name: p.mfr_pin_name as string })),
+      );
+      flash(`Copied ${pins.length} mfr name${pins.length !== 1 ? 's' : ''} to internal`);
+      setSelectedPinIds(new Set());
+      fetchConnector();
+    } catch (e: any) {
+      flash(e?.response?.data?.detail || 'Bulk copy failed');
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  /** Bulk action — apply a regex find/replace across selected pins'
+   *  internal signal names. */
+  const handleRenamePattern = async (pattern: string, replacement: string, useRegex: boolean) => {
+    if (!connector || selectedPinIds.size === 0) return;
+    setBulkBusy(true);
+    try {
+      const pins = connector.pins.filter((p) => selectedPinIds.has(p.id));
+      const re = useRegex
+        ? new RegExp(pattern, 'g')
+        : new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+      const updates = pins
+        .map((p) => ({ id: p.id, name: p.signal_name.replace(re, replacement) }))
+        .filter((u) => u.name !== pins.find((p) => p.id === u.id)?.signal_name);
+      await Promise.all(updates.map((u) => interfaceAPI.updatePin(u.id, { signal_name: u.name })));
+      flash(`Renamed ${updates.length} pin${updates.length !== 1 ? 's' : ''}`);
+      setSelectedPinIds(new Set());
+      setShowRenameModal(false);
+      fetchConnector();
+    } catch (e: any) {
+      flash(e?.response?.data?.detail || 'Bulk rename failed');
+    } finally {
+      setBulkBusy(false);
+    }
   };
 
   // ── Pin edit handlers ──
@@ -1128,6 +1239,42 @@ export default function ConnectorDetailPage() {
             </button>
           </div>
 
+          {/* Phase 3 — INTF-002: bulk-action bar appears once any pin is selected. */}
+          {selectedPinIds.size > 0 && (
+            <div className="mb-3 flex items-center gap-2 rounded-lg border border-blue-500/20 bg-blue-500/5 px-3 py-2 text-xs">
+              <span className="font-semibold text-blue-300">
+                {selectedPinIds.size} selected
+              </span>
+              <div className="ml-auto flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleCopyMfrToInternal}
+                  disabled={bulkBusy}
+                  className="flex items-center gap-1 rounded-md bg-astra-surface-alt px-2 py-1 text-slate-200 hover:bg-blue-500/20 disabled:opacity-40"
+                  title="Copy each selected pin's manufacturer name into its internal signal name"
+                >
+                  <Copy className="h-3 w-3" aria-hidden="true" /> Copy mfr → internal
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowRenameModal(true)}
+                  disabled={bulkBusy}
+                  className="flex items-center gap-1 rounded-md bg-astra-surface-alt px-2 py-1 text-slate-200 hover:bg-blue-500/20 disabled:opacity-40"
+                >
+                  <Wand2 className="h-3 w-3" aria-hidden="true" /> Rename pattern…
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedPinIds(new Set())}
+                  className="text-slate-500 hover:text-slate-300"
+                  aria-label="Clear pin selection"
+                >
+                  <X className="h-3 w-3" aria-hidden="true" />
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Add pins form */}
           {showAddPins && (
             <AddPinsForm connectorId={connectorId} existingPins={connector.pins || []}
@@ -1154,9 +1301,25 @@ export default function ConnectorDetailPage() {
               <table className="w-full text-[12px]">
                 <thead>
                   <tr className="border-b border-astra-border bg-astra-surface-alt">
+                    {/* Phase 3 — INTF-002: row-select checkbox */}
+                    <th className="w-8 px-2 py-2.5">
+                      <input
+                        type="checkbox"
+                        aria-label="Select all visible pins"
+                        checked={filteredPins.length > 0 && filteredPins.every((p) => selectedPinIds.has(p.id))}
+                        onChange={() => toggleAllSelected(filteredPins)}
+                        className="rounded border-astra-border bg-astra-bg"
+                      />
+                    </th>
                     <th className="px-3 py-2.5 text-left font-semibold text-slate-400 w-14">Pin #</th>
                     <th className="px-3 py-2.5 text-left font-semibold text-slate-400 w-16">Label</th>
-                    <th className="px-3 py-2.5 text-left font-semibold text-slate-400">Signal Name</th>
+                    {/* Phase 3 — INTF-002: dual-name columns. Mfr is locked, Internal is editable. */}
+                    <th className="px-3 py-2.5 text-left font-semibold text-slate-400 w-40">
+                      <span className="inline-flex items-center gap-1" title="Manufacturer pin name from the catalog. Locked.">
+                        <Lock className="h-3 w-3" aria-hidden="true" /> Mfr Pin Name
+                      </span>
+                    </th>
+                    <th className="px-3 py-2.5 text-left font-semibold text-slate-400">Internal Signal Name</th>
                     <th className="px-3 py-2.5 text-left font-semibold text-slate-400 w-36">Signal Type</th>
                     <th className="px-3 py-2.5 text-left font-semibold text-slate-400 w-24">Direction</th>
                     <th className="px-3 py-2.5 text-left font-semibold text-slate-400 w-24">Mates With</th>
@@ -1168,15 +1331,50 @@ export default function ConnectorDetailPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredPins.map(pin => (
+                  {filteredPins.map(pin => {
+                    const dual = pin as PinDualName;
+                    const draftValue = internalDraft[pin.id];
+                    const internalValue = draftValue !== undefined ? draftValue : pin.signal_name;
+                    return (
                     <React.Fragment key={pin.id}>
                       <tr
                         className={clsx('border-b border-astra-border/50 hover:bg-astra-surface-alt/50 transition cursor-pointer',
-                          expandedPin === pin.id && 'bg-astra-surface-alt/30')}
+                          expandedPin === pin.id && 'bg-astra-surface-alt/30',
+                          selectedPinIds.has(pin.id) && 'bg-blue-500/5')}
                         onClick={() => setExpandedPin(prev => prev === pin.id ? null : pin.id)}>
+                        <td className="px-2 py-2" onClick={(e) => e.stopPropagation()}>
+                          <input
+                            type="checkbox"
+                            aria-label={`Select pin ${pin.pin_number}`}
+                            checked={selectedPinIds.has(pin.id)}
+                            onChange={() => togglePinSelected(pin.id)}
+                            className="rounded border-astra-border bg-astra-bg"
+                          />
+                        </td>
                         <td className="px-3 py-2 font-mono font-bold text-slate-300">{pin.pin_number}</td>
                         <td className="px-3 py-2 text-slate-500">{pin.pin_label || '—'}</td>
-                        <td className="px-3 py-2 font-semibold text-slate-200">{pin.signal_name}</td>
+                        <td className="px-3 py-2 text-slate-300">
+                          <span className="inline-flex items-center gap-1 font-mono text-[11px]" title="Locked — sourced from supplier catalog">
+                            {dual.mfr_pin_name ? (
+                              <>
+                                <Lock className="h-3 w-3 text-slate-600" aria-hidden="true" />
+                                {dual.mfr_pin_name}
+                              </>
+                            ) : (
+                              <span className="text-slate-600">—</span>
+                            )}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
+                          <input
+                            type="text"
+                            aria-label={`Internal signal name for pin ${pin.pin_number}`}
+                            value={internalValue}
+                            onChange={(e) => setInternalDraft((d) => ({ ...d, [pin.id]: e.target.value }))}
+                            onBlur={(e) => commitInternalName(pin, e.target.value)}
+                            className="w-full rounded-md border border-transparent bg-transparent px-2 py-1 text-xs font-semibold text-slate-100 hover:border-astra-border focus:border-blue-500/50 focus:bg-astra-bg outline-none"
+                          />
+                        </td>
                         <td className="px-3 py-2">
                           <div className="flex items-center gap-1.5">
                             <SignalDot type={pin.signal_type} />
@@ -1235,7 +1433,8 @@ export default function ConnectorDetailPage() {
                       {/* Expanded pin detail / edit form */}
                       {expandedPin === pin.id && (
                         <tr className="bg-astra-bg/50">
-                          <td colSpan={11} className="px-6 py-3">
+                          {/* colSpan covers all 13 columns of the dual-name pin table */}
+                          <td colSpan={13} className="px-6 py-3">
                             {editingPinId === pin.id ? (
                               // ── EDIT MODE ──
                               // Comprehensive pin edit form. Reuses the same
@@ -1399,7 +1598,8 @@ export default function ConnectorDetailPage() {
                         </tr>
                       )}
                     </React.Fragment>
-                  ))}
+                  );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -1412,6 +1612,105 @@ export default function ConnectorDetailPage() {
         <DeleteConnectorDialog connector={connector}
           onClose={() => setShowDeleteConn(false)} onConfirm={handleDeleteConnector} />
       )}
+
+      {/* Phase 3 — INTF-002: Bulk rename pattern modal */}
+      {showRenameModal && (
+        <RenamePatternModal
+          count={selectedPinIds.size}
+          busy={bulkBusy}
+          onClose={() => setShowRenameModal(false)}
+          onApply={handleRenamePattern}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Phase 3 — INTF-002: rename-pattern modal for bulk pin renames.
+ * Supports literal substring or regex find/replace across the selected pins.
+ */
+function RenamePatternModal({ count, busy, onClose, onApply }: {
+  count: number;
+  busy: boolean;
+  onClose: () => void;
+  onApply: (pattern: string, replacement: string, useRegex: boolean) => void;
+}) {
+  const [pattern, setPattern] = useState('');
+  const [replacement, setReplacement] = useState('');
+  const [useRegex, setUseRegex] = useState(false);
+  const [patternError, setPatternError] = useState('');
+
+  const validate = (): boolean => {
+    if (!pattern) {
+      setPatternError('Pattern is required');
+      return false;
+    }
+    if (useRegex) {
+      try {
+        new RegExp(pattern);
+      } catch {
+        setPatternError('Invalid regular expression');
+        return false;
+      }
+    }
+    setPatternError('');
+    return true;
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+      <div role="dialog" aria-modal="true" aria-labelledby="rename-title"
+        className="w-full max-w-md rounded-2xl border border-astra-border bg-astra-surface p-5 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-4 flex items-center justify-between">
+          <h3 id="rename-title" className="text-sm font-bold text-slate-100">Rename Pattern</h3>
+          <button type="button" onClick={onClose} aria-label="Close rename modal" className="text-slate-400 hover:text-slate-200">
+            <X className="h-4 w-4" aria-hidden="true" />
+          </button>
+        </div>
+        <p className="mb-3 text-[11px] text-slate-500">
+          Apply a find/replace pattern to the internal signal name of {count} selected pin{count !== 1 ? 's' : ''}.
+        </p>
+
+        {patternError && (
+          <div role="alert" className="mb-3 rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-1.5 text-xs text-red-400">
+            {patternError}
+          </div>
+        )}
+
+        <div className="space-y-3">
+          <div>
+            <label htmlFor="rp-pattern" className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1 block">Find</label>
+            <input id="rp-pattern" value={pattern} onChange={(e) => setPattern(e.target.value)}
+              placeholder={useRegex ? '^OLD_(.+)$' : 'OLD_'}
+              className="w-full rounded-lg border border-astra-border bg-astra-bg px-3 py-2 text-sm font-mono text-slate-200 outline-none focus:border-blue-500/50" />
+          </div>
+          <div>
+            <label htmlFor="rp-replacement" className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1 block">Replace With</label>
+            <input id="rp-replacement" value={replacement} onChange={(e) => setReplacement(e.target.value)}
+              placeholder={useRegex ? 'NEW_$1' : 'NEW_'}
+              className="w-full rounded-lg border border-astra-border bg-astra-bg px-3 py-2 text-sm font-mono text-slate-200 outline-none focus:border-blue-500/50" />
+          </div>
+          <label htmlFor="rp-regex" className="flex items-center gap-2 text-[11px] text-slate-300">
+            <input id="rp-regex" type="checkbox" checked={useRegex} onChange={(e) => setUseRegex(e.target.checked)}
+              className="rounded border-astra-border bg-astra-bg" />
+            Treat Find as a regular expression (use $1, $2 for capture groups)
+          </label>
+        </div>
+
+        <div className="mt-5 flex items-center justify-end gap-2">
+          <button type="button" onClick={onClose} className="rounded-lg border border-astra-border px-4 py-2 text-xs text-slate-400 hover:text-slate-200">
+            Cancel
+          </button>
+          <button type="button" disabled={busy} onClick={() => { if (validate()) onApply(pattern, replacement, useRegex); }}
+            className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed">
+            {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : <Wand2 className="h-3.5 w-3.5" aria-hidden="true" />}
+            Apply
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
