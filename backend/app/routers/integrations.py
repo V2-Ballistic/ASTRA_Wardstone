@@ -590,7 +590,14 @@ def get_integration_catalog(current_user: User = Depends(get_current_user)):
                 {"key": "api_token", "label": "API Token", "type": "password", "placeholder": "Your Jira API token"},
             ],
             "supports_webhook": True,
-            "webhook_url": "/api/v1/integrations/jira/webhook",
+            # F-209: post-F-017 the webhook lives at the per-config path
+            # /api/v1/integrations/{config_id}/jira/webhook. The catalog
+            # is fetched before any config exists, so we publish a
+            # template here. The frontend interpolates {config_id} after
+            # creation; consumers that copy the catalog string directly
+            # (without templating) get a clearly broken URL instead of
+            # a 404 against a stale path.
+            "webhook_url_template": "/api/v1/integrations/{config_id}/jira/webhook",
         },
         {
             "type": "azure_devops",
@@ -602,7 +609,8 @@ def get_integration_catalog(current_user: User = Depends(get_current_user)):
                 {"key": "org", "label": "Organization", "type": "text", "placeholder": "myorg"},
             ],
             "supports_webhook": True,
-            "webhook_url": "/api/v1/integrations/azure/webhook",
+            # F-209: see Jira entry above for the template rationale.
+            "webhook_url_template": "/api/v1/integrations/{config_id}/azure/webhook",
         },
         {
             "type": "doors",
