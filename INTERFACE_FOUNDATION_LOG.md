@@ -23,7 +23,7 @@
 | 0 — Pre-flight | ✅ complete | n/a (pre-branch) | 0 | n/a | Phase 4 merged to main, branch + snapshot + log in place |
 | 1 — Schema & migration | ✅ complete | `66fcb97..94bf662` | 0 | green (242/242) | migration 0023, down/up tested, JSONB→JSON variant for SQLite tests |
 | 2 — Catalog CRUD backend | ✅ complete | `f7cf33a..f8a7a0e` | 18 (260 total) | green (260/260) | placement svc, router (20 routes), tests, supplier-delete bug fix |
-| 3 — Catalog UI | ⏳ pending | — | — | — | — |
+| 3 — Catalog UI | ✅ complete | `2b3a607..HEAD` | 0 (frontend test infra deferred) | green (tsc filter empty, build ✓ Compiled successfully, backend 260/260) | catalog-types + catalog-api + PlaceLruModal + 5 new pages + 4 modified pages + sidebar Catalog link |
 | 4 — Connection Builder + auto-wire | ⏳ pending | — | — | — | — |
 | 5 — Reactive Requirement Sync | ⏳ pending | — | — | — | — |
 | 6 — Source Coverage Validator | ⏳ pending | — | — | — | — |
@@ -107,6 +107,35 @@
 - Project-side `PinDirection` has logic-family values (TRI_STATE, OPEN_COLLECTOR, OPEN_DRAIN, etc.) that the catalog `SignalDirection` doesn't carry — the catalog→project map collapses to the basic INPUT/OUTPUT/BIDIRECTIONAL/POWER_SOURCE/GROUND/PASSIVE set. Auto-wire (Phase 4) reads from `Pin.direction_override` (catalog enum) so this lossy map only affects the legacy `Pin.direction` column.
 - `SUPPLIER_DOC_DIR` defaults to `/data/supplier_docs/` (created lazily); tests use `monkeypatch` to redirect to `tmp_path` so they never write to the real volume.
 - Reused existing `interfaces.update` permission key for catalog writes (RBAC matrix has no per-action catalog keys yet); explicit `_require_req_eng_plus` / `_require_admin` helpers gate every write/delete handler. Adding dedicated `catalog.*` permission keys is a Phase 8 polish item, but the role gates are correct as-is.
+
+### Phase 3 — Catalog UI
+
+**Files touched (frontend only — operating rule #1):**
+- New: `frontend/src/lib/catalog-types.ts` — literal-union enums + `Supplier`, `SupplierDocument`, `CatalogPin`, `CatalogConnector`, `CatalogPart`, `CatalogPartDetail`, `PendingCatalogImport`, etc. Plus `LIFECYCLE_COLORS` / `PART_CLASS_LABELS` / etc. for the dark-theme pills. F-123-clean (no `| string` collapse on the unions).
+- New: `frontend/src/lib/catalog-api.ts` — wraps every Phase-2 endpoint via the central axios instance (`@/lib/api`) so the JWT interceptor + 401 redirect inherit. Includes `approvePendingImport` / `rejectPendingImport` stubs that throw "ships in Phase 7" so Tab-3 wiring is forward-compatible.
+- New: `frontend/src/components/catalog/PlaceLruModal.tsx` — three-tab modal (`Catalog`, `Brand New`, `Upload ICD` disabled). 403/409 handled gracefully on the placement call. RESTRICTED parts gated behind an admin-force checkbox. Tab 3 renders disabled with `aria-disabled="true"` + tooltip "Available in Phase 7…".
+- New: `frontend/src/app/catalog/page.tsx` — landing page with three tabs (Suppliers, Parts, Pending Imports). Pending Imports renders an explicit "Phase 7 preview" notice and a graceful empty state.
+- New: `frontend/src/app/catalog/suppliers/new/page.tsx`, `frontend/src/app/catalog/suppliers/[id]/page.tsx` — supplier create + detail with metadata, documents (upload + delete), and parts sections. RBAC-gated buttons via `useAuth()`.
+- New: `frontend/src/app/catalog/parts/new/page.tsx`, `frontend/src/app/catalog/parts/[id]/page.tsx` — manual part create + detail (physical / power / environmental / compliance / lifecycle / connectors+pins drill-in / where-used / variants).
+- Modified: `frontend/src/app/projects/[id]/interfaces/unit/[unitId]/page.tsx` — added `<CatalogBadge>` + Variants link near the unit header. Phase-5 sync-indicator slot left as a comment per spec.
+- Modified: `frontend/src/app/projects/[id]/interfaces/connector/[connectorId]/page.tsx` — dual-name pin table: Mfr column locked (read-only with lock icon), Internal column editable with PATCH-on-blur. Bulk select + "Rename pattern" (literal or regex) + "Copy mfr → internal" actions in a sticky toolbar that appears once any pin is selected.
+- Modified: `frontend/src/app/projects/[id]/interfaces/page.tsx` — "Add Unit" CTA opens `<PlaceLruModal>`; "Connect Two Units" CTA renders a Phase-4 placeholder toast (auto-dismissing).
+- Modified: `frontend/src/app/projects/[id]/interfaces/harness/[harnessId]/page.tsx` — wire rows render a secondary `mfr: …` subtitle in muted color when the catalog mfr name is available; legacy wires render only the existing `signal_name`.
+- Modified: `frontend/src/components/layout/Sidebar.tsx` — added a global "Catalog" link to `GLOBAL_NAV` with the `Package` icon.
+
+**Verification gate output:**
+- Filtered `npx tsc --noEmit` (the spec command) → **empty output** (no new errors). Pre-existing TS2802 iteration warnings, the 1133/1136/2056-block in `harness/page.tsx`, the AutoGrowAmbiguityModal type, the `requirements/page.tsx(497)` enum mismatch, and `auto-requirements/page.tsx(600)` implicit any are all the documented audit-deferred items.
+- `npm run build` → **✓ Compiled successfully**. Lint-stage failure on `jest.config.ts` is the documented pre-existing issue (frontend test infra cleanup deferred).
+- `pytest tests/ -q --tb=no` → **260 passed** (no backend regressions).
+
+**Anomalies / observations:**
+- The Pydantic `UnitResponse` / `PinResponse` / `ConnectorResponse` schemas don't currently surface the catalog-side fields (`catalog_part_id`, `mfr_pin_name`, `location_zone`, `serial_number`, etc.) even though those columns exist on the SQLAlchemy models post-migration 0023. Per operating rule #1 (no backend changes), the frontend reads these via narrow augmented types (`UnitWithCatalog`, `PinDualName`, augmented `Wire`) and gracefully renders `—` / no badge / no subtitle when the values are absent. When the backend response schemas are extended (a 5-line edit per Pydantic class), the badge and dual-name table light up automatically.
+- `Phase 4 — Connection Builder` placeholder is a transient toast (auto-dismiss 4 s) on the interfaces landing page, deliberately styled lightweight so it doesn't compete visually with the real "Add Unit" CTA next to it.
+- `Phase 5 — Sync Proposals indicator` left as a `// Phase 5: <SyncProposalIndicator unitId={...} />` comment in the unit detail header per spec — the data structure isn't defined yet so the slot stays empty.
+- `PlaceLruModal` opens supplier list / parts list / project systems on mount; the search field debounces by 250 ms before re-querying. Restricted-lifecycle parts surface a red banner on the right preview pane and require a separate "Acknowledge restricted placement" checkbox before the Place button enables.
+- `Catalog` link added to `GLOBAL_NAV` (alongside Projects) so users can reach the supplier catalog from any context, matching spec §16.
+- Frontend-test infra remains broken (deferred audit cleanup) — verification by `tsc --noEmit` + `npm run build` per operating rule #7.
+- TypeScript `tsc` reports the `harness/page.tsx` iteration error at line **2075** (was 2056 pre-edit; the wire-row JSX was wrapped in a `pin => { return ( ... ); }` to compute the dual-name secondary line, shifting +19 lines). Same root cause as the documented entry — TS2802 is the underlying iteration problem.
 
 ## Anomalies & Tangential Findings
 
