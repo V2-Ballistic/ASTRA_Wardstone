@@ -484,6 +484,7 @@ class TestReentrancyGuard:
 #  TestPerformance — 100 source links → < 1 second
 # ══════════════════════════════════════════════════════════════
 
+@pytest.mark.performance
 class TestPerformance:
 
     def test_fan_out_100_links_under_one_second(
