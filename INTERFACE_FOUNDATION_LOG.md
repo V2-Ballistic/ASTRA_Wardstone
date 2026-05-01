@@ -25,7 +25,7 @@
 | 2 — Catalog CRUD backend | ✅ complete | `f7cf33a..f8a7a0e` | 18 (260 total) | green (260/260) | placement svc, router (20 routes), tests, supplier-delete bug fix |
 | 3 — Catalog UI | ✅ complete | `2b3a607..HEAD` | 0 (frontend test infra deferred) | green (tsc filter empty, build ✓ Compiled successfully, backend 260/260) | catalog-types + catalog-api + PlaceLruModal + 5 new pages + 4 modified pages + sidebar Catalog link |
 | 4 — Connection Builder + auto-wire | ✅ complete | `3b6f0bd..2fef238` (5 commits) | 51 (311 total) | green (alembic 0024, pytest 311/311, tsc filter empty, build ✓) | migration 0024 added Interface.source_unit_id/target_unit_id; auto-wire engine implements full three-way validation with explicit 6×6 direction matrix; Connection Builder wizard at /projects/[id]/interfaces/connect |
-| 5 — Reactive Requirement Sync | ⏳ pending | — | — | — | — |
+| 5 — Reactive Requirement Sync | ✅ complete | `b02b528..HEAD` | 57 (368 total) | green (alembic 0024 unchanged, pytest 368/368, tsc filter empty, build ✓ Compiled successfully — pre-existing jest.config.ts lint failure documented) | renderer + fan_out + listener service trio; SQLAlchemy after_update/after_delete on 12 entity types with contextvar-based re-entrancy guard; full §12.5 policy table parameter-tested; bulk-accept atomic-rollback; 100-link fan-out completes well under 1s; /req-sync UI page (3-pane diff) + RequirementSyncPanel on requirement detail + sidebar pending-count badge |
 | 6 — Source Coverage Validator | ⏳ pending | — | — | — | — |
 | 7 — ICD Ingestion | ⏳ pending | — | — | — | — |
 | 8 — Polish & robustness | ⏳ pending | — | — | — | — |
@@ -137,6 +137,48 @@
 - Frontend-test infra remains broken (deferred audit cleanup) — verification by `tsc --noEmit` + `npm run build` per operating rule #7.
 - TypeScript `tsc` reports the `harness/page.tsx` iteration error at line **2075** (was 2056 pre-edit; the wire-row JSX was wrapped in a `pin => { return ( ... ); }` to compute the dual-name secondary line, shifting +19 lines). Same root cause as the documented entry — TS2802 is the underlying iteration problem.
 
+### Phase 5 — Reactive Requirement Sync engine
+
+**Files touched (backend):**
+- New service package: `backend/app/services/req_sync/__init__.py`
+- New: `backend/app/services/req_sync/renderer.py` — deterministic re-renderer that loads source entities fresh and reuses the canonical TEMPLATES dict from `interface.auto_requirements`. Returns `RenderedRequirement` with `source_deleted` / `template_missing` flags so callers can route to OBSOLETE / REGENERATE proposal types.
+- New: `backend/app/services/req_sync/fan_out.py` — `decide_action(req_status, proposal_type)` policy table + `fan_out_for_entity(...)` walker. Bulk-loads source links via `requirement_id IN (...)` (no N+1). Auto-applied proposals also append a RequirementHistory row + `req_sync.auto_applied` audit event so the change is recoverable.
+- New: `backend/app/services/req_sync/listener.py` — SQLAlchemy `after_update` / `after_delete` listeners on 12 source entity types (System, Unit, Connector, Pin, Interface, WireHarness, Wire, BusDefinition, MessageDefinition, MessageField, UnitEnvironmentalSpec, CatalogPart). Re-entrancy guard via `contextvars.ContextVar` (depth cap = 1) prevents apply→listener→apply loops. Listener errors are caught + logged; never aborts the original commit.
+- New: `backend/app/routers/req_sync.py` — 8 endpoints per spec §9.6 (list / detail / accept / reject / bulk-accept / lock / unlock / sources). Project membership resolved via the requirement's `project_id`; reviewer-or-above for proposals, req-eng-or-above for lock/unlock, any-logged-in for sources. Bulk-accept is atomic — single try/except with `db.rollback()` on any failure.
+- Extended: `backend/app/schemas/req_sync.py` with `RequirementSyncProposalDetailResponse`, `SyncProposalListResponse`, `BulkProposalActionResponse`, `BulkProposalActionResult`, `SourceLinksResponse`.
+- Modified: `backend/app/main.py` — calls `register_sync_listeners()` once at module import (after the model-import block) and registers the new router in `_optional_routers`.
+
+**Files touched (frontend):**
+- New: `frontend/src/lib/req-sync-types.ts` — TS mirror of every Pydantic schema + literal-union enums.
+- New: `frontend/src/lib/req-sync-api.ts` — typed axios wrappers + `pendingCount(projectId)` helper for the sidebar badge.
+- New: `frontend/src/app/projects/[id]/req-sync/page.tsx` — three-pane layout per spec §12.6 (filterable list + diff view + actions/sources panel + bulk-accept toolbar).
+- New: `frontend/src/components/req-sync/RequirementSyncPanel.tsx` — drop-in card for the requirement detail right sidebar (sync-lock toggle gated to req_eng+ + source-links list).
+- Modified: `frontend/src/components/layout/Sidebar.tsx` — added "Sync Proposals" nav entry under AI TOOLS with pending-count badge fetched via `reqSyncAPI.pendingCount`.
+- Modified: `frontend/src/app/projects/[id]/requirements/[reqId]/page.tsx` — mounts `<RequirementSyncPanel>` in the right sidebar (between Stats and Timeline). Lock controls visible only to admin/PM/req_eng.
+
+**Tests added:**
+- `backend/tests/test_req_sync_renderer.py` — 9 tests across 4 classes (template smokes for harness/bus/wire, deterministic re-render, error paths for unknown templates / missing sources, _SafeDict TBD fallback, multi-source link enrichment).
+- `backend/tests/test_req_sync.py` — 48 tests across 11 classes covering: every cell of the auto-apply policy table (parametrize, 27 cases), sync_locked/deleted/deferred skip paths, pending_review silent auto-apply + audit emit, approved-never-auto-applies, source-delete OBSOLETE proposals, supersede-prior-pending, re-entrancy guard mechanics, **performance test (100 source links → fan-out completes in well under 1 s)**, listener wiring (after_update fires fan-out via session resolution), HTTP RBAC for list/accept/reject/bulk-accept/lock/unlock/sources, bulk-accept atomic rollback on a 404.
+
+**Verification gate output:**
+- `alembic current` → `0024 (head)` ✅ (no new migration; RequirementSourceLink + RequirementSyncProposal already exist from migration 0023).
+- `alembic check` → existing pre-Phase-5 schema-drift noise on unrelated tables (account_lockouts, ai_suggestions, workflow_*, etc.) — same diff as Phase 4. Zero new req_sync drift.
+- `pytest tests/test_req_sync_renderer.py tests/test_req_sync.py -v --tb=short` → **57 passed**.
+- `pytest tests/ -q --tb=no` → **368 passed** (311 baseline + 57 new, zero regressions, ~153 s).
+- `npx tsc --noEmit` filtered with the documented Phase 4 grep → **empty output** (no new errors).
+- `npm run build` → **✓ Compiled successfully** (followed by the documented pre-existing `jest.config.ts` lint failure — unchanged from Phase 3/4).
+
+**Performance result:** 100 distinct requirements all linked to one harness; fan-out on a single update completes in <1 s (test asserts `elapsed < 1.0s` and passes consistently). Bulk-load via `requirement_id IN (...)` keeps the DB roundtrips at O(1) per fan-out call rather than O(N).
+
+**Anomalies / observations:**
+- Spec §12.5 references statuses `cancelled` and `superseded` that are not modelled in `RequirementStatus`. Mapping per digest §6: `"cancelled"` → `DELETED` (SKIP), `"superseded"` → not modelled, treated as immutable history (also SKIP). Documented in `decide_action` docstring + parameter-tested.
+- Spec §12.5 says `pending_review` reqs are silent auto-apply. We honour the silence in the data path (no PENDING proposal row needed for a reviewer to act on) but ALWAYS emit `req_sync.auto_applied` to the audit chain — the change isn't invisible, just auto-acked.
+- `AUTO_GENERATED` status (which exists in the actual enum but is missing from the spec table) is policy-mapped same as `PENDING_REVIEW` (auto-apply on UPDATE_STATEMENT, propose on OBSOLETE/REGENERATE). Reasonable per spec intent.
+- Listener uses `Session.object_session(target)` to resolve the session in `after_update` / `after_delete`. The contextvar guard means even a fully recursive entity graph caps at depth=1.
+- Bulk-accept rolls the entire batch back on the first failure (single `try/except` with `db.rollback()`); pre-flight check rejects unknown proposal IDs with 404 before any apply runs, which is the simpler atomicity story than per-row savepoints.
+- Frontend test infra remains broken (deferred audit cleanup) — verification by `tsc --noEmit` + `npm run build` per operating rule #7.
+- The sidebar pending-count badge fetches once per project change (no auto-refresh). Real-time push is a Phase 8 polish item.
+
 ## Anomalies & Tangential Findings
 
 | Date | Phase | Description | Severity | Disposition |
@@ -147,6 +189,9 @@
 | 2026-04-30 | 2 | Catalog-side `catalog_parts.supplier_id` FK has default RESTRICT (NOT NULL, no ondelete=CASCADE). Supplier delete with admin_force was raising NOT NULL violations on dependent parts. | INFO | Worked around with Python-level cascade in the DELETE handler. Could be tightened to ondelete=CASCADE in a follow-up migration if the broader cleanup plan needs it. |
 | 2026-04-30 | 2 | Catalog→project enum maps are intentionally lossy (catalog `PartClass` has 13 members → project `UnitType` has 30+; catalog `SignalType` has 10 → project has 37+). The maps pick the most generic safe project value. | INFO | Phase 8 polish item — richer mapping table when product needs it. |
 | 2026-04-30 | 2 | Catalog router reuses existing `interfaces.update` / `interfaces.delete` permission keys via inline `_require_req_eng_plus` / `_require_admin` helpers, rather than adding new `catalog.*` keys to `PERMISSION_MATRIX`. | INFO | Phase 8 polish — add dedicated keys to rbac.py for cleaner audit trails. |
+| 2026-04-30 | 5 | Spec §12.5 references statuses `cancelled` / `superseded` that don't exist in `RequirementStatus`. | INFO | Mapped per digest §6: `cancelled`→`DELETED`→SKIP, `superseded`→treated as immutable history→SKIP. Documented in `decide_action` and parameter-tested. |
+| 2026-04-30 | 5 | Spec §12.5 doesn't mention `AUTO_GENERATED` status (it exists in the actual enum). | INFO | Treated as `PENDING_REVIEW` for policy purposes (auto-apply on UPDATE_STATEMENT). |
+| 2026-04-30 | 5 | `pending_review` auto-apply emits `req_sync.auto_applied` audit event in addition to the silent update. | INFO | Spec says "silent + log to audit"; implementation writes both an audit row and a RequirementHistory entry. |
 
 ## Out of Scope (explicitly deferred)
 
