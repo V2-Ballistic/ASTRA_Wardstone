@@ -17,6 +17,7 @@ import {
   Loader2, RefreshCw, Plus, Search, ChevronRight, ChevronDown,
   Cable, Network, Box, Zap, Shield, Radio, Layers, Cpu,
   X, ArrowRight, Grid3X3, AlertTriangle, FileSpreadsheet, GitMerge,
+  Package, Clock,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { projectsAPI } from '@/lib/api';
@@ -24,8 +25,10 @@ import { interfaceAPI } from '@/lib/interface-api';
 import type {
   System, SystemType, UnitSummary, Connector, WireHarness,
   N2MatrixResponse, N2MatrixCell, InterfaceCoverageResponse,
-  Connection,
+  Connection, Unit,
 } from '@/lib/interface-types';
+// Phase 3 — INTF-002: PlaceLruModal hosts the new "Add Unit" flow.
+import PlaceLruModal from '@/components/catalog/PlaceLruModal';
 
 // ══════════════════════════════════════
 //  Shared UI
@@ -335,6 +338,10 @@ export default function InterfacesPage() {
   // ── UI state ──
   const [showCreateSystem, setShowCreateSystem]     = useState(false);
   const [showAddConnection, setShowAddConnection]   = useState(false);
+  // Phase 3 — INTF-002: place-LRU modal (catalog + brand-new + ICD tabs)
+  const [showPlaceLru, setShowPlaceLru]             = useState(false);
+  // Phase 4 placeholder toast for the "Connect Two Units" CTA
+  const [phase4Toast, setPhase4Toast]               = useState<string | null>(null);
   const [n2Visible, setN2Visible]                   = useState(false);
   const [systemSearch, setSystemSearch]              = useState('');
   const [systemTypeFilter, setSystemTypeFilter]      = useState('');
@@ -407,6 +414,13 @@ export default function InterfacesPage() {
   }, [projectId]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
+
+  // Phase 3 — auto-dismiss the Phase 4 placeholder toast.
+  useEffect(() => {
+    if (!phase4Toast) return;
+    const t = setTimeout(() => setPhase4Toast(null), 4000);
+    return () => clearTimeout(t);
+  }, [phase4Toast]);
 
   // ══════════════════════════════════════
   //  Derived data
@@ -668,7 +682,23 @@ export default function InterfacesPage() {
             )}
             <button onClick={() => setShowCreateSystem(true)}
               className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-500">
-              <Plus className="h-3.5 w-3.5" /> Add System
+              <Plus className="h-3.5 w-3.5" aria-hidden="true" /> Add System
+            </button>
+            {/* Phase 3 — INTF-002: opens PlaceLruModal (catalog / brand-new tabs) */}
+            <button
+              type="button"
+              onClick={() => setShowPlaceLru(true)}
+              className="flex items-center gap-1.5 rounded-lg border border-blue-500/30 px-4 py-2 text-xs font-semibold text-blue-300 hover:bg-blue-500/10"
+            >
+              <Package className="h-3.5 w-3.5" aria-hidden="true" /> Add Unit
+            </button>
+            {/* Phase 4 — Connection Builder wizard. */}
+            <button
+              type="button"
+              onClick={() => router.push(`${p}/interfaces/connect`)}
+              className="flex items-center gap-1.5 rounded-lg border border-blue-500/30 px-4 py-2 text-xs font-semibold text-blue-300 hover:bg-blue-500/10"
+            >
+              <Cable className="h-3.5 w-3.5" aria-hidden="true" /> Connect Two Units
             </button>
           </div>
 
@@ -1027,6 +1057,33 @@ export default function InterfacesPage() {
           auto-created by the wire-creation engine. If users want to add
           a new harness manually, they do it from the Harnesses tab of a
           system detail page (or future dedicated Add-Harness flow). */}
+
+      {/* Phase 3 — INTF-002: Place LRU modal (catalog / brand-new / disabled ICD tab) */}
+      <PlaceLruModal
+        open={showPlaceLru}
+        projectId={projectId}
+        onClose={() => setShowPlaceLru(false)}
+        onPlaced={(unit: Unit) => {
+          // Refresh the units list and navigate into the new unit so the
+          // user immediately lands on the catalog-aware detail page.
+          fetchData();
+          router.push(`${p}/interfaces/unit/${unit.id}`);
+        }}
+      />
+
+      {/* Phase 4 placeholder toast — auto-dismiss after 4s */}
+      {phase4Toast && (
+        <div role="status" aria-live="polite"
+          className="fixed bottom-4 right-4 z-50 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs text-amber-300 shadow-lg"
+        >
+          <Clock className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" aria-hidden="true" />
+          <span>{phase4Toast}</span>
+          <button type="button" onClick={() => setPhase4Toast(null)} aria-label="Dismiss"
+            className="ml-2 text-amber-400 hover:text-amber-200">
+            <X className="h-3 w-3" aria-hidden="true" />
+          </button>
+        </div>
+      )}
     </div>
   );
 }

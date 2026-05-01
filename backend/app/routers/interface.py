@@ -35,6 +35,8 @@ from app.models.interface import (
     UnitEnvironmentalSpec, InterfaceRequirementLink,
     AutoRequirementLog, InterfaceChangeImpact,
     HarnessEndpoint, Connection,
+    # INTF-002 Phase 4 — Connection Builder uses these enums for cb_start
+    InterfaceType, InterfaceDirection, InterfaceStatus, InterfaceCriticality,
 )
 from app.models import Requirement
 from app.schemas.interface import (
@@ -76,6 +78,13 @@ from app.schemas.interface import (
     BlockDiagramNode, BlockDiagramEdge, BlockDiagramResponse,
     InterfaceCoverageResponse,
     ImpactPreview,
+    # INTF-002 Phase 4 — Connection Builder
+    CbStartRequest, CbStartResponse,
+    CbCommitRequest, CbCommitResponse,
+    AutoWireResultResponse,
+    PinSummary as CbPinSummary,
+    WireSuggestion as CbWireSuggestion,
+    ProposedWireOut, AmbiguousMatchOut, DirectionConflictOut, TypeMismatchOut,
 )
 from app.services.auth import get_current_user
 
@@ -4790,3 +4799,348 @@ def delete_harness_endpoint(
            project_id=harness.project_id if harness else None, request=request)
 
     return {"status": "deleted", "id": ep_pk, "wires_removed": wire_count}
+
+
+# ══════════════════════════════════════════════════════════════
+#  CONNECTION BUILDER (INTF-002 Phase 4 — spec §9.5)
+# ══════════════════════════════════════════════════════════════
+# Three endpoints that drive the auto-wire wizard:
+#   POST /interfaces/connection-builder/start
+#   POST /interfaces/connection-builder/{interface_id}/auto-suggest-wires
+#   POST /interfaces/connection-builder/{interface_id}/commit
+# All three live in the existing interface router per spec; the auto-wire
+# engine itself is in services/interface/auto_wire.py.
+
+from app.services.interface.auto_wire import (  # noqa: E402
+    auto_wire_interface as _auto_wire_interface,
+    AutoWireOptions,
+)
+
+
+def _autowire_summary(result) -> dict:
+    """Compact counts dict for the response — UI uses it for the badge row."""
+    return {
+        "proposed": len(result.proposed_wires),
+        "ambiguous": len(result.ambiguous),
+        "direction_conflicts": len(result.direction_conflicts),
+        "type_mismatches": len(result.type_mismatches),
+        "unmatched_source": len(result.unmatched_source),
+        "unmatched_target": len(result.unmatched_target),
+        "lru_validation_errors": len(result.lru_validation_errors),
+    }
+
+
+def _pin_summary_to_dict(p) -> dict:
+    """Internal _PinSummary dataclass → plain dict for Pydantic."""
+    return {
+        "id": p.id,
+        "pin_number": p.pin_number,
+        "pin_label": p.pin_label,
+        "internal_signal_name": p.internal_signal_name,
+        "mfr_pin_name": p.mfr_pin_name,
+        "direction": p.direction,
+        "signal_type": p.signal_type,
+        "connector_id": p.connector_id,
+        "connector_designator": p.connector_designator,
+    }
+
+
+@router.post(
+    "/connection-builder/start",
+    response_model=CbStartResponse,
+    status_code=201,
+)
+def cb_start(
+    data: CbStartRequest,
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("interfaces.create")),
+):
+    """Create a draft Interface tied to a (source_unit, target_unit) pair.
+
+    Spec §9.5 — establishes the row that the auto-suggest endpoint operates
+    on. Both units must be in the requested project (cross-project bind is
+    rejected at the membership check + a defensive equality assertion).
+    """
+    project = _check_membership(db, data.project_id, current_user)
+
+    src_unit = db.query(Unit).filter(Unit.id == data.source_unit_id).first()
+    if src_unit is None:
+        raise HTTPException(404, "source_unit_id not found")
+    tgt_unit = db.query(Unit).filter(Unit.id == data.target_unit_id).first()
+    if tgt_unit is None:
+        raise HTTPException(404, "target_unit_id not found")
+    if src_unit.project_id != data.project_id or tgt_unit.project_id != data.project_id:
+        raise HTTPException(400, "Both units must belong to the requested project.")
+
+    # Derive a default name if the caller didn't pass one.
+    name = data.name or f"{src_unit.designation} ↔ {tgt_unit.designation}"
+
+    iface_id = _next_id(db, Interface, data.project_id, "IF", "interface_id")
+    interface = Interface(
+        interface_id=iface_id,
+        name=name,
+        description=data.description or "",
+        interface_type=InterfaceType(data.interface_type or "data_digital"),
+        direction=InterfaceDirection(data.direction or "bidirectional"),
+        source_system_id=src_unit.system_id,
+        target_system_id=tgt_unit.system_id,
+        source_unit_id=src_unit.id,
+        target_unit_id=tgt_unit.id,
+        # The existing InterfaceStatus enum has no DRAFT member; PROPOSED is
+        # the closest pre-baselined state and matches what the rest of the
+        # router uses for new rows.
+        status=InterfaceStatus.PROPOSED,
+        criticality=InterfaceCriticality.NON_CRITICAL,
+        project_id=data.project_id,
+        owner_id=current_user.id,
+    )
+    db.add(interface)
+    db.commit()
+    db.refresh(interface)
+
+    _audit(
+        db, "interface.builder.started", "interface", interface.id, current_user.id,
+        {
+            "interface_id": iface_id,
+            "source_unit_id": src_unit.id,
+            "target_unit_id": tgt_unit.id,
+            "name": name,
+        },
+        project_id=data.project_id, request=request,
+    )
+
+    return CbStartResponse(
+        interface_id=interface.id,
+        name=name,
+        source_unit_id=src_unit.id,
+        target_unit_id=tgt_unit.id,
+        status=_ev(interface.status),
+        project_id=data.project_id,
+    )
+
+
+@router.post(
+    "/connection-builder/{interface_id}/auto-suggest-wires",
+    response_model=AutoWireResultResponse,
+)
+def cb_auto_suggest(
+    interface_id: int,
+    options: AutoWireOptions = AutoWireOptions(),
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("interfaces.create")),
+):
+    """Run the three-way auto-wire engine for ``interface_id``.
+
+    Returns the full :class:`AutoWireResult` (proposed, ambiguous,
+    direction_conflicts, etc.) — the response is read-only and never
+    mutates the DB.
+    """
+    interface = db.query(Interface).filter(Interface.id == interface_id).first()
+    if interface is None:
+        raise HTTPException(404, "Interface not found")
+    _assert_member_for_entity(db, current_user, interface)
+
+    result = _auto_wire_interface(db, interface_id, options)
+
+    _audit(
+        db, "interface.autowire.suggested", "interface", interface_id, current_user.id,
+        {
+            "options": options.model_dump(),
+            "summary": _autowire_summary(result),
+        },
+        project_id=interface.project_id, request=request,
+    )
+
+    # Hand-marshal dataclass → Pydantic
+    response_payload = AutoWireResultResponse(
+        interface_id=interface_id,
+        proposed_wires=[
+            ProposedWireOut(
+                source_pin=CbPinSummary(**_pin_summary_to_dict(pw.source_pin)),
+                target_pin=CbPinSummary(**_pin_summary_to_dict(pw.target_pin)),
+                matched_signal_name=pw.matched_signal_name,
+                direction_pair=pw.direction_pair,
+                confidence=pw.confidence,
+                suggestion=CbWireSuggestion(
+                    gauge=pw.suggestion.gauge,
+                    color=pw.suggestion.color,
+                    insulation=pw.suggestion.insulation,
+                    max_length_m=pw.suggestion.max_length_m,
+                    rationale=pw.suggestion.rationale,
+                ),
+                warning=pw.warning,
+            )
+            for pw in result.proposed_wires
+        ],
+        unmatched_source=[
+            CbPinSummary(**_pin_summary_to_dict(p)) for p in result.unmatched_source
+        ],
+        unmatched_target=[
+            CbPinSummary(**_pin_summary_to_dict(p)) for p in result.unmatched_target
+        ],
+        ambiguous=[
+            AmbiguousMatchOut(
+                source_pin=CbPinSummary(**_pin_summary_to_dict(am.source_pin)),
+                candidates=[CbPinSummary(**_pin_summary_to_dict(c)) for c in am.candidates],
+            )
+            for am in result.ambiguous
+        ],
+        direction_conflicts=[
+            DirectionConflictOut(
+                source_pin=CbPinSummary(**_pin_summary_to_dict(dc.source_pin)),
+                target_pin=CbPinSummary(**_pin_summary_to_dict(dc.target_pin)),
+                src_direction=dc.src_direction,
+                tgt_direction=dc.tgt_direction,
+                reason=dc.reason,
+            )
+            for dc in result.direction_conflicts
+        ],
+        type_mismatches=[
+            TypeMismatchOut(
+                source_pin=CbPinSummary(**_pin_summary_to_dict(tm.source_pin)),
+                target_pin=CbPinSummary(**_pin_summary_to_dict(tm.target_pin)),
+                src_signal_type=tm.src_signal_type,
+                tgt_signal_type=tm.tgt_signal_type,
+            )
+            for tm in result.type_mismatches
+        ],
+        lru_validation_errors=list(result.lru_validation_errors),
+        summary=_autowire_summary(result),
+    )
+    return response_payload
+
+
+@router.post(
+    "/connection-builder/{interface_id}/commit",
+    response_model=CbCommitResponse,
+    status_code=201,
+)
+def cb_commit(
+    interface_id: int,
+    data: CbCommitRequest,
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("interfaces.create")),
+):
+    """Atomic commit: create a new WireHarness + N Wires from the accepted set.
+
+    Either every accepted wire + the harness lands, or none of them. Failure
+    in mid-batch rolls the whole transaction back.
+
+    Spec §9.5 audit event: ``connection_builder.committed``.
+    """
+    interface = db.query(Interface).filter(Interface.id == interface_id).first()
+    if interface is None:
+        raise HTTPException(404, "Interface not found")
+    _assert_member_for_entity(db, current_user, interface)
+
+    if not data.accepted_wires:
+        raise HTTPException(400, "accepted_wires must contain at least one wire")
+    if interface.source_unit_id is None or interface.target_unit_id is None:
+        raise HTTPException(
+            400,
+            "Interface is missing source_unit_id or target_unit_id; "
+            "re-open it in the Connection Builder.",
+        )
+
+    # All accepted source/target pin ids must resolve to the declared units.
+    src_pin_ids = [w.source_pin_id for w in data.accepted_wires]
+    tgt_pin_ids = [w.target_pin_id for w in data.accepted_wires]
+    src_pins = (
+        db.query(Pin)
+        .join(Connector, Pin.connector_id == Connector.id)
+        .filter(Pin.id.in_(src_pin_ids))
+        .filter(Connector.unit_id == interface.source_unit_id)
+        .all()
+    )
+    tgt_pins = (
+        db.query(Pin)
+        .join(Connector, Pin.connector_id == Connector.id)
+        .filter(Pin.id.in_(tgt_pin_ids))
+        .filter(Connector.unit_id == interface.target_unit_id)
+        .all()
+    )
+    if len(src_pins) != len(set(src_pin_ids)):
+        raise HTTPException(
+            400, "One or more source_pin_id values are not on the source unit."
+        )
+    if len(tgt_pins) != len(set(tgt_pin_ids)):
+        raise HTTPException(
+            400, "One or more target_pin_id values are not on the target unit."
+        )
+
+    src_pin_by_id = {p.id: p for p in src_pins}
+    tgt_pin_by_id = {p.id: p for p in tgt_pins}
+
+    # Resolve from_connector / to_connector — pick the first connector seen
+    # on each side. Multi-connector harness handling is the responsibility of
+    # the auto-grow engine on later passes; the simple commit just picks
+    # whichever connector the first pin lives on.
+    first_src_pin = src_pin_by_id[data.accepted_wires[0].source_pin_id]
+    first_tgt_pin = tgt_pin_by_id[data.accepted_wires[0].target_pin_id]
+
+    try:
+        # ── Atomic batch ──
+        harness = WireHarness(
+            harness_id=_next_id(db, WireHarness, interface.project_id, "WH", "harness_id"),
+            name=data.harness.name,
+            description=data.harness.description or "",
+            cable_type=data.harness.cable_type,
+            overall_length_m=data.harness.overall_length_m,
+            jacket_color=data.harness.jacket_color,
+            shield_type=data.harness.shield_type,
+            from_unit_id=interface.source_unit_id,
+            from_connector_id=first_src_pin.connector_id,
+            to_unit_id=interface.target_unit_id,
+            to_connector_id=first_tgt_pin.connector_id,
+            project_id=interface.project_id,
+        )
+        db.add(harness)
+        db.flush()  # populate harness.id without committing
+
+        new_wire_ids: list[int] = []
+        for idx, accepted in enumerate(data.accepted_wires, start=1):
+            sp = src_pin_by_id[accepted.source_pin_id]
+            tp = tgt_pin_by_id[accepted.target_pin_id]
+            wire = Wire(
+                wire_number=f"W{idx:04d}",
+                signal_name=sp.internal_signal_name or sp.signal_name,
+                wire_gauge=accepted.wire_gauge,
+                wire_color_primary=accepted.wire_color,
+                wire_type=accepted.wire_type or "signal_single",
+                length_m=accepted.length_m,
+                from_pin_id=sp.id,
+                to_pin_id=tp.id,
+                harness_id=harness.id,
+                notes=accepted.notes or "",
+            )
+            db.add(wire)
+            db.flush()
+            new_wire_ids.append(wire.id)
+
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    db.refresh(harness)
+
+    _audit(
+        db, "connection_builder.committed", "interface", interface.id, current_user.id,
+        {
+            "harness_id": harness.id,
+            "wires_created": len(new_wire_ids),
+            "wire_ids": new_wire_ids,
+            "interface_id_str": interface.interface_id,
+        },
+        project_id=interface.project_id, request=request,
+    )
+
+    return CbCommitResponse(
+        interface_id=interface.id,
+        harness_id=harness.id,
+        wires_created=len(new_wire_ids),
+        wire_ids=new_wire_ids,
+    )

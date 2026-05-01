@@ -27,7 +27,7 @@ import {
   ArrowLeft, Loader2, Edit3, Save, X, Plus, Cpu, Box,
   Cable, Radio, Zap, ChevronRight, ChevronDown, Trash2,
   RefreshCw, Wifi, Thermometer, Shield, AlertTriangle,
-  CheckCircle,
+  CheckCircle, Package, GitBranch,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { interfaceAPI } from '@/lib/interface-api';
@@ -37,6 +37,24 @@ import type {
   ConnectorType, ConnectorGender, BusProtocol,
 } from '@/lib/interface-types';
 import { SIGNAL_TYPE_COLORS } from '@/lib/interface-types';
+
+/**
+ * Phase 3 — INTF-002: catalog linkage on Unit.
+ *
+ * The backend Unit row carries `catalog_part_id`, `location_zone`,
+ * `serial_number`, `asset_tag`. The Pydantic UnitResponse hasn't been
+ * extended yet (frontend-only phase), so we read the fields via this
+ * augmented type and render the badge / project-instance fields only
+ * when present.
+ */
+interface UnitWithCatalog extends UnitDetail {
+  catalog_part_id?: number | null;
+  catalog_part_number?: string | null;
+  catalog_revision?: string | null;
+  location_zone?: string | null;
+  serial_number?: string | null;
+  asset_tag?: string | null;
+}
 
 type Tab = 'overview' | 'connectors' | 'communication' | 'specifications';
 
@@ -64,6 +82,48 @@ function StatusBadge({ status }: { status: string }) {
       style={{ background: c.bg, color: c.text }}>
       {status.replace(/_/g, ' ')}
     </span>
+  );
+}
+
+/**
+ * Phase 3 — INTF-002. Renders the "Catalog: {part_number} (rev X)" badge
+ * with a link to /catalog/parts/{id} when the unit was placed from a
+ * catalog part. Also renders a "Variants" sibling link.
+ *
+ * The data is read off the augmented {@link UnitWithCatalog} shape — the
+ * Pydantic UnitResponse hasn't been extended yet, so the field may simply
+ * be undefined for legacy units, in which case nothing renders.
+ */
+function CatalogBadge({ unit, router }: {
+  unit: UnitWithCatalog;
+  router: ReturnType<typeof useRouter>;
+}) {
+  const cid = unit.catalog_part_id;
+  if (!cid) return null;
+  const partNumber = unit.catalog_part_number || unit.part_number;
+  const revision = unit.catalog_revision || unit.revision;
+  return (
+    <div className="mt-1 flex items-center gap-2 text-[11px]">
+      <button
+        type="button"
+        onClick={() => router.push(`/catalog/parts/${cid}`)}
+        className="inline-flex items-center gap-1 rounded-md bg-blue-500/10 px-2 py-0.5 text-blue-300 ring-1 ring-blue-500/20 hover:bg-blue-500/20"
+        aria-label={`View catalog part ${partNumber}`}
+      >
+        <Package className="h-3 w-3" aria-hidden="true" />
+        Catalog: <span className="font-semibold">{partNumber}</span>
+        {revision && <span className="text-blue-400/70">(rev {revision})</span>}
+      </button>
+      <button
+        type="button"
+        onClick={() => router.push(`/catalog/parts/${cid}`)}
+        className="inline-flex items-center gap-1 text-slate-400 hover:text-blue-300"
+        aria-label="View part variants"
+      >
+        <GitBranch className="h-3 w-3" aria-hidden="true" />
+        Variants
+      </button>
+    </div>
   );
 }
 
@@ -356,6 +416,16 @@ export default function UnitDetailPage() {
             </div>
             <h1 className="text-lg font-bold text-slate-100">{unit.name}</h1>
             <p className="text-[12px] text-slate-500">{unit.manufacturer} · {unit.part_number}</p>
+            {/*
+             * Phase 3 — INTF-002: catalog badge + variants link.
+             * Renders only when the unit was placed from a catalog part.
+             */}
+            <CatalogBadge unit={unit as UnitWithCatalog} router={router} />
+            {/*
+             * Phase 5: <SyncProposalIndicator unitId={unit.id} />
+             * The req-sync data structure ships in Phase 5; until then this
+             * stays as a placeholder so the layout slot is reserved.
+             */}
           </div>
         </div>
         <button onClick={fetchUnit} className="rounded-lg border border-astra-border p-2 text-slate-500 hover:text-slate-300" title="Refresh">

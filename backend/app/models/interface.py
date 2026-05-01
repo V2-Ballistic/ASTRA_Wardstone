@@ -26,6 +26,13 @@ from sqlalchemy.orm import relationship, backref
 from app.database import Base
 from sqlalchemy.sql import func
 
+# Catalog-side direction enum used by Pin.direction_override below. Importing
+# the module (not the symbol) sidesteps the chicken-and-egg ordering problem
+# between Pin and CatalogPin (CatalogPin's model has no reverse FK back to Pin
+# so order does not actually matter, but symbol-level imports look like they
+# might).
+from app.models import catalog as _catalog_models  # noqa: E402  (intentional position)
+
 # ══════════════════════════════════════════════════════════════
 #  Enums (38)
 # ══════════════════════════════════════════════════════════════
@@ -1206,10 +1213,24 @@ class Unit(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+    # ── Catalog linkage (NULL for legacy units pre-INTF-002) ──
+    # When set, the catalog part is the source-of-truth for physics specs;
+    # this Unit's own physics fields above are kept for legacy units only.
+    catalog_part_id = Column(
+        Integer, ForeignKey("catalog_parts.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
+
+    # ── Project-specific instance fields ──
+    location_zone = Column(String(100), nullable=True)
+    serial_number = Column(String(200), nullable=True)
+    asset_tag = Column(String(200), nullable=True)
+
     # Relationships
     connectors = relationship("Connector", back_populates="unit", cascade="all, delete-orphan")
     bus_definitions = relationship("BusDefinition", back_populates="unit", cascade="all, delete-orphan")
     system = relationship("System", back_populates="units")
+    catalog_part = relationship("CatalogPart", back_populates="project_units")
 
     __table_args__ = (
         UniqueConstraint("project_id", "designation", name="uq_unit_designation"),
@@ -1306,8 +1327,41 @@ class Pin(Base):
     mating_unit_id = Column(Integer, ForeignKey("units.id", ondelete="SET NULL"), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    # ── Catalog linkage (NULL for legacy/manual pins pre-INTF-002) ──
+    catalog_pin_id = Column(
+        Integer, ForeignKey("catalog_pins.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
+
+    # ── Dual naming (INTF-002) ──
+    # mfr_pin_name: cached from CatalogPin at instantiation. Locked / read-only in UI.
+    mfr_pin_name = Column(String(100), nullable=True)
+    # internal_signal_name: USER-EDITABLE. Auto-wire match key. Defaults to
+    # mfr_pin_name at instantiation.
+    internal_signal_name = Column(String(100), nullable=True, index=True)
+
+    # ── Direction override ──
+    # Uses the catalog-side SignalDirection enum (INPUT/OUTPUT/BIDIRECTIONAL/
+    # POWER/GROUND/UNKNOWN). When NULL, falls back to catalog
+    # CatalogPin.mfr_direction. Distinct from the existing `direction`
+    # column above (PinDirection enum) which carries legacy logic-family
+    # values like OPEN_COLLECTOR / TRI_STATE that the catalog enum does not.
+    # Imported lazily inside the SQLEnum to avoid a model-import cycle.
+    direction_override = Column(
+        SQLEnum(
+            _catalog_models.SignalDirection,
+            name="catalog_signal_direction",
+            values_callable=lambda x: [e.value for e in x],
+        ),
+        nullable=True,
+    )
+
+    # ── Project-scope override of the manufacturer signal function ──
+    function_override = Column(String(500), nullable=True)
+
     # Relationships
     connector = relationship("Connector", back_populates="pins")
+    catalog_pin = relationship("CatalogPin")
 
     __table_args__ = (
         UniqueConstraint("connector_id", "pin_number", name="uq_pin_number"),
@@ -1629,6 +1683,17 @@ class Interface(Base):
     direction = Column(SQLEnum(InterfaceDirection, values_callable=lambda x: [e.value for e in x]), nullable=False)
     source_system_id = Column(Integer, ForeignKey("systems.id"), nullable=False)
     target_system_id = Column(Integer, ForeignKey("systems.id"), nullable=False)
+    # ── INTF-002 Phase 4: unit-level endpoints (drives auto-wire) ──
+    # Nullable for legacy rows pre-migration 0024 and for multi-unit-system
+    # interfaces that the user has yet to disambiguate via Connection Builder.
+    source_unit_id = Column(
+        Integer, ForeignKey("units.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
+    target_unit_id = Column(
+        Integer, ForeignKey("units.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
     status = Column(SQLEnum(InterfaceStatus, values_callable=lambda x: [e.value for e in x]), default=InterfaceStatus.PROPOSED)
     criticality = Column(SQLEnum(InterfaceCriticality, values_callable=lambda x: [e.value for e in x]), default=InterfaceCriticality.NON_CRITICAL)
     icd_document_number = Column(String(100))
@@ -1650,6 +1715,8 @@ class Interface(Base):
     # Relationships
     source_system = relationship("System", foreign_keys=[source_system_id])
     target_system = relationship("System", foreign_keys=[target_system_id])
+    source_unit = relationship("Unit", foreign_keys=[source_unit_id])
+    target_unit = relationship("Unit", foreign_keys=[target_unit_id])
     owner = relationship("User")
 
 

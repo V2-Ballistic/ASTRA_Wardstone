@@ -32,6 +32,13 @@ openpyxl>=3.1.0
 reportlab>=4.0
 python-docx>=1.1.0
 
+# ── ICD Ingestion (Phase 7, ASTRA-TDD-INTF-002) ──
+# PyMuPDF: PDF text + 200 DPI image extraction.
+# camelot-py[cv]: PDF table extraction (depends on OpenCV pulled in via the [cv] extra).
+# python-docx is already declared above (re-used for DOCX ingestion).
+PyMuPDF==1.24.5
+camelot-py[cv]==0.11.0
+
 # ── AI Providers (optional — only the one you use needs to be installed) ──
 openai>=1.0.0
 anthropic>=0.34.0

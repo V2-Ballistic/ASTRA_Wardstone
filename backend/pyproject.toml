@@ -4,6 +4,9 @@ python_files = ["test_*.py"]
 filterwarnings = [
     "ignore::DeprecationWarning:passlib",
 ]
+markers = [
+    "performance: scale/perf tests with fixed thresholds; excluded from default suite via -m 'not performance'",
+]
 
 [tool.ruff]
 line-length = 120
