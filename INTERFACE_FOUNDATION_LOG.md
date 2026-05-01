@@ -24,7 +24,7 @@
 | 1 — Schema & migration | ✅ complete | `66fcb97..94bf662` | 0 | green (242/242) | migration 0023, down/up tested, JSONB→JSON variant for SQLite tests |
 | 2 — Catalog CRUD backend | ✅ complete | `f7cf33a..f8a7a0e` | 18 (260 total) | green (260/260) | placement svc, router (20 routes), tests, supplier-delete bug fix |
 | 3 — Catalog UI | ✅ complete | `2b3a607..HEAD` | 0 (frontend test infra deferred) | green (tsc filter empty, build ✓ Compiled successfully, backend 260/260) | catalog-types + catalog-api + PlaceLruModal + 5 new pages + 4 modified pages + sidebar Catalog link |
-| 4 — Connection Builder + auto-wire | ⏳ pending | — | — | — | — |
+| 4 — Connection Builder + auto-wire | ✅ complete | `3b6f0bd..2fef238` (5 commits) | 51 (311 total) | green (alembic 0024, pytest 311/311, tsc filter empty, build ✓) | migration 0024 added Interface.source_unit_id/target_unit_id; auto-wire engine implements full three-way validation with explicit 6×6 direction matrix; Connection Builder wizard at /projects/[id]/interfaces/connect |
 | 5 — Reactive Requirement Sync | ⏳ pending | — | — | — | — |
 | 6 — Source Coverage Validator | ⏳ pending | — | — | — | — |
 | 7 — ICD Ingestion | ⏳ pending | — | — | — | — |
