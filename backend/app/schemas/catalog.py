@@ -467,3 +467,136 @@ class CatalogPartUsageRow(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ══════════════════════════════════════════════════════════════
+#  ICD Extraction (Phase 7) — strict schema for AI output
+# ══════════════════════════════════════════════════════════════
+#
+# These models define the EXACT shape the LLM is asked to return for an ICD
+# extraction. Pydantic validates the parsed JSON; on validation failure the
+# orchestrator marks the SupplierDocument FAILED and stores the validation
+# errors in `extraction_log`.
+#
+# All fields are intentionally Optional except ``supplier.name``,
+# ``part_number``, ``name``, and ``part_class`` — those are the minimum to
+# instantiate a CatalogPart row downstream. Everything else lands as null
+# when not present in the source.
+# ══════════════════════════════════════════════════════════════
+
+
+class ExtractedSupplier(BaseModel):
+    name: str = Field(..., max_length=200)
+    cage_code: Optional[str] = Field(None, max_length=10)
+    country: Optional[str] = Field(None, max_length=100)
+    source_page: Optional[int] = None
+
+
+class ExtractedPin(BaseModel):
+    pin_position: str = Field(..., max_length=20)
+    mfr_pin_name: str = Field(..., max_length=100)
+    mfr_signal_function: Optional[str] = Field(None, max_length=500)
+    mfr_signal_type: Optional[SignalType] = None
+    mfr_direction: Optional[SignalDirection] = None
+    mfr_voltage_min_v: Optional[float] = None
+    mfr_voltage_max_v: Optional[float] = None
+    mfr_current_max_ma: Optional[float] = None
+    mfr_impedance_ohm: Optional[float] = None
+    mfr_protocol_hint: Optional[str] = Field(None, max_length=100)
+    mfr_is_paired_with: Optional[str] = Field(None, max_length=50)
+    is_no_connect: bool = False
+    is_reserved: bool = False
+    is_chassis_ground: bool = False
+    notes: Optional[str] = None
+    source_page: Optional[int] = None
+
+
+class ExtractedConnector(BaseModel):
+    reference: str = Field(..., max_length=50)
+    description: Optional[str] = Field(None, max_length=500)
+    connector_type: Optional[str] = Field(None, max_length=100)
+    shell_size: Optional[str] = Field(None, max_length=50)
+    insert_arrangement: Optional[str] = Field(None, max_length=50)
+    gender: Optional[ConnectorGender] = None
+    pin_count: int = 0
+    keying: Optional[str] = Field(None, max_length=50)
+    mating_part_number: Optional[str] = Field(None, max_length=200)
+    notes: Optional[str] = None
+    pins: List[ExtractedPin] = Field(default_factory=list)
+    source_page: Optional[int] = None
+
+
+class IcdExtractionResultSchema(BaseModel):
+    """Strict-JSON schema the LLM is asked to return for an ICD extraction."""
+
+    supplier: ExtractedSupplier
+    part_number: str = Field(..., max_length=200)
+    revision: Optional[str] = Field(None, max_length=50)
+    name: str = Field(..., max_length=500)
+    designation: Optional[str] = Field(None, max_length=200)
+    description: Optional[str] = None
+    part_class: PartClass
+    lru_classification: LRUClass = LRUClass.LRU
+
+    # Physical
+    mass_kg: Optional[float] = None
+    dim_length_mm: Optional[float] = None
+    dim_width_mm: Optional[float] = None
+    dim_height_mm: Optional[float] = None
+
+    # Power
+    power_watts_nominal: Optional[float] = None
+    power_watts_peak: Optional[float] = None
+    voltage_input_min_v: Optional[float] = None
+    voltage_input_max_v: Optional[float] = None
+
+    # Environmental envelope
+    temp_operating_min_c: Optional[float] = None
+    temp_operating_max_c: Optional[float] = None
+    temp_storage_min_c: Optional[float] = None
+    temp_storage_max_c: Optional[float] = None
+    vibration_random_grms: Optional[float] = None
+    shock_mechanical_g: Optional[float] = None
+    humidity_max_pct: Optional[float] = None
+    altitude_max_m: Optional[float] = None
+    emi_ce102_limit_dbua: Optional[float] = None
+    emi_rs103_limit_vm: Optional[float] = None
+    esd_hbm_v: Optional[float] = None
+
+    # Compliance / qual
+    mil_std_810_tested: bool = False
+    mil_std_461_tested: bool = False
+    rohs_compliant: bool = False
+    itar_controlled: bool = False
+    export_classification: Optional[str] = Field(None, max_length=50)
+
+    # Lifecycle
+    lifecycle_status: LifecycleStatus = LifecycleStatus.ACTIVE
+    eol_date: Optional[date] = None
+
+    # Connectors+pins
+    connectors: List[ExtractedConnector] = Field(default_factory=list)
+
+    # Source-trace metadata
+    source_page_refs: Optional[Dict[str, Any]] = None
+
+    # Quality signals
+    extraction_warnings: List[str] = Field(default_factory=list)
+    extraction_confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
+
+
+# ══════════════════════════════════════════════════════════════
+#  Approve / reject — Phase 7 endpoints
+# ══════════════════════════════════════════════════════════════
+
+
+class PendingImportRejectRequest(BaseModel):
+    """Body of POST /catalog/pending-imports/{id}/reject."""
+    reason: Optional[str] = Field(None, max_length=2000)
+
+
+class IcdExtractionTriggerResponse(BaseModel):
+    """Body returned by POST /catalog/documents/{id}/extract."""
+    job_id: int            # the SupplierDocument.id (acts as the job key)
+    status: str            # ExtractionStatus value
+    started_at: datetime
