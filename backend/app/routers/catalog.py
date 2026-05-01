@@ -55,6 +55,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import (
     APIRouter,
+    BackgroundTasks,
     Depends,
     File,
     Form,
@@ -76,7 +77,9 @@ from app.models.catalog import (
     CatalogConnector,
     CatalogPart,
     CatalogPin,
+    ExtractionStatus,
     LifecycleStatus,
+    LRUClass,
     PartClass,
     PendingCatalogImport,
     PendingImportStatus,
@@ -94,8 +97,11 @@ from app.schemas.catalog import (
     CatalogPartUpdate,
     CatalogPartUsageRow,
     CatalogPinResponse,
+    IcdExtractionResultSchema,
+    IcdExtractionTriggerResponse,
     PendingCatalogImportResponse,
     PendingCatalogImportUpdate,
+    PendingImportRejectRequest,
     SupplierCreate,
     SupplierDocumentResponse,
     SupplierResponse,
@@ -1026,3 +1032,300 @@ def patch_pending_import(
         request=request,
     )
     return PendingCatalogImportResponse.model_validate(row)
+
+
+# ══════════════════════════════════════════════════════════════
+#  Phase 7 — ICD Ingestion endpoints (extract / approve / reject)
+# ══════════════════════════════════════════════════════════════
+
+
+def _run_extraction_in_background(document_id: int) -> None:
+    """Background-task entrypoint. Owns its OWN DB session — the request's
+    session is closed by the time this fires."""
+    # Late imports: don't pull pymupdf / camelot during module import.
+    from app.database import SessionLocal
+    from app.services.catalog import icd_extractor
+
+    db = SessionLocal()
+    try:
+        icd_extractor.trigger_extraction(db, document_id)
+    except Exception:    # noqa: BLE001 - background tasks must not crash the worker
+        logger.exception("Background ICD extraction crashed for document %s", document_id)
+        # Best-effort failure marker if the orchestrator's own try/except didn't catch it.
+        try:
+            doc = db.query(SupplierDocument).filter(SupplierDocument.id == document_id).first()
+            if doc is not None and doc.extraction_status not in (
+                ExtractionStatus.PENDING_REVIEW,
+                ExtractionStatus.APPROVED,
+                ExtractionStatus.FAILED,
+            ):
+                doc.extraction_status = ExtractionStatus.FAILED
+                doc.extraction_log = {"code": "background_crash", "message": "see backend logs"}
+                doc.extraction_at = datetime.utcnow()
+                db.commit()
+        except Exception:    # pragma: no cover
+            db.rollback()
+    finally:
+        db.close()
+
+
+@router.post(
+    "/documents/{doc_id}/extract",
+    response_model=IcdExtractionTriggerResponse,
+    status_code=202,
+)
+def trigger_document_extraction(
+    doc_id: int,
+    background_tasks: BackgroundTasks,
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Trigger ICD ingestion for an UPLOADED supplier document.
+
+    Returns 202 + {job_id, status, started_at} immediately; the actual
+    extraction runs in a BackgroundTask. Poll ``GET /catalog/documents/{id}``
+    to watch the ``extraction_status`` move UPLOADED → EXTRACTING →
+    PENDING_REVIEW (or FAILED).
+    """
+    _require_req_eng_plus(current_user)
+    doc = db.query(SupplierDocument).filter(SupplierDocument.id == doc_id).first()
+    if doc is None:
+        raise HTTPException(404, f"SupplierDocument {doc_id} not found")
+
+    # Only re-run from UPLOADED or FAILED. EXTRACTING means a background
+    # task is already in flight; PENDING_REVIEW / APPROVED / REJECTED need
+    # an explicit reset before re-extraction.
+    if doc.extraction_status not in (ExtractionStatus.UPLOADED, ExtractionStatus.FAILED):
+        raise HTTPException(
+            409,
+            f"Document {doc_id} cannot be re-extracted from status "
+            f"'{doc.extraction_status.value if hasattr(doc.extraction_status, 'value') else doc.extraction_status}'. "
+            "Allowed source statuses: uploaded, failed.",
+        )
+
+    # Flip status now so the caller's poll sees EXTRACTING immediately.
+    doc.extraction_status = ExtractionStatus.EXTRACTING
+    doc.extraction_log = {"queued_at": datetime.utcnow().isoformat()}
+    doc.extraction_at = datetime.utcnow()
+    db.commit()
+
+    background_tasks.add_task(_run_extraction_in_background, doc_id)
+
+    _audit(
+        db, "catalog.extraction_started", "supplier_document", doc.id, current_user.id,
+        {"supplier_id": doc.supplier_id, "title": doc.title, "mime_type": doc.mime_type},
+        request=request,
+    )
+
+    return IcdExtractionTriggerResponse(
+        job_id=doc.id,
+        status=ExtractionStatus.EXTRACTING.value,
+        started_at=doc.extraction_at or datetime.utcnow(),
+    )
+
+
+def _approve_pending_import(
+    db: Session,
+    pending_id: int,
+    current_user: User,
+) -> CatalogPart:
+    """Atomic approval: re-validate extracted_data, build Supplier (if new) +
+    CatalogPart + CatalogConnectors + CatalogPins, and link pending row.
+
+    Raises HTTPException for caller-friendly 4xx; lets unexpected errors
+    bubble (caller wraps with rollback).
+    """
+    pending = (
+        db.query(PendingCatalogImport)
+        .filter(PendingCatalogImport.id == pending_id)
+        .first()
+    )
+    if pending is None:
+        raise HTTPException(404, f"PendingCatalogImport {pending_id} not found")
+    if pending.status != PendingImportStatus.PENDING:
+        current = pending.status.value if hasattr(pending.status, "value") else str(pending.status)
+        raise HTTPException(409, f"Cannot approve PendingCatalogImport {pending_id} in status '{current}'")
+
+    # Re-validate the extracted blob — reviewers may have edited it via PATCH.
+    try:
+        extracted = IcdExtractionResultSchema.model_validate(pending.extracted_data or {})
+    except Exception as exc:    # noqa: BLE001
+        raise HTTPException(
+            422,
+            f"PendingCatalogImport {pending_id} has invalid extracted_data: {exc}",
+        )
+
+    # Resolve / create supplier. Match by name (case-insensitive) + cage_code
+    # if both are present, otherwise just by name.
+    supplier_q = db.query(Supplier).filter(Supplier.name == extracted.supplier.name)
+    supplier = supplier_q.first()
+    if supplier is None:
+        supplier = Supplier(
+            name=extracted.supplier.name,
+            cage_code=extracted.supplier.cage_code,
+            country=extracted.supplier.country,
+            is_active=True,
+            created_by_id=current_user.id,
+        )
+        db.add(supplier)
+        db.flush()
+
+    # Refuse to silently re-create an existing (supplier, part_number, revision)
+    # tuple — the unique constraint would explode anyway.
+    pn_dup = (
+        db.query(CatalogPart.id)
+        .filter(
+            CatalogPart.supplier_id == supplier.id,
+            CatalogPart.part_number == extracted.part_number,
+            CatalogPart.revision == extracted.revision,
+        )
+        .first()
+    )
+    if pn_dup is not None:
+        raise HTTPException(
+            409,
+            f"CatalogPart with supplier '{supplier.name}', part_number "
+            f"'{extracted.part_number}', revision '{extracted.revision}' "
+            f"already exists (id={pn_dup[0]}). Reject this import or update "
+            "the extracted data to a different revision before approving.",
+        )
+
+    # Create the catalog part using the extracted scalar fields. Skip the
+    # nested supplier/connectors/extraction_warnings fields — they're handled
+    # separately or stored elsewhere.
+    scalar = extracted.model_dump(exclude={
+        "supplier",
+        "connectors",
+        "extraction_warnings",
+        "extraction_confidence",
+        "source_page_refs",
+    })
+
+    part = CatalogPart(
+        supplier_id=supplier.id,
+        source_document_id=pending.source_document_id,
+        source_page_refs=extracted.source_page_refs,
+        created_by_id=current_user.id,
+        **scalar,
+    )
+    db.add(part)
+    db.flush()
+
+    # Connectors + pins
+    for idx, ext_conn in enumerate(extracted.connectors):
+        conn_dump = ext_conn.model_dump(exclude={"pins", "source_page"})
+        conn = CatalogConnector(
+            catalog_part_id=part.id,
+            position=idx,
+            **conn_dump,
+        )
+        db.add(conn)
+        db.flush()
+        for ext_pin in ext_conn.pins:
+            pin_dump = ext_pin.model_dump(exclude={"source_page"})
+            db.add(CatalogPin(catalog_connector_id=conn.id, **pin_dump))
+        # Backfill pin_count if extractor didn't capture it.
+        if not conn.pin_count:
+            conn.pin_count = len(ext_conn.pins)
+        db.flush()
+
+    # Wire up pending → committed link, mark APPROVED, and stamp the document.
+    pending.status = PendingImportStatus.APPROVED
+    pending.committed_catalog_part_id = part.id
+    pending.reviewed_at = datetime.utcnow()
+    pending.reviewed_by_id = current_user.id
+    if pending.source_document is not None:
+        pending.source_document.extraction_status = ExtractionStatus.APPROVED
+
+    db.flush()
+    return part
+
+
+@router.post(
+    "/pending-imports/{import_id}/approve",
+    response_model=CatalogPartResponse,
+    status_code=201,
+)
+def approve_pending_import(
+    import_id: int,
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Commit a PendingCatalogImport into the live catalog.
+
+    Atomic: any failure rolls every newly-created Supplier / CatalogPart /
+    CatalogConnector / CatalogPin row back. Marks the source document
+    APPROVED on success.
+    """
+    _require_req_eng_plus(current_user)
+    try:
+        part = _approve_pending_import(db, import_id, current_user)
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:    # noqa: BLE001 - rollback then re-raise as 500
+        db.rollback()
+        logger.exception("approve_pending_import crashed for import_id=%s", import_id)
+        raise HTTPException(500, "Failed to approve pending import — see backend logs")
+
+    _audit(
+        db, "catalog.import_approved", "pending_catalog_import", import_id, current_user.id,
+        {
+            "catalog_part_id": part.id,
+            "supplier_id": part.supplier_id,
+            "part_number": part.part_number,
+            "connector_count": len(part.connectors or []),
+        },
+        request=request,
+    )
+
+    return _catalog_part_response(db, part)
+
+
+@router.post(
+    "/pending-imports/{import_id}/reject",
+    response_model=PendingCatalogImportResponse,
+)
+def reject_pending_import(
+    import_id: int,
+    data: PendingImportRejectRequest = None,
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Reject a PendingCatalogImport. No catalog data is created.
+
+    The source SupplierDocument moves to REJECTED so it stops appearing in
+    the review queue UI; the document file stays on disk for the audit.
+    """
+    _require_req_eng_plus(current_user)
+    pending = (
+        db.query(PendingCatalogImport)
+        .filter(PendingCatalogImport.id == import_id)
+        .first()
+    )
+    if pending is None:
+        raise HTTPException(404, f"PendingCatalogImport {import_id} not found")
+    if pending.status != PendingImportStatus.PENDING:
+        current_status = pending.status.value if hasattr(pending.status, "value") else str(pending.status)
+        raise HTTPException(409, f"Cannot reject PendingCatalogImport {import_id} in status '{current_status}'")
+
+    pending.status = PendingImportStatus.REJECTED
+    pending.reviewed_at = datetime.utcnow()
+    pending.reviewed_by_id = current_user.id
+    if data and data.reason:
+        pending.rejection_reason = data.reason
+    if pending.source_document is not None:
+        pending.source_document.extraction_status = ExtractionStatus.REJECTED
+    db.commit()
+    db.refresh(pending)
+
+    _audit(
+        db, "catalog.import_rejected", "pending_catalog_import", pending.id, current_user.id,
+        {"reason": pending.rejection_reason or None, "supplier_id": pending.supplier_id},
+        request=request,
+    )
+    return PendingCatalogImportResponse.model_validate(pending)
