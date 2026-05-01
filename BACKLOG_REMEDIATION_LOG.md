@@ -17,13 +17,13 @@
 | F-203 | High | ✅ Fixed | `backend/app/routers/requirements.py`, `backend/app/routers/imports.py`, `backend/tests/test_requirement_id_race.py` | `2961e31` | `pytest tests/test_requirement_id_race.py` → 2 passed | Now uses next_human_id with FOR-UPDATE lock |
 | F-204 | High | ✅ Fixed | `frontend/src/lib/interface-api.ts` | `59e3931` | `npx tsc --noEmit` → no errors in interface-api.ts | 6 functions renamed; positional callers unaffected |
 | F-205 | High | ✅ Fixed | `backend/app/models/__init__.py`, `backend/alembic/versions/0026_requirement_baseline_cascade.py`, `backend/tests/test_project_cascade_delete.py` | `b363df6` | `alembic upgrade head` (0026 applied), `pytest tests/test_project_cascade_delete.py` → 1 passed | DB backup taken at `/tmp/pre-0026-1777669474.sql` inside astra-db-1 |
-| F-206 | Medium | ⏳ Pending | — | — | — | Phase 5 |
-| F-207 | Medium | ⏳ Pending | — | — | — | Phase 5 |
-| F-209 | Medium | ⏳ Pending | — | — | — | Phase 5 |
-| F-212 | Medium | ⏳ Pending | — | — | — | Phase 5 |
-| F-213 | Medium | ⏳ Pending | — | — | — | Phase 5 |
-| F-214 | Medium | ⏳ Pending | — | — | — | Phase 5 |
-| F-215 | Medium | ⏳ Pending | — | — | — | Phase 5 |
+| F-206 | Medium | ✅ Fixed | `backend/app/services/auth.py` | `1c6a616` | full suite green | Catches only ImportError + ProgrammingError + OperationalError; warns on swallow |
+| F-207 | Medium | ✅ Fixed | `frontend/src/lib/auth.tsx` | `5d37f01` | `npx tsc --noEmit` clean | Adds interfaces.* + reports.export; SYNC NOTE comment |
+| F-209 | Medium | ✅ Fixed | `backend/app/routers/integrations.py` | `f283873` | full suite green | Field renamed `webhook_url` → `webhook_url_template`; FE doesn't reference it |
+| F-212 | Medium | ✅ Fixed | `backend/app/services/signature_service.py` | `698bd30` | full suite green | Single OUTER JOIN replaces per-row User lookup |
+| F-213 | Medium | ✅ Fixed | `backend/app/routers/baselines.py` | `48fd9a0` | full suite green | Dead stub deleted; replaced with explanatory comment |
+| F-214 | Medium | ✅ Fixed | `backend/app/routers/audit.py` | `4f8893b` | full suite green | Resolves entity → project → `_check_membership` |
+| F-215 | Medium | ✅ Fixed | `backend/app/routers/audit.py` | `4f8893b` | full suite green | Both endpoints now `le=200` |
 | F-217 | Low | ⏳ Pending | — | — | — | Phase 6 |
 | F-218 | Low | ⏳ Pending | — | — | — | Phase 6 |
 | F-219 | Low | ⏳ Pending | — | — | — | Phase 6 |
@@ -36,7 +36,7 @@
 - [x] Phase 2 — Project Membership Sweep (F-201, F-208, F-210, F-211) — full suite: 309 passed, 0 failed (was 295 before; +14 negative tests). 7 commits on `fix/backlog-phase-2-membership`.
 - [x] Phase 3 — Dev Router Hardening (F-202, F-216) — full suite: 316 passed (+7).
 - [x] Phase 4 — Data Integrity & Contract (F-203, F-204, F-205) — full suite: 319 passed (+3). Migration 0026 applied; db backup at `astra-db-1:/tmp/pre-0026-1777669474.sql`.
-- [ ] Phase 5 — Medium Severity (F-206–F-215)
+- [x] Phase 5 — Medium Severity (F-206–F-215) — full suite: 319 passed, 0 failed (no new tests; existing coverage protects the touched paths).
 - [ ] Phase 6 — Low Severity & Cleanup (F-217–F-220)
 - [ ] Final verification gate
 
