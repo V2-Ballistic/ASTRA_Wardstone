@@ -23,6 +23,25 @@ from app.models.workflow import (
     WorkflowStatus, InstanceStatus, StageInstanceStatus, SignatureMeaning,
 )
 
+# ── INTF-002 Phase 1: catalog, requirement-sync, coverage layers ──
+# Aliased to disambiguate from the existing project-side enums in
+# `app.models.interface` (`ConnectorGender`, `SignalType`). The catalog enums
+# live in their own module so consumers can import either set explicitly.
+from app.models.catalog import (
+    Supplier, SupplierDocument, CatalogPart, CatalogConnector, CatalogPin,
+    PendingCatalogImport,
+    PartClass, LRUClass, LifecycleStatus,
+    ConnectorGender as CatalogConnectorGender,
+    SignalType as CatalogSignalType,
+    SignalDirection as CatalogSignalDirection,
+    SupplierDocumentType, ExtractionStatus, PendingImportStatus,
+)
+from app.models.req_sync import (
+    RequirementSourceLink, RequirementSyncProposal,
+    SourceEntityType, SyncProposalType, SyncProposalStatus,
+)
+from app.models.coverage_exception import CoverageException
+
 # ══════════════════════════════════════
 #  Enums
 # ══════════════════════════════════════
@@ -185,6 +204,17 @@ class Requirement(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_by_id = Column(Integer, ForeignKey("users.id"))
+
+    # ── INTF-002 Phase 1: Reactive requirement sync controls ──
+    # When sync_locked=True, the fan-out engine skips this requirement even if
+    # source entities change — used when a user has hand-edited an
+    # auto-generated requirement and wants to preserve their edits.
+    sync_locked = Column(Boolean, default=False, nullable=False)
+    sync_locked_reason = Column(String(500), nullable=True)
+    sync_locked_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    sync_locked_at = Column(DateTime(timezone=True), nullable=True)
+    # Which auto-req template generated this. NULL for hand-written reqs.
+    generation_template_id = Column(String(100), nullable=True, index=True)
 
     # Relationships
     project = relationship("Project", back_populates="requirements")
