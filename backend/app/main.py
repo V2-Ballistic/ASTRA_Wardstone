@@ -84,6 +84,7 @@ for _mod, _attr in [
     ("app.routers.interface_import", "router"),
     ("app.routers.catalog", "router"),
     ("app.routers.req_sync", "router"),
+    ("app.routers.coverage", "router"),
 ]:
     try:
         _m = __import__(_mod, fromlist=[_attr])
@@ -191,7 +192,28 @@ async def lifespan(app: FastAPI):
     ai_status = f"AI: {'enabled (' + AI_PROVIDER + ')' if is_ai_available() else 'disabled (regex-only)'}"
     logger.info("ASTRA %s started [env=%s, %s]",
                 settings.APP_VERSION, settings.ENVIRONMENT, ai_status)
-    yield
+
+    # ── INTF-002 Phase 6: schedule the coverage MV refresh ──
+    # No-op without APScheduler installed; the bulk-accept path still
+    # refreshes on demand. Default cadence is 10 min per spec §13.4.
+    _stop_mv_refresh = None
+    try:
+        from app.services.coverage.refresh import (
+            start_periodic_refresh, stop_periodic_refresh,
+        )
+        start_periodic_refresh(interval_minutes=10)
+        _stop_mv_refresh = stop_periodic_refresh
+    except Exception as exc:  # pragma: no cover
+        logger.warning("Coverage MV scheduler init failed: %s", exc)
+
+    try:
+        yield
+    finally:
+        if _stop_mv_refresh is not None:
+            try:
+                _stop_mv_refresh()
+            except Exception:  # pragma: no cover
+                pass
 
 
 app = FastAPI(

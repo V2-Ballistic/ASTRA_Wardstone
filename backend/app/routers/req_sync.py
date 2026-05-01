@@ -500,6 +500,16 @@ def bulk_accept_proposals(
     except Exception as exc:  # pragma: no cover
         logger.warning("bulk audit emit failed: %s", exc)
 
+    # Phase 6 — refresh the coverage MV ONCE per batch (not per proposal).
+    # Bulk accept can rewrite many requirements at once and any of them might
+    # have toggled source-link coverage; this keeps /coverage reads fast
+    # without paying the refresh cost N times.
+    try:
+        from app.services.coverage.refresh import refresh_coverage_mv
+        refresh_coverage_mv(db, concurrent=True)
+    except Exception as exc:  # pragma: no cover
+        logger.warning("coverage MV refresh after bulk-accept failed: %s", exc)
+
     return BulkProposalActionResponse(
         total=len(proposals),
         succeeded=len(results),
