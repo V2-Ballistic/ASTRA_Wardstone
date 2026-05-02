@@ -1,5 +1,6 @@
 'use client';
-import { useEffect, useState, use } from 'react';
+import { useEffect, useState } from 'react';
+import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { partsLibraryAPI, projectPartsAPI } from '@/lib/parts-api';
 import type {
@@ -9,13 +10,9 @@ import {
   PART_TYPE_COLORS, PART_TYPE_LABELS,
 } from '@/lib/parts-types';
 
-export default function ProjectPartsPage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
-  const { id } = use(params);
-  const projectId = parseInt(id, 10);
+export default function ProjectPartsPage() {
+  const params = useParams();
+  const projectId = Number(params?.id);
 
   const [parts, setParts] = useState<ProjectPartResponse[]>([]);
   const [loading, setLoading] = useState(true);

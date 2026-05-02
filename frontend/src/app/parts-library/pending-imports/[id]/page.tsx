@@ -1,7 +1,7 @@
 'use client';
-import { useEffect, useState, use } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { partsLibraryAPI } from '@/lib/parts-api';
 import type { ConfidenceLevel, PendingPartsImportResponse } from '@/lib/parts-types';
 import { PART_TYPE_LABELS } from '@/lib/parts-types';
@@ -12,14 +12,10 @@ const CONFIDENCE_COLORS: Record<ConfidenceLevel, string> = {
   low: 'bg-red-100 text-red-800',
 };
 
-export default function PendingImportDetailPage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
+export default function PendingImportDetailPage() {
   const router = useRouter();
-  const { id } = use(params);
-  const importId = parseInt(id, 10);
+  const params = useParams();
+  const importId = Number(params?.id);
 
   const [imp, setImp] = useState<PendingPartsImportResponse | null>(null);
   const [loading, setLoading] = useState(true);

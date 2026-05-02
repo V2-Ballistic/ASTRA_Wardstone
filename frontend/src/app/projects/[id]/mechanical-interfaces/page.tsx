@@ -1,5 +1,6 @@
 'use client';
-import { useEffect, useState, use } from 'react';
+import { useEffect, useState } from 'react';
+import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import {
   mechanicalJointsAPI, projectPartsAPI,
@@ -10,13 +11,9 @@ import type {
 } from '@/lib/parts-types';
 import { JOINT_STATUS_COLORS, JOINT_TYPE_LABELS } from '@/lib/parts-types';
 
-export default function MechanicalInterfacesPage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
-  const { id } = use(params);
-  const projectId = parseInt(id, 10);
+export default function MechanicalInterfacesPage() {
+  const params = useParams();
+  const projectId = Number(params?.id);
 
   const [joints, setJoints] = useState<MechanicalJointResponse[]>([]);
   const [projectParts, setProjectParts] = useState<ProjectPartResponse[]>([]);

@@ -1,6 +1,6 @@
 'use client';
 import Link from 'next/link';
-import { use } from 'react';
+import { useParams } from 'next/navigation';
 
 /**
  * ASTRA-SPEC-PARTS-001 §5.6 — System Architecture tab.
@@ -10,12 +10,9 @@ import { use } from 'react';
  * PARTS_BUILD_LOG.md. This page exists so the new sidebar nav entry
  * resolves and points users to the existing Systems and Unit views.
  */
-export default function SystemArchitecturePage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
-  const { id } = use(params);
+export default function SystemArchitecturePage() {
+  const params = useParams();
+  const id = params?.id as string;
   return (
     <div className="container mx-auto p-6">
       <h1 className="text-xl font-bold tracking-tight text-slate-200 mb-2">

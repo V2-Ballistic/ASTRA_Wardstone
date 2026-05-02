@@ -1,5 +1,6 @@
 'use client';
-import { useEffect, useState, use } from 'react';
+import { useEffect, useState } from 'react';
+import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { partsLibraryAPI } from '@/lib/parts-api';
 import type { LibraryPartResponse } from '@/lib/parts-types';
@@ -32,13 +33,9 @@ function FieldRow({ label, value, unit }: FieldRowProps) {
   );
 }
 
-export default function PartDetailPage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
-  const { id } = use(params);
-  const partId = parseInt(id, 10);
+export default function PartDetailPage() {
+  const params = useParams();
+  const partId = Number(params?.id);
   const [part, setPart] = useState<LibraryPartResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
