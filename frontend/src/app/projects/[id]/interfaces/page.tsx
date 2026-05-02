@@ -554,6 +554,26 @@ export default function InterfacesPage() {
         </div>
       </div>
 
+      {/* ASTRA-SPEC-PARTS-001 §5.4 — info banner pointing users to the
+          new System Architecture tab where Systems and Unit management
+          is also available. */}
+      <div
+        className="mb-4 flex items-start gap-2 rounded-xl border border-yellow-500/30 bg-yellow-500/10 px-4 py-3"
+        role="status"
+      >
+        <span className="text-yellow-300 text-sm">⚠</span>
+        <div className="text-xs text-yellow-200">
+          Systems and Unit management is now also available in{' '}
+          <a
+            href={`/projects/${projectId}/system-architecture`}
+            className="underline font-medium hover:text-yellow-100"
+          >
+            System Architecture
+          </a>
+          .
+        </div>
+      </div>
+
       {/* F-089: surface fetch errors instead of going silently blank. */}
       {fetchError && (
         <div

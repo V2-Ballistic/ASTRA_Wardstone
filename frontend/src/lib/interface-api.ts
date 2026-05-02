@@ -193,8 +193,8 @@ export const interfaceAPI = {
   createHarness: (data: Partial<WireHarness>) =>
     api.post<WireHarness>(`${BASE}/harnesses`, data),
 
-  getHarness: (id: number) =>
-    api.get<WireHarnessDetail>(`${BASE}/harnesses/${id}`),
+  getHarness: (id: number, config?: { signal?: AbortSignal }) =>
+    api.get<WireHarnessDetail>(`${BASE}/harnesses/${id}`, config),
 
   updateHarness: (id: number, data: Partial<WireHarness>) =>
     api.patch<WireHarness>(`${BASE}/harnesses/${id}`, data),
@@ -262,8 +262,11 @@ export const interfaceAPI = {
   createReqLink: (data: Partial<InterfaceRequirementLink>) =>
     api.post<InterfaceRequirementLink>(`${BASE}/req-links`, data),
 
-  listReqLinks: (params: { entity_type?: string; entity_id?: number; requirement_id?: number }) =>
-    api.get<InterfaceRequirementLink[]>(`${BASE}/req-links`, { params }),
+  listReqLinks: (
+    params: { entity_type?: string; entity_id?: number; requirement_id?: number },
+    config?: { signal?: AbortSignal },
+  ) =>
+    api.get<InterfaceRequirementLink[]>(`${BASE}/req-links`, { params, ...(config || {}) }),
 
   // F-086: project-wide bulk req-links — replaces the per-requirement
   // batched-with-delay pattern in /interfaces/auto-requirements/page.tsx.

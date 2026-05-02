@@ -19,7 +19,7 @@ import {
   ChevronDown, ChevronRight, LogOut, Shield, FolderOpen,
   Sparkles, Search, Zap, CheckSquare, FileBarChart, Upload,
   Users, Home, ChevronLeft, Loader2, Cable, Package, RefreshCw,
-  ShieldCheck,
+  ShieldCheck, Boxes, Wrench, CircuitBoard,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useAuth } from '@/lib/auth';
@@ -61,6 +61,8 @@ const GLOBAL_NAV: NavItem[] = [
   { href: '/', label: 'Projects', icon: Home },
   // Phase 3 — INTF-002: global supplier catalog landing.
   { href: '/catalog', label: 'Catalog', icon: Package },
+  // ASTRA-SPEC-PARTS-001: global cross-project parts library landing.
+  { href: '/parts-library', label: 'Parts Library', icon: Boxes },
 ];
 
 function getProjectNav(projectId: number): NavGroup[] {
@@ -73,7 +75,13 @@ function getProjectNav(projectId: number): NavGroup[] {
         { href: `${p}/requirements`, label: 'Requirements', icon: FileText, countKey: 'requirements' },
         { href: `${p}/traceability`, label: 'Traceability', icon: Network },
         { href: `${p}/verification`, label: 'Verification', icon: CheckSquare },
-        { href: `${p}/interfaces`, label: 'Interfaces', icon: Cable },
+        // ASTRA-SPEC-PARTS-001 §5.4: nav restructure. Order matters.
+        { href: `${p}/system-architecture`, label: 'System Architecture', icon: CircuitBoard },
+        { href: `${p}/parts`, label: 'Parts', icon: Boxes },
+        // Label changed to ELECTRICAL INTERFACES; route unchanged for
+        // backward compatibility with existing bookmarks / API contracts.
+        { href: `${p}/interfaces`, label: 'Electrical Interfaces', icon: Cable },
+        { href: `${p}/mechanical-interfaces`, label: 'Mechanical Interfaces', icon: Wrench },
       ],
     },
     {

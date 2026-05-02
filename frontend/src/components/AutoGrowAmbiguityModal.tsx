@@ -340,7 +340,7 @@ export function AutoGrowAmbiguityModal({ state, onResolve, onCancel }: Ambiguity
                      'Not available — both connectors are already on other harnesses.')
               }
               disabled={!newHarnessAllowed}
-              greyedReason={!newHarnessAllowed ? current.new_harness_disallowed_reason : undefined}
+              greyedReason={!newHarnessAllowed ? (current.new_harness_disallowed_reason ?? undefined) : undefined}
             />
             {/* Name input shown only when new_harness is picked + allowed */}
             {picked === 'new_harness' && newHarnessAllowed && (

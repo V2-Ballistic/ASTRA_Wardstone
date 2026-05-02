@@ -5,7 +5,12 @@
  *
  * NOTE: You need to install dev deps first:
  *   npm i -D jest ts-jest @types/jest @testing-library/react @testing-library/jest-dom
+ *
+ * @ts-nocheck — Jest is not installed yet, so the `import type { Config }
+ * from "jest"` reference will fail typecheck until dev deps are added.
+ * Skip type-checking this file so it doesn't break `next build`.
  */
+// @ts-nocheck
 
 import type { Config } from "jest";
 
