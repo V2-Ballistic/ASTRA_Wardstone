@@ -11,8 +11,8 @@
 
 | Phase | Status | Commit | Alembic | Tests delta | Build | Notes |
 |---|---|---|---|---|---|---|
-| 1 — Models, migration, schemas | in-progress | | | | — | |
-| 2 — Services, routers, tests | pending | | | | — | |
+| 1 — Models, migration, schemas | ✅ complete | 0a92942 | 0026 → 0027 | 0 (319 → 319) | — | 13 enums, 9 tables, FK RESTRICT on lib FKs |
+| 2 — Services, routers, tests | ✅ complete | (pending) | — | +51 (319 → 370) | — | WPN, STEP parser, templates, 3 routers, 51 tests |
 | 3 — Frontend | pending | | — | — | | |
 | 4 — Assembly parser, 3D, integration | pending | | — | | | |
 

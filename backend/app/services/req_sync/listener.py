@@ -100,6 +100,12 @@ def _watched_models() -> list[Tuple[type, SourceEntityType]]:
         pairs.append((CatalogPart, SourceEntityType.CATALOG_PART))
     except ImportError:  # pragma: no cover
         pass
+    # MechanicalJoint — Parts module (ASTRA-SPEC-PARTS-001)
+    try:
+        from app.models.parts_library import MechanicalJoint
+        pairs.append((MechanicalJoint, SourceEntityType.MECHANICAL_JOINT))
+    except ImportError:  # pragma: no cover
+        pass
     return pairs
 
 
