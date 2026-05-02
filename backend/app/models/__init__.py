@@ -42,6 +42,17 @@ from app.models.req_sync import (
 )
 from app.models.coverage_exception import CoverageException
 
+# ── Parts Library & Mechanical Joints (ASTRA-SPEC-PARTS-001) ──
+from app.models.document import Document
+from app.models.parts_library import (
+    PartType, PartStatus, MaterialClass, ThreadStandard, HeadType,
+    DriveType, LockingFeature, QualificationStatus, PendingPartsStatus,
+    ConfidenceLevel, JointType, JointStatus, AssemblyParseJobStatus,
+    WPNSequence, LibraryPart, PendingPartsImport,
+    ProjectPart, SystemPartAssignment,
+    MechanicalJointSequence, AssemblyParseJob, MechanicalJoint,
+)
+
 # ══════════════════════════════════════
 #  Enums
 # ══════════════════════════════════════
