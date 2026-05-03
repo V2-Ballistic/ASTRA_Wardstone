@@ -774,7 +774,7 @@ function ExtractedReqCard({
               {req.source_fragment && (
                 <div>
                   <span className="text-[9px] font-bold uppercase text-slate-500">Source</span>
-                  <p className="text-[10px] italic text-slate-500">"{req.source_fragment}"</p>
+                  <p className="text-[10px] italic text-slate-500">&quot;{req.source_fragment}&quot;</p>
                 </div>
               )}
               {req.notes && (

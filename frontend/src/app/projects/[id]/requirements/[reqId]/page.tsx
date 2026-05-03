@@ -309,7 +309,7 @@ function AIQualityTab({ req, projectId }: { req: any; projectId: number }) {
 
       {!deepQuality && !loading && (
         <div className="py-8 text-center text-xs text-slate-500">
-          Click "Run Analysis" to check this requirement against NASA Appendix C guidelines
+          Click &quot;Run Analysis&quot; to check this requirement against NASA Appendix C guidelines
         </div>
       )}
     </div>
@@ -704,7 +704,7 @@ export default function RequirementDetailPage() {
               )}
 
               {/* Traces */}
-              {activeTab === 'traces' && <TracesTab req={req} children={children} />}
+              {activeTab === 'traces' && <TracesTab req={req}>{children}</TracesTab>}
 
               {/* Impact */}
               {activeTab === 'impact' && <ImpactTab req={req} />}

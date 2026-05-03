@@ -705,7 +705,7 @@ function HarnessEndpointsPanel({
       <div className="rounded-xl border border-astra-border bg-astra-surface py-10 text-center">
         <Cable className="h-8 w-8 text-slate-600 mx-auto mb-2" />
         <p className="text-sm text-slate-400">
-          No endpoints recorded. This shouldn't happen for a migrated harness —
+          No endpoints recorded. This shouldn&apos;t happen for a migrated harness —
           check that the Phase 1 migration ran successfully.
         </p>
       </div>
@@ -1885,7 +1885,7 @@ export default function HarnessDetailPage() {
             <Cable className="mx-auto h-10 w-10 text-slate-600 mb-3" />
             <p className="text-sm text-slate-400 mb-1">No wires yet.</p>
             <p className="text-[11px] text-slate-500">
-              Click "Auto-Wire" to create wires by matching signal names between the two connectors.
+              Click &quot;Auto-Wire&quot; to create wires by matching signal names between the two connectors.
             </p>
           </div>
         ) : (

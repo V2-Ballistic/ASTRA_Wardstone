@@ -406,7 +406,7 @@ export default function TraceabilityPage() {
               <Sparkles className="mx-auto mb-3 h-8 w-8 text-slate-600" />
               <h3 className="text-sm font-semibold text-slate-300 mb-1">No AI Suggestions</h3>
               <p className="text-xs text-slate-500">
-                AI semantic analysis hasn't found any missing trace links, or the embedding provider isn't configured.
+                AI semantic analysis hasn&apos;t found any missing trace links, or the embedding provider isn&apos;t configured.
               </p>
             </div>
           ) : (

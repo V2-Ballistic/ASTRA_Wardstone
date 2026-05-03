@@ -188,14 +188,14 @@ export default function ProjectSettingsPage() {
                     </span>
                   </div>
                   <p className="text-[10px] text-slate-500">
-                    The "Auto Requirements" item appears in the sidebar under AI Tools.
-                    Requirements are created with status "pending_review".
+                    The &quot;Auto Requirements&quot; item appears in the sidebar under AI Tools.
+                    Requirements are created with status &quot;pending_review&quot;.
                   </p>
                 </div>
               ) : (
                 <div className="space-y-1.5">
                   <p className="text-[12px] text-slate-400 leading-relaxed">
-                    When disabled, auto-generated requirements are created directly in "draft" status.
+                    When disabled, auto-generated requirements are created directly in &quot;draft&quot; status.
                     No review step is needed — requirements immediately appear in the main requirements list.
                     Trace links are auto-created at generation time.
                   </p>
@@ -206,8 +206,8 @@ export default function ProjectSettingsPage() {
                     </span>
                   </div>
                   <p className="text-[10px] text-slate-500">
-                    The "Auto Requirements" sidebar item is hidden.
-                    Requirements are created with status "draft" and trace links are auto-created.
+                    The &quot;Auto Requirements&quot; sidebar item is hidden.
+                    Requirements are created with status &quot;draft&quot; and trace links are auto-created.
                   </p>
                 </div>
               )}

@@ -1292,7 +1292,7 @@ export default function ConnectorDetailPage() {
               </p>
               {pinCount === 0 && connector.total_contacts > 0 && (
                 <p className="text-[11px] text-slate-500">
-                  Click "Auto-Generate Pins" to create {connector.total_contacts} spare pin slots, or "Add Pins" to define them manually.
+                  Click &quot;Auto-Generate Pins&quot; to create {connector.total_contacts} spare pin slots, or &quot;Add Pins&quot; to define them manually.
                 </p>
               )}
             </div>
