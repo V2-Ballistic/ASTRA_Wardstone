@@ -46,6 +46,34 @@ These findings are real but **out of scope per Phase 6 prohibitions**. Surfacing
 - **Symptom:** running `npm run lint` falls into the "How would you like to configure ESLint?" interactive prompt because no `.eslintrc.*` exists.
 - **Why not fixed:** out of scope ("install lint config" is more than a UI fix).
 
+---
+
+## Cleanup Sweep — Round 2 (2026-05-03)
+
+### Track 1 — Escalations resolved
+
+| Escalation | Resolution |
+|---|---|
+| E-1 `/auth/providers` 404 | **Backend follow-up.** No `/api/v1/auth/providers` route exists (verified via `grep -rn '@router' backend/app/routers/auth.py` — only `/register`, `/login`, `/me`, `/logout`, `/refresh`). The provider registry exists at `backend/app/services/auth_providers/__init__.py` (local, saml, oidc, piv) but is not exposed. Frontend caller (`src/app/login/page.tsx:54`) is correct; backend is missing the endpoint. **Logged in "Backend follow-ups" below.** Frontend caller untouched (login page is auth-related, prohibited per Phase 6). |
+| E-2 harness rate-limit cascade | **Fixed in `backend/tests/ui_sweep.py`:** (a) per-route delay raised from 0.3s → 1.5s (overridable via `ROUTE_DELAY_S` env); (b) on 429 response, additional 15s cooldown before next route; (c) when an authed route bounces to /login, sleep 30s + reseed token + retry once; (d) noise filter properly catches bare-text `Failed to load resource: net::ERR_FAILED`/`...404` lines (the rate-limiter cascade signature). Result: **0 bounces, 0 rate-limit hits across all 30 admin routes** (vs 1/30 admin pass before, 19/30 after first attempt). `ui_curl_sweep.sh` also paced at 250ms (`DELAY_MS` env). |
+| E-3 ESLint unconfigured | **Fixed.** Added `frontend/.eslintrc.json` extending `next/core-web-vitals`, ignoring config-only files (`jest.config.ts`, `next.config.js`, `postcss.config.js`, `tailwind.config.js`). **Baseline: 33 errors, 5 warnings** (32 × `react/no-unescaped-entities`, 1 × `react/no-children-prop`, 5 × `react-hooks/exhaustive-deps`). Cleanup deferred to Track 3 per spec. |
+
+### Backend follow-ups (out of scope this sweep)
+
+1. **`GET /api/v1/auth/providers`** — caller: `frontend/src/app/login/page.tsx:54`.
+   Expected response shape: `{ "providers": ["local", ...], "mfa_required": boolean }`.
+   Frontend behaviour on call: `setProviders(res.data.providers || ['local'])`, `setMfaRequired(res.data.mfa_required || false)`, and if `>1` provider, switches login UI to provider-picker step. The 404 is currently swallowed via `.catch(() => {})` so it's harmless to users today, but visible in DevTools and conceptually broken (registered SAML/OIDC/PIV providers have no UI surface).
+   **Suggested implementation:** add a route to `backend/app/routers/auth.py`:
+   ```python
+   @router.get("/providers")
+   def list_providers():
+       from app.services.auth_providers import _REGISTRY
+       return {"providers": sorted(_REGISTRY.keys()), "mfa_required": settings.MFA_REQUIRED}
+   ```
+   Touches a single file, ~5 lines. Estimated 15 minutes including a unit test.
+
+
+
 
 
 ---

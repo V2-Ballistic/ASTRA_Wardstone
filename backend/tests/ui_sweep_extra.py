@@ -35,7 +35,10 @@ async def run_one(label: str, path: str):
         sink = {"console": [], "network": []}
         await attach_listeners(page, sink)
         await login(page, ADMIN_USER, ADMIN_PASSWORD)
-        res = await probe_route(ctx, label, path, authed=True, page=page, sink=sink)
+        res = await probe_route(
+            ctx, label, path, authed=True, page=page, sink=sink,
+            reauth_username=ADMIN_USER, reauth_password=ADMIN_PASSWORD,
+        )
         print(json.dumps({"phase": "admin", **res}), flush=True)
         await browser.close()
 

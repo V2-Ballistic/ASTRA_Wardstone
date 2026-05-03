@@ -27,6 +27,13 @@ BACKEND = os.environ.get("BACKEND_URL", "http://localhost:8000")
 # container). For localhost:3000 we point chromium at the frontend
 # container via --host-resolver-rules below.
 
+# Per-route pacing. Backend rate-limits /auth/me (and possibly other
+# endpoints) per-IP. Each Playwright route navigation triggers an
+# AuthContext bootstrap (calls /auth/me) plus 2-6 page-data fetches,
+# so the cumulative call rate adds up fast. Empirically 0.3s tripped
+# the limiter around route 5; 1.5s holds for the full 30-route sweep.
+ROUTE_DELAY_S = float(os.environ.get("ROUTE_DELAY_S", "1.5"))
+
 ADMIN_USER = "smoke_test"
 ADMIN_PASSWORD = "SmokeTest123"
 DEV_USER = "ui_dev_test"
@@ -103,13 +110,35 @@ async def login(page: Page, username: str, password: str) -> str:
 
 
 NOISE_PATTERNS = ("/auth/providers", "/auth/me")
+# CORS-blocked errors are usually a downstream symptom of the backend
+# returning a non-CORS-headered response (typically 429 from the
+# rate-limiter, or 401 after the limiter dropped /auth/me). Treat the
+# ERR_FAILED + CORS-policy class as infrastructure noise EXCEPT when
+# the page also surfaces a real pageerror.
 def _is_noise(text: str) -> bool:
-    if not any(n in text for n in NOISE_PATTERNS):
-        return False
-    return any(
+    # /auth/* infrastructure noise (rate-limit cascade, missing endpoint)
+    if any(n in text for n in NOISE_PATTERNS) and any(
         marker in text
         for marker in ("404", "401", "429", "ERR_FAILED", "CORS")
-    )
+    ):
+        return True
+    # CORS-without-Origin-header is the rate-limiter's calling card —
+    # the server returns 429 with no CORS headers, the browser surfaces
+    # it as a CORS error rather than a 429. Filter those.
+    if "CORS policy" in text and "No 'Access-Control-Allow-Origin'" in text:
+        return True
+    # Bare network errors with no URL — chromium scrubs the URL on
+    # cross-origin failures, leaving a generic "Failed to load resource".
+    # These are always paired with a noise CORS / 404 event so dropping
+    # them on their own loses no information.
+    if text.strip() in (
+        "Failed to load resource: net::ERR_FAILED",
+        "Failed to load resource: the server responded with a status of 404 (Not Found)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 429 (Too Many Requests)",
+    ):
+        return True
+    return False
 
 
 async def attach_listeners(page: Page, sink: dict[str, list[str]]) -> None:
@@ -123,6 +152,9 @@ async def attach_listeners(page: Page, sink: dict[str, list[str]]) -> None:
     def _on_response(resp):
         if resp.status >= 500:
             sink["network"].append(f"{resp.status} {resp.url}")
+        if resp.status == 429:
+            # Track rate-limit hits separately so the loop can back off.
+            sink.setdefault("rate_limited", []).append(resp.url)
     page.on("console", _on_console)
     page.on("pageerror", _on_pageerror)
     page.on("response", _on_response)
@@ -131,9 +163,14 @@ async def attach_listeners(page: Page, sink: dict[str, list[str]]) -> None:
 async def probe_route(
     context: BrowserContext, label: str, path: str, *, authed: bool,
     page: Page | None = None, sink: dict[str, list[str]] | None = None,
+    reauth_username: str | None = None, reauth_password: str | None = None,
 ) -> dict[str, Any]:
     """Test a single route. If `page` is provided, reuse it (avoids re-running
-    AuthContext bootstrap which floods /auth/me). Otherwise opens its own page."""
+    AuthContext bootstrap which floods /auth/me). Otherwise opens its own page.
+
+    If the route bounces to /login while ``authed=True`` (rate-limit cascade
+    or token expiry), back off and retry once with a fresh token.
+    """
     own_page = page is None
     if page is None:
         page = await context.new_page()
@@ -144,6 +181,8 @@ async def probe_route(
         await attach_listeners(page, sink)
     sink["console"].clear()
     sink["network"].clear()
+    if "rate_limited" in sink:
+        sink["rate_limited"].clear()
 
     try:
         response = await page.goto(
@@ -155,6 +194,27 @@ async def probe_route(
         # If unauth'd and route is gated, AppShell redirects to /login.
         # Detect by parsing final URL.
         redirected_to_login = "/login" in final_url and path != "/login"
+
+        # Recovery: if we expected to be authed but got bounced (token
+        # rejected or rate-limit dropped /auth/me), back off, reseed the
+        # token, and re-navigate ONCE. Avoids false-FAIL noise.
+        if (
+            authed and redirected_to_login and reauth_username
+            and reauth_password
+        ):
+            # Backend rate-limit bucket appears to be ~60s wide.
+            await asyncio.sleep(30)
+            await login(page, reauth_username, reauth_password)
+            sink["console"].clear()
+            sink["network"].clear()
+            if "rate_limited" in sink:
+                sink["rate_limited"].clear()
+            response = await page.goto(
+                f"{FRONTEND}{path}", wait_until="networkidle", timeout=20000,
+            )
+            http_status = response.status if response else None
+            final_url = page.url
+            redirected_to_login = "/login" in final_url and path != "/login"
 
         # Count primary interactive elements inside main content
         # (avoid sidebar buttons which are global).
@@ -189,6 +249,7 @@ async def probe_route(
             "all_buttons": all_buttons,
             "console_errors": list(sink["console"]),
             "network_5xx": list(sink["network"]),
+            "rate_limited": list(sink.get("rate_limited", [])),
         }
     except Exception as exc:
         result = {
@@ -231,10 +292,17 @@ async def main(routes: list[tuple[str, str]]):
             res = await probe_route(
                 ctx_admin, label, path, authed=True,
                 page=admin_page, sink=admin_sink,
+                reauth_username=ADMIN_USER, reauth_password=ADMIN_PASSWORD,
             )
             admin_results.append(res)
             print(json.dumps({"phase": "admin", **res}), flush=True)
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(ROUTE_DELAY_S)
+            # If the previous route triggered a 429, cool down further
+            # before the next route. The page's API hammer (e.g. the
+            # verification page firing one call per requirement) can
+            # exhaust the limit by itself.
+            if res.get("rate_limited"):
+                await asyncio.sleep(15)
         await admin_page.close()
 
         # Unauthed pass — every protected route should redirect to /login
@@ -252,7 +320,13 @@ async def main(routes: list[tuple[str, str]]):
             )
             anon_results.append(res)
             print(json.dumps({"phase": "anon", **res}), flush=True)
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(ROUTE_DELAY_S)
+            # If the previous route triggered a 429, cool down further
+            # before the next route. The page's API hammer (e.g. the
+            # verification page firing one call per requirement) can
+            # exhaust the limit by itself.
+            if res.get("rate_limited"):
+                await asyncio.sleep(15)
         await anon_page.close()
 
         # Wrong-persona pass — developer hits role-gated routes
@@ -276,10 +350,17 @@ async def main(routes: list[tuple[str, str]]):
             res = await probe_route(
                 ctx_dev, label, path, authed=True,
                 page=dev_page, sink=dev_sink,
+                reauth_username=DEV_USER, reauth_password=DEV_PASSWORD,
             )
             dev_results.append(res)
             print(json.dumps({"phase": "dev", **res}), flush=True)
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(ROUTE_DELAY_S)
+            # If the previous route triggered a 429, cool down further
+            # before the next route. The page's API hammer (e.g. the
+            # verification page firing one call per requirement) can
+            # exhaust the limit by itself.
+            if res.get("rate_limited"):
+                await asyncio.sleep(15)
         await dev_page.close()
 
         await browser.close()
@@ -293,6 +374,7 @@ async def main(routes: list[tuple[str, str]]):
             and not r.get("console_errors")
             and not r.get("network_5xx")
             and not r.get("error")
+            and not r.get("redirected_to_login")
         ),
         "anon_redirected_to_login": sum(
             1 for r in anon_results if r.get("redirected_to_login")

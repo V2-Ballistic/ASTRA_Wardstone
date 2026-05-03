@@ -41,11 +41,22 @@ ROUTES=(
 )
 
 BASE="${BASE:-http://localhost:3000}"
+# Pacing between requests — the curl path itself is unauthed so it
+# doesn't hit /auth/me, but pacing protects every shared backend
+# resource (Next dev SSR worker, any incidental /api callouts) from
+# burst load. 250 ms is the floor per UI sweep spec.
+DELAY_MS="${DELAY_MS:-250}"
 PASS=0
 FAIL=0
 FAILED_ROUTES=()
+first=1
 
 for route in "${ROUTES[@]}"; do
+  if [[ $first -eq 1 ]]; then
+    first=0
+  else
+    sleep "$(awk "BEGIN { print ${DELAY_MS}/1000 }")"
+  fi
   url="${BASE}${route}"
   status=$(curl -s -o /tmp/route_body -w "%{http_code}" "$url")
   if [[ "$status" == "200" ]]; then
