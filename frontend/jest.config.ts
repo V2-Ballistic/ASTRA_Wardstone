@@ -3,14 +3,13 @@
  * ===========================
  * File: frontend/jest.config.ts
  *
- * NOTE: You need to install dev deps first:
- *   npm i -D jest ts-jest @types/jest @testing-library/react @testing-library/jest-dom
- *
- * @ts-nocheck — Jest is not installed yet, so the `import type { Config }
- * from "jest"` reference will fail typecheck until dev deps are added.
- * Skip type-checking this file so it doesn't break `next build`.
+ * Jest dev deps are not installed in the standard image. tsconfig.json
+ * excludes this file from the project typecheck so the missing
+ * `import type { Config } from "jest"` reference doesn't break
+ * `npx tsc --noEmit` or `next build`. Install `jest`, `ts-jest`,
+ * `@types/jest`, `@testing-library/react`, `@testing-library/jest-dom`
+ * to enable jest test runs locally.
  */
-// @ts-nocheck
 
 import type { Config } from "jest";
 
