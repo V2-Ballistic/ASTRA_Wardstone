@@ -349,9 +349,15 @@ def verify_signature(db: Session, signature_id: int) -> dict:
 def get_signatures(
     db: Session, entity_type: str, entity_id: int,
 ) -> list[dict]:
-    """List all electronic signatures for an entity."""
-    sigs = (
-        db.query(ElectronicSignature)
+    """List all electronic signatures for an entity.
+
+    F-212: pre-fix this loop issued one User SELECT per signature
+    (N+1). Now a single LEFT JOIN materialises (signature, user)
+    pairs in one round-trip. Same shape pattern as F-042 / F-043.
+    """
+    rows = (
+        db.query(ElectronicSignature, User)
+        .outerjoin(User, User.id == ElectronicSignature.user_id)
         .filter(
             ElectronicSignature.entity_type == entity_type,
             ElectronicSignature.entity_id == entity_id,
@@ -360,8 +366,7 @@ def get_signatures(
         .all()
     )
     results = []
-    for s in sigs:
-        user = db.query(User).filter(User.id == s.user_id).first()
+    for s, user in rows:
         results.append({
             "id": s.id,
             "user_id": s.user_id,

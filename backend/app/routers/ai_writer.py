@@ -21,9 +21,17 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.dependencies.project_access import _check_membership
 from app.models import User
 from app.services.auth import get_current_user
 from app.services.ai.llm_client import is_ai_available
+
+
+def _gate_project(db, data, current_user):
+    """F-201: enforce project membership when the request scopes itself to a project."""
+    pid = getattr(data, "project_id", None)
+    if pid is not None:
+        _check_membership(db, pid, current_user)
 
 from app.services.ai.requirement_writer import (
     convert_prose_to_requirements,
@@ -68,6 +76,7 @@ def api_convert_prose(
     Convert free-form stakeholder text (meeting notes, emails, specifications)
     into structured requirements with SHALL statements.
     """
+    _gate_project(db, data, current_user)
     result = convert_prose_to_requirements(
         prose=data.prose,
         project_context=data.project_context,
@@ -90,11 +99,13 @@ def api_convert_prose(
 @router.post("/improve", response_model=ImproveResponse)
 def api_improve(
     data: ImproveRequest,
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
     Generate improved versions of a requirement that fix identified quality issues.
     """
+    _gate_project(db, data, current_user)
     return improve_requirement(
         statement=data.statement,
         title=data.title,
@@ -111,12 +122,14 @@ def api_improve(
 @router.post("/decompose", response_model=DecomposeResponse)
 def api_decompose(
     data: DecomposeRequest,
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
     Decompose a high-level requirement into sub-requirements at the next level.
     E.g., L1 system requirement → multiple L2 subsystem requirements.
     """
+    _gate_project(db, data, current_user)
     return decompose_requirement(
         statement=data.statement,
         title=data.title,
@@ -134,11 +147,13 @@ def api_decompose(
 @router.post("/generate-verification", response_model=VerificationCriteria)
 def api_generate_verification(
     data: GenerateVerificationRequest,
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
     Generate detailed pass/fail criteria and verification steps for a requirement.
     """
+    _gate_project(db, data, current_user)
     return generate_verification_criteria(
         statement=data.statement,
         title=data.title,
@@ -154,11 +169,13 @@ def api_generate_verification(
 @router.post("/generate-rationale", response_model=GenerateRationaleResponse)
 def api_generate_rationale(
     data: GenerateRationaleRequest,
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
     Generate a professional rationale for a requirement that lacks one.
     """
+    _gate_project(db, data, current_user)
     return generate_rationale(
         statement=data.statement,
         title=data.title,
@@ -174,11 +191,13 @@ def api_generate_rationale(
 @router.post("/summarize-changes", response_model=SummarizeChangesResponse)
 def api_summarize_changes(
     data: SummarizeChangesRequest,
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
     Generate a professional change summary for a CCB, PRR, CDR, or other review board.
     """
+    _gate_project(db, data, current_user)
     return summarize_changes(
         changes=data.changes,
         project_name=data.project_name,

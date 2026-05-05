@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from app.database import get_db
+from app.dependencies.project_access import _check_membership
 from app.models import Requirement, Project, User, RequirementHistory
 from app.schemas import RequirementResponse
 from app.services.auth import get_current_user
@@ -274,6 +275,10 @@ async def preview_import(
     if not project:
         raise HTTPException(404, "Project not found")
 
+    # F-211: enforce membership so a user with `requirements.create`
+    # cannot preview-import into a project they were never added to.
+    _check_membership(db, project_id, current_user)
+
     # Read file
     content = await file.read()
 
@@ -361,6 +366,10 @@ def confirm_import(
     if not project:
         raise HTTPException(404, "Project not found")
 
+    # F-211: enforce membership before writing N requirements + N
+    # history rows + an audit row attributed to current_user.
+    _check_membership(db, data.project_id, current_user)
+
     # Build parent lookup
     existing = db.query(Requirement).filter(
         Requirement.project_id == data.project_id,
@@ -389,12 +398,18 @@ def confirm_import(
         # objects in the session that could taint subsequent rows.
         sp = db.begin_nested()
         try:
-            # Generate req_id
-            count = db.query(func.count(Requirement.id)).filter(
-                Requirement.project_id == data.project_id,
-                Requirement.req_type == row.req_type,
-            ).scalar()
-            req_id = generate_requirement_id(project.code, row.req_type, count + 1)
+            # F-203: next_human_id replaces the race-prone `count + 1` —
+            # in-batch IDs are now contiguous because each loop iteration
+            # increments the sequence row inside the same transaction.
+            from app.services.id_sequence import next_human_id
+            _PREFIX = generate_requirement_id(project.code, row.req_type, 1).rsplit("-", 1)[0]
+            req_id = next_human_id(
+                db,
+                project_id=data.project_id,
+                prefix=_PREFIX,
+                source_model=Requirement,
+                id_field="req_id",
+            )
 
             # Resolve parent
             parent_id = None

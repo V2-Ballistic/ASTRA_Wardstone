@@ -397,10 +397,10 @@ export default function NewRequirementPage() {
           <div className="rounded-xl border border-astra-border bg-astra-surface p-5">
             <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">NASA Appendix C Tips</h3>
             <ul className="space-y-1.5 text-[10px] text-slate-400">
-              <li>• Use "shall" for mandatory requirements</li>
+              <li>• Use &quot;shall&quot; for mandatory requirements</li>
               <li>• Include measurable acceptance criteria</li>
               <li>• Avoid vague terms: flexible, adequate, user-friendly</li>
-              <li>• One requirement per "shall" statement</li>
+              <li>• One requirement per &quot;shall&quot; statement</li>
               <li>• No TBD/TBR values in final baselines</li>
             </ul>
           </div>

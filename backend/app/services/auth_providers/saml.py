@@ -14,12 +14,15 @@ Required env vars:
     SAML_KEY_FILE           — path to SP private key (PEM)
 """
 
+import logging
 import os
 from typing import Optional
 from sqlalchemy.orm import Session
 
 from app.models import User
 from app.services.auth_providers import AuthProviderBase, register_provider
+
+logger = logging.getLogger(__name__)
 
 
 def _get_saml_settings() -> dict:
@@ -153,10 +156,25 @@ class SAMLAuthProvider(AuthProviderBase):
         email = kwargs.get("email")
         if not email:
             return None
+        username = kwargs.get("username", email.split("@")[0])
+        # F-220: never honour an IdP-provided role on new-user
+        # provisioning. A misconfigured IdP that exposes the `role`
+        # attribute as user-controllable (some Azure AD self-service
+        # profile setups) would otherwise let an unprivileged user
+        # promote themselves to admin. New users always get
+        # "developer"; admins must elevate via /admin/users/{id}.
+        # Matches the F-015 posture for /auth/register.
+        idp_role = kwargs.get("role")
+        if idp_role and idp_role != "developer":
+            logger.warning(
+                "SAML IdP provided role=%r for new user %s; ignoring, "
+                "defaulting to developer",
+                idp_role, username,
+            )
         return self.find_or_create_user(
             db,
-            username=kwargs.get("username", email.split("@")[0]),
+            username=username,
             email=email,
             full_name=kwargs.get("full_name", email),
-            role=kwargs.get("role", "developer"),
+            role="developer",
         )

@@ -193,7 +193,9 @@ export type RequirementLevel = 'L1' | 'L2' | 'L3' | 'L4' | 'L5';
 
 export type RequirementStatus =
   | 'draft' | 'under_review' | 'approved' | 'baselined'
-  | 'implemented' | 'verified' | 'validated' | 'deferred' | 'deleted';
+  | 'implemented' | 'verified' | 'validated' | 'deferred' | 'deleted'
+  // Backend has two more values that the FE filters off this view:
+  | 'pending_review' | 'auto_generated';
 
 export type ArtifactType =
   | 'interview' | 'meeting' | 'decision' | 'standard'
@@ -218,6 +220,8 @@ export const STATUS_LABELS: Record<RequirementStatus, string> = {
   validated: 'Validated',
   deferred: 'Deferred',
   deleted: 'Deleted',
+  pending_review: 'Pending Review',
+  auto_generated: 'Auto-generated',
 };
 
 export const STATUS_COLORS: Record<RequirementStatus, { bg: string; text: string }> = {
@@ -230,6 +234,8 @@ export const STATUS_COLORS: Record<RequirementStatus, { bg: string; text: string
   validated: { bg: 'rgba(16,185,129,0.25)', text: '#34D399' },
   deferred: { bg: 'rgba(239,68,68,0.15)', text: '#EF4444' },
   deleted: { bg: 'rgba(100,116,139,0.15)', text: '#64748B' },
+  pending_review: { bg: 'rgba(139,92,246,0.10)', text: '#A78BFA' },
+  auto_generated: { bg: 'rgba(168,85,247,0.10)', text: '#A855F7' },
 };
 
 export const TYPE_PREFIXES: Record<RequirementType, string> = {

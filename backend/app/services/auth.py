@@ -1,3 +1,4 @@
+import logging
 import uuid
 from datetime import datetime, timedelta
 from typing import Optional
@@ -5,10 +6,13 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
+from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import get_db
 from app.models import User
+
+logger = logging.getLogger(__name__)
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
@@ -63,12 +67,20 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
             from app.models.auth_models import RevokedToken
             if db.query(RevokedToken).filter(RevokedToken.jti == jti).first():
                 raise credentials_exception
-        except (ImportError, Exception) as exc:
-            # Re-raise our own credentials_exception as-is; swallow only
-            # the table-missing case.
-            if isinstance(exc, HTTPException):
-                raise
-            # Otherwise the table is missing — log and fall through.
+        except ImportError:
+            # The model module isn't importable — fall through. Old test
+            # fixtures and bare-bones environments rely on this; the prod
+            # path always has the import available.
+            pass
+        except (ProgrammingError, OperationalError) as exc:
+            # F-206: only swallow specific DB-shape errors (table missing
+            # / connection issue) instead of the catch-all `except Exception`
+            # that previously masked legitimate SQL errors and let revoked
+            # tokens authenticate when the DB had transient trouble. Log
+            # the swallowed case so ops can see it.
+            logger.warning(
+                "Revocation table check failed, allowing token: %s", exc,
+            )
 
     user = db.query(User).filter(User.username == username).first()
     if user is None or not user.is_active:
@@ -88,5 +100,9 @@ def revoke_access_token_jti(db: Session, jti: str, exp: datetime,
     try:
         db.add(RevokedToken(jti=jti, exp=exp, user_id=user_id, reason=reason))
         db.commit()
-    except Exception:
-        db.rollback()  # already revoked — fine
+    except Exception as exc:
+        # F-221: rollback stays (UNIQUE collision == already-revoked is the
+        # legitimate case), but the silent swallow becomes a logged warning
+        # so DB connectivity / FK errors are still observable.
+        db.rollback()
+        logger.warning("revoke_access_token_jti rolled back: %s", exc)

@@ -39,19 +39,22 @@ _JSON = JSON().with_variant(JSONB(), "postgresql")
 # ══════════════════════════════════════════════════════════════
 
 class SourceEntityType(str, enum.Enum):
-    SYSTEM         = "system"
-    UNIT           = "unit"
-    CONNECTOR      = "connector"
-    PIN            = "pin"
-    INTERFACE      = "interface"
-    WIRE_HARNESS   = "wire_harness"
-    WIRE           = "wire"
-    BUS_DEFINITION = "bus_definition"
-    MESSAGE        = "message_definition"
-    MESSAGE_FIELD  = "message_field"
-    UNIT_ENV_SPEC  = "unit_env_spec"
-    CATALOG_PART   = "catalog_part"
-    REQUIREMENT    = "requirement"
+    SYSTEM           = "system"
+    UNIT             = "unit"
+    CONNECTOR        = "connector"
+    PIN              = "pin"
+    INTERFACE        = "interface"
+    WIRE_HARNESS     = "wire_harness"
+    WIRE             = "wire"
+    BUS_DEFINITION   = "bus_definition"
+    MESSAGE          = "message_definition"
+    MESSAGE_FIELD    = "message_field"
+    UNIT_ENV_SPEC    = "unit_env_spec"
+    CATALOG_PART     = "catalog_part"
+    REQUIREMENT      = "requirement"
+    # Parts module (ASTRA-SPEC-PARTS-001) — adds mechanical joints as a
+    # source entity for auto-generated mechanical interface requirements.
+    MECHANICAL_JOINT = "mechanical_joint"
 
 
 class SyncProposalType(str, enum.Enum):

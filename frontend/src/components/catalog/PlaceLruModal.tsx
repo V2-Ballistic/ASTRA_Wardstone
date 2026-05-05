@@ -639,7 +639,7 @@ function BrandNewTab({
           <div>
             <strong>Heads-up:</strong> The catalog part you create here is global —
             it will be visible to every project on this ASTRA instance. Use the
-            "From Catalog" tab if a similar part already exists.
+            &quot;From Catalog&quot; tab if a similar part already exists.
           </div>
         </div>
 

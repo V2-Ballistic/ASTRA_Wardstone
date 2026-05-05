@@ -518,7 +518,7 @@ export default function ProjectDashboard() {
             <Database className="mx-auto h-10 w-10 text-slate-600 mb-3" />
             <h3 className="text-sm font-bold text-slate-200 mb-1">No Requirements Yet</h3>
             <p className="text-xs text-slate-500 mb-4">
-              Seed sample data to explore ASTRA's features, or start adding requirements manually.
+              Seed sample data to explore ASTRA&apos;s features, or start adding requirements manually.
             </p>
             <button onClick={handleSeed} disabled={seeding}
               className="rounded-lg bg-blue-500 px-4 py-2 text-xs font-semibold text-white transition hover:bg-blue-600 disabled:opacity-50">

@@ -275,7 +275,7 @@ export default function QualityPanel({
                               </div>
                               <p className="text-xs text-slate-300">{issue.description}</p>
                               {issue.location && (
-                                <p className="mt-1 text-[10px] text-slate-500 italic">"{issue.location}"</p>
+                                <p className="mt-1 text-[10px] text-slate-500 italic">&quot;{issue.location}&quot;</p>
                               )}
                               {issue.suggestion && (
                                 <p className="mt-1 text-[10px] text-blue-400">Suggestion: {issue.suggestion}</p>

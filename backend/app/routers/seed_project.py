@@ -24,6 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.dependencies.project_access import _check_membership
 from app.models import (
     User, Project, Requirement, SourceArtifact, TraceLink,
     Verification, RequirementHistory, Baseline, BaselineRequirement,
@@ -482,6 +483,10 @@ def seed_project_data(
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(404, f"Project {project_id} not found")
+
+    # F-210: enforce membership so a non-member admin/PM can't flood
+    # somebody else's project with the 48-requirement seed firehose.
+    _check_membership(db, project_id, current_user)
 
     # Get the project owner (or first admin)
     owner = db.query(User).filter(User.id == project.owner_id).first()

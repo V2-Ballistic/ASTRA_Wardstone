@@ -39,17 +39,11 @@ class BaselineCreate(BaseModel):
 
 
 # ── Create  ← AUDITED ──
-
-def _resolve_project_for_baseline_create(request, db: Session) -> int:
-    """Resolver: pull project_id from the JSON body for POST /baselines/."""
-    # FastAPI consumes the body before deps in some configurations; we
-    # cannot reliably await request.json() here. Instead, rely on the
-    # in-handler `Project not found` check below — the project_member
-    # dep is invoked redundantly inside the handler via the
-    # project_member_required path. Until POST /baselines/ accepts
-    # project_id as a query parameter, the membership enforcement here
-    # uses an inline check (see handler body).
-    raise NotImplementedError
+# F-213: a stub _resolve_project_for_baseline_create that raised
+# NotImplementedError used to live here. It was never wired up — the
+# inline _check_membership call inside create_baseline (below) is the
+# working pattern. Removed to prevent future readers from "fixing" it
+# by passing the stub to entity_project_member_required.
 
 
 @router.post("/", status_code=201)

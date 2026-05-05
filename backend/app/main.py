@@ -85,6 +85,10 @@ for _mod, _attr in [
     ("app.routers.catalog", "router"),
     ("app.routers.req_sync", "router"),
     ("app.routers.coverage", "router"),
+    # Parts Library & Mechanical Joints (ASTRA-SPEC-PARTS-001)
+    ("app.routers.parts_library", "router"),
+    ("app.routers.project_parts", "router"),
+    ("app.routers.mechanical_joints", "router"),
 ]:
     try:
         _m = __import__(_mod, fromlist=[_attr])
