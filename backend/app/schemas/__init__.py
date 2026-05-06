@@ -123,6 +123,13 @@ class SourceArtifactCreate(BaseModel):
     source_date: Optional[datetime] = None
     participants: List[str] = Field(default_factory=list)
 
+class SourceArtifactUpdate(BaseModel):
+    title: Optional[str] = Field(None, max_length=500)
+    artifact_type: Optional[str] = None
+    description: Optional[str] = None
+    source_date: Optional[datetime] = None
+    participants: Optional[List[str]] = None
+
 class SourceArtifactResponse(BaseModel):
     id: int
     artifact_id: str

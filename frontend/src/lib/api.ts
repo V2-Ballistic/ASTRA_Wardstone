@@ -89,9 +89,41 @@ export const verificationsAPI = {
 
 // ── Source Artifacts ──
 export const artifactsAPI = {
-  list: (projectId: number) => api.get('/artifacts/', { params: { project_id: projectId } }),
+  list: (
+    projectId: number,
+    filters?: { artifact_type?: string; search?: string },
+  ) =>
+    api.get('/artifacts/', {
+      params: { project_id: projectId, ...(filters || {}) },
+    }),
+  listWithStats: (projectId: number) =>
+    api.get('/artifacts/stats', { params: { project_id: projectId } }),
+  get: (projectId: number, artifactId: number) =>
+    api.get(`/artifacts/${artifactId}`, { params: { project_id: projectId } }),
+  getRequirements: (projectId: number, artifactId: number) =>
+    api.get(`/artifacts/${artifactId}/requirements`, {
+      params: { project_id: projectId },
+    }),
   create: (projectId: number, data: any) =>
     api.post(`/artifacts/?project_id=${projectId}`, data),
+  update: (projectId: number, artifactId: number, data: any) =>
+    api.patch(`/artifacts/${artifactId}?project_id=${projectId}`, data),
+  delete: (projectId: number, artifactId: number) =>
+    api.delete(`/artifacts/${artifactId}?project_id=${projectId}`),
+  uploadFile: (projectId: number, artifactId: number, file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return api.post(
+      `/artifacts/${artifactId}/upload?project_id=${projectId}`,
+      formData,
+      { headers: { 'Content-Type': 'multipart/form-data' } },
+    );
+  },
+  downloadFile: (projectId: number, artifactId: number) =>
+    api.get(`/artifacts/${artifactId}/download`, {
+      params: { project_id: projectId },
+      responseType: 'blob',
+    }),
 };
 
 // ── Traceability ──

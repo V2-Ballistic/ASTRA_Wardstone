@@ -73,6 +73,7 @@ function getProjectNav(projectId: number): NavGroup[] {
       items: [
         { href: p, label: 'Dashboard', icon: LayoutDashboard },
         { href: `${p}/requirements`, label: 'Requirements', icon: FileText, countKey: 'requirements' },
+        { href: `${p}/artifacts`, label: 'Source Artifacts', icon: FolderOpen },
         { href: `${p}/traceability`, label: 'Traceability', icon: Network },
         { href: `${p}/verification`, label: 'Verification', icon: CheckSquare },
         // ASTRA-SPEC-PARTS-001 §5.4: nav restructure. Order matters.

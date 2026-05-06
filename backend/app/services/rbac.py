@@ -39,6 +39,9 @@ PERMISSION_MATRIX: dict[UserRole, set[str]] = {
         "interfaces.create",
         "interfaces.update",
         "interfaces.delete",
+        "artifacts.create",
+        "artifacts.update",
+        "artifacts.delete",
     },
     UserRole.PROJECT_MANAGER: {
         "requirements.create",
@@ -57,6 +60,9 @@ PERMISSION_MATRIX: dict[UserRole, set[str]] = {
         "interfaces.create",
         "interfaces.update",
         "interfaces.delete",
+        "artifacts.create",
+        "artifacts.update",
+        "artifacts.delete",
     },
     UserRole.REQUIREMENTS_ENGINEER: {
         "requirements.create",
@@ -64,6 +70,8 @@ PERMISSION_MATRIX: dict[UserRole, set[str]] = {
         "traceability.create",
         "traceability.delete",
         "reports.export",
+        "artifacts.create",
+        "artifacts.update",
     },
     UserRole.REVIEWER: {
         "requirements.approve",
