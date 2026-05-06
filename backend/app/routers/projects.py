@@ -9,8 +9,11 @@ Routers:
   artifacts_router     — /artifacts
 """
 
+import os
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -23,7 +26,8 @@ from app.models.project_member import ProjectMember
 from app.schemas import (
     ProjectCreate, ProjectResponse,
     TraceLinkCreate, TraceLinkResponse,
-    SourceArtifactCreate, SourceArtifactResponse,
+    SourceArtifactCreate, SourceArtifactResponse, SourceArtifactUpdate,
+    RequirementResponse,
 )
 from app.services.auth import get_current_user
 from app.services.audit_service import record_event
@@ -488,18 +492,134 @@ def get_coverage_stats(project_id: int, db: Session = Depends(get_db),
 artifacts_router = APIRouter(prefix="/artifacts", tags=["Source Artifacts"])
 
 
+# Files attached to artifacts go here, scoped per project + artifact.
+ARTIFACTS_UPLOAD_ROOT = "uploads/artifacts"
+ARTIFACT_ALLOWED_EXTENSIONS = {".pdf", ".docx", ".xlsx", ".txt", ".md", ".png", ".jpg", ".jpeg"}
+
+
+def _ensure_artifact(db: Session, project_id: int, artifact_id: int) -> SourceArtifact:
+    artifact = db.query(SourceArtifact).filter(
+        SourceArtifact.id == artifact_id,
+        SourceArtifact.project_id == project_id,
+    ).first()
+    if not artifact:
+        raise HTTPException(404, "Source artifact not found")
+    return artifact
+
+
 @artifacts_router.get("/", response_model=List[SourceArtifactResponse])
-def list_artifacts(project_id: int, db: Session = Depends(get_db),
-                   current_user: User = Depends(get_current_user),
-                   project: Project = Depends(project_member_required)):
-    return db.query(SourceArtifact).filter(SourceArtifact.project_id == project_id).all()
+def list_artifacts(
+    project_id: int,
+    artifact_type: Optional[str] = None,
+    search: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    project: Project = Depends(project_member_required),
+):
+    """List source artifacts for a project, with optional type filter and search."""
+    q = db.query(SourceArtifact).filter(SourceArtifact.project_id == project_id)
+    if artifact_type:
+        q = q.filter(SourceArtifact.artifact_type == artifact_type)
+    if search:
+        like = f"%{search}%"
+        q = q.filter(
+            (SourceArtifact.title.ilike(like))
+            | (SourceArtifact.artifact_id.ilike(like))
+            | (SourceArtifact.description.ilike(like))
+        )
+    return q.order_by(SourceArtifact.created_at.desc()).all()
+
+
+@artifacts_router.get("/stats", response_model=List[dict])
+def list_artifacts_with_stats(
+    project_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    project: Project = Depends(project_member_required),
+):
+    """List artifacts with per-artifact statistics (linked requirement counts)."""
+    # Aggregate counts in one grouped query to avoid N+1.
+    from sqlalchemy import case, Integer
+    counts_rows = (
+        db.query(
+            Requirement.source_artifact_id.label("artifact_id"),
+            func.count(Requirement.id).label("total"),
+            func.sum(case((Requirement.level == "L0", 1), else_=0)).label("l0_total"),
+        )
+        .filter(Requirement.source_artifact_id.isnot(None))
+        .group_by(Requirement.source_artifact_id)
+        .all()
+    )
+    counts = {
+        row.artifact_id: {"total": int(row.total or 0), "l0": int(row.l0_total or 0)}
+        for row in counts_rows
+    }
+
+    artifacts = (
+        db.query(SourceArtifact)
+        .filter(SourceArtifact.project_id == project_id)
+        .order_by(SourceArtifact.created_at.desc())
+        .all()
+    )
+
+    return [
+        {
+            "id": a.id,
+            "artifact_id": a.artifact_id,
+            "title": a.title,
+            "artifact_type": _ev(a.artifact_type),
+            "description": a.description,
+            "file_path": a.file_path,
+            "source_date": a.source_date.isoformat() if a.source_date else None,
+            "participants": a.participants or [],
+            "project_id": a.project_id,
+            "created_at": a.created_at.isoformat() if a.created_at else None,
+            "l0_requirement_count": counts.get(a.id, {}).get("l0", 0),
+            "total_requirement_count": counts.get(a.id, {}).get("total", 0),
+        }
+        for a in artifacts
+    ]
+
+
+@artifacts_router.get("/{artifact_id}", response_model=SourceArtifactResponse)
+def get_artifact(
+    project_id: int,
+    artifact_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    project: Project = Depends(project_member_required),
+):
+    """Get a single artifact by ID."""
+    return _ensure_artifact(db, project_id, artifact_id)
+
+
+@artifacts_router.get("/{artifact_id}/requirements", response_model=List[RequirementResponse])
+def get_artifact_requirements(
+    project_id: int,
+    artifact_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    project: Project = Depends(project_member_required),
+):
+    """List requirements that reference this artifact, ordered by level then req_id."""
+    _ensure_artifact(db, project_id, artifact_id)
+    return (
+        db.query(Requirement)
+        .filter(Requirement.source_artifact_id == artifact_id)
+        .order_by(Requirement.level, Requirement.req_id)
+        .all()
+    )
 
 
 @artifacts_router.post("/", response_model=SourceArtifactResponse, status_code=201)
-def create_artifact(project_id: int, data: SourceArtifactCreate, request: Request,
-                    db: Session = Depends(get_db),
-                    current_user: User = Depends(get_current_user),
-                    project: Project = Depends(project_member_required)):
+def create_artifact(
+    project_id: int,
+    data: SourceArtifactCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("artifacts.create")),
+    project: Project = Depends(project_member_required),
+):
     # F-074: replace racy `count + 1` (two concurrent creates compute
     # the same number) with the FOR-UPDATE-locked id_sequences row.
     from app.services.id_sequence import next_human_id
@@ -515,6 +635,152 @@ def create_artifact(project_id: int, data: SourceArtifactCreate, request: Reques
     db.commit()
     db.refresh(artifact)
 
-    record_event(db, "artifact.created", "source_artifact", artifact.id, current_user.id,
-                 {"artifact_id": artifact_id}, project_id=project_id, request=request)
+    record_event(
+        db, "artifact.created", "source_artifact", artifact.id, current_user.id,
+        {"artifact_id": artifact_id, "title": artifact.title},
+        project_id=project_id, request=request,
+    )
     return artifact
+
+
+@artifacts_router.patch("/{artifact_id}", response_model=SourceArtifactResponse)
+def update_artifact(
+    project_id: int,
+    artifact_id: int,
+    data: SourceArtifactUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("artifacts.update")),
+    project: Project = Depends(project_member_required),
+):
+    """Update an existing source artifact."""
+    artifact = _ensure_artifact(db, project_id, artifact_id)
+
+    changes: dict = {}
+    update_data = data.model_dump(exclude_unset=True)
+    for field, value in update_data.items():
+        old_value = getattr(artifact, field, None)
+        old_str = _ev(old_value) if hasattr(old_value, "value") else old_value
+        if old_str != value:
+            changes[field] = {"old": str(old_str), "new": str(value)}
+            setattr(artifact, field, value)
+
+    if changes:
+        db.commit()
+        db.refresh(artifact)
+        record_event(
+            db, "artifact.updated", "source_artifact", artifact.id, current_user.id,
+            {"artifact_id": artifact.artifact_id, "changes": changes},
+            project_id=project_id, request=request,
+        )
+
+    return artifact
+
+
+@artifacts_router.delete("/{artifact_id}", status_code=204)
+def delete_artifact(
+    project_id: int,
+    artifact_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("artifacts.delete")),
+    project: Project = Depends(project_member_required),
+):
+    """
+    Delete a source artifact. Refuses if any requirements still reference it,
+    to protect audit-trail integrity. The user must update or delete the
+    referencing requirements first.
+    """
+    artifact = _ensure_artifact(db, project_id, artifact_id)
+
+    ref_count = (
+        db.query(func.count(Requirement.id))
+        .filter(Requirement.source_artifact_id == artifact_id)
+        .scalar() or 0
+    )
+    if ref_count > 0:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Cannot delete artifact '{artifact.artifact_id}': "
+                f"{ref_count} requirement(s) still reference it. "
+                "Update or delete the linked requirements first."
+            ),
+        )
+
+    record_event(
+        db, "artifact.deleted", "source_artifact", artifact.id, current_user.id,
+        {"artifact_id": artifact.artifact_id, "title": artifact.title},
+        project_id=project_id, request=request,
+    )
+    db.delete(artifact)
+    db.commit()
+    return None
+
+
+@artifacts_router.post("/{artifact_id}/upload", response_model=SourceArtifactResponse)
+async def upload_artifact_file(
+    project_id: int,
+    artifact_id: int,
+    request: Request,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("artifacts.update")),
+    project: Project = Depends(project_member_required),
+):
+    """Upload a file to attach to a source artifact (PDF, DOCX, etc.)."""
+    artifact = _ensure_artifact(db, project_id, artifact_id)
+
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in ARTIFACT_ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            400,
+            f"File type '{ext}' not allowed. Permitted: "
+            f"{', '.join(sorted(ARTIFACT_ALLOWED_EXTENSIONS))}",
+        )
+
+    upload_dir = os.path.join(ARTIFACTS_UPLOAD_ROOT, project.code, artifact.artifact_id)
+    os.makedirs(upload_dir, exist_ok=True)
+    safe_filename = os.path.basename(file.filename or "upload")
+    file_path = os.path.join(upload_dir, safe_filename)
+
+    contents = await file.read()
+    with open(file_path, "wb") as f:
+        f.write(contents)
+
+    artifact.file_path = file_path
+    db.commit()
+    db.refresh(artifact)
+
+    record_event(
+        db, "artifact.file_uploaded", "source_artifact", artifact.id, current_user.id,
+        {
+            "artifact_id": artifact.artifact_id,
+            "filename": safe_filename,
+            "size_bytes": len(contents),
+        },
+        project_id=project_id, request=request,
+    )
+    return artifact
+
+
+@artifacts_router.get("/{artifact_id}/download")
+def download_artifact_file(
+    project_id: int,
+    artifact_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    project: Project = Depends(project_member_required),
+):
+    """Download the file attached to a source artifact."""
+    artifact = _ensure_artifact(db, project_id, artifact_id)
+    if not artifact.file_path:
+        raise HTTPException(404, "No file attached to this artifact")
+    if not os.path.exists(artifact.file_path):
+        raise HTTPException(404, "Attached file not found on disk")
+
+    return FileResponse(
+        path=artifact.file_path,
+        filename=os.path.basename(artifact.file_path),
+        media_type="application/octet-stream",
+    )

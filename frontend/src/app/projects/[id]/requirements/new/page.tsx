@@ -137,6 +137,18 @@ export default function NewRequirementPage() {
       .catch(() => setArtifacts([]));
   }, [projectId]);
 
+  // Re-fetch artifacts when this tab regains focus, so a freshly-created
+  // artifact (in another tab) shows up in the L0 picker without reload.
+  useEffect(() => {
+    const onFocus = () => {
+      artifactsAPI.list(projectId)
+        .then((res) => setArtifacts(Array.isArray(res.data) ? res.data : []))
+        .catch(() => {});
+    };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [projectId]);
+
   // ── Live quality scoring (debounced 300ms) ──
   useEffect(() => {
     const t = setTimeout(() => {
@@ -307,29 +319,54 @@ export default function NewRequirementPage() {
             </div>
           </div>
 
-          {/* ASTRA-TDD-LEVELS-001: L0 source-artifact picker (only shown for L0). */}
+          {/* ASTRA-TDD-LEVELS-001 + ARTIFACTS-001: L0 source-artifact picker
+              (only shown for L0). Inline link opens the artifact create page
+              in a new tab so the user doesn't lose this form's state. */}
           {level === 'L0' && (
             <div className="rounded-xl border border-red-500/30 bg-red-500/5 p-4">
-              <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wider text-red-300">
-                Source Artifact <span className="text-red-400">*</span>
-              </label>
-              <select
-                value={sourceArtifactId ?? ''}
-                onChange={(e) => setSourceArtifactId(e.target.value ? Number(e.target.value) : null)}
-                className="w-full appearance-none rounded-lg border border-astra-border bg-astra-surface px-3 py-2.5 pr-8 text-sm text-slate-200 outline-none focus:border-red-500/50"
-              >
-                <option value="">— Select MRD / SOW / contract document —</option>
-                {artifacts.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.artifact_id} — {a.title}
-                  </option>
-                ))}
-              </select>
+              <div className="mb-1.5 flex items-center justify-between">
+                <label className="text-[11px] font-semibold uppercase tracking-wider text-red-300">
+                  Source Artifact <span className="text-red-400">*</span>
+                </label>
+                <a
+                  href={`/projects/${projectId}/artifacts/new`}
+                  target="_blank"
+                  rel="noopener"
+                  className="text-[10px] font-semibold text-blue-400 hover:underline"
+                >
+                  + Create new artifact
+                </a>
+              </div>
+              {artifacts.length === 0 ? (
+                <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+                  No source artifacts in this project yet.{' '}
+                  <a
+                    href={`/projects/${projectId}/artifacts/new`}
+                    target="_blank"
+                    rel="noopener"
+                    className="font-semibold text-blue-400 hover:underline"
+                  >
+                    Create one →
+                  </a>{' '}
+                  then reload this page.
+                </div>
+              ) : (
+                <select
+                  value={sourceArtifactId ?? ''}
+                  onChange={(e) => setSourceArtifactId(e.target.value ? Number(e.target.value) : null)}
+                  className="w-full appearance-none rounded-lg border border-astra-border bg-astra-surface px-3 py-2.5 pr-8 text-sm text-slate-200 outline-none focus:border-red-500/50"
+                  required
+                >
+                  <option value="">— Select MRD / SOW / contract document —</option>
+                  {artifacts.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.artifact_id} — {a.title}
+                    </option>
+                  ))}
+                </select>
+              )}
               <div className="mt-2 text-[10px] text-red-300/80">
                 L0 (Customer/Contractual) requirements must trace back to an originating contract artifact.
-                {artifacts.length === 0 && (
-                  <> No artifacts in this project — create one in Source Artifacts before saving.</>
-                )}
               </div>
             </div>
           )}

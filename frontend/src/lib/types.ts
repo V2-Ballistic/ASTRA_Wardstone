@@ -270,3 +270,43 @@ export const PRIORITY_COLORS: Record<Priority, string> = {
   medium: '#3B82F6',
   low: '#6B7280',
 };
+
+// ── Source artifact display constants (ASTRA-TDD-ARTIFACTS-001) ──
+
+export const ARTIFACT_TYPE_LABELS: Record<ArtifactType, string> = {
+  document: 'Document (MRD, SOW, Spec)',
+  standard: 'Standard / Specification',
+  interview: 'Interview / Meeting Notes',
+  meeting: 'Meeting Minutes',
+  decision: 'Decision Record',
+  legacy: 'Legacy System Reference',
+  email: 'Email Correspondence',
+  multimedia: 'Multimedia / Recording',
+};
+
+export const ARTIFACT_TYPE_ICONS: Record<ArtifactType, string> = {
+  document: '📄',
+  standard: '📐',
+  interview: '🎤',
+  meeting: '👥',
+  decision: '✅',
+  legacy: '🗃️',
+  email: '📧',
+  multimedia: '🎬',
+};
+
+export const ARTIFACT_TYPE_COLORS: Record<ArtifactType, string> = {
+  document: '#3B82F6',
+  standard: '#8B5CF6',
+  interview: '#10B981',
+  meeting: '#06B6D4',
+  decision: '#F59E0B',
+  legacy: '#6B7280',
+  email: '#EC4899',
+  multimedia: '#EF4444',
+};
+
+export interface SourceArtifactWithStats extends SourceArtifact {
+  l0_requirement_count: number;
+  total_requirement_count: number;
+}
