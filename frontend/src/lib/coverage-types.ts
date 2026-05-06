@@ -10,7 +10,7 @@ import type { SourceEntityType } from './req-sync-types';
 
 export type CoverageSeverity = 'ok' | 'warning' | 'error';
 
-export type RequirementLevel = 'L1' | 'L2' | 'L3' | 'L4' | 'L5';
+export type RequirementLevel = 'L0' | 'L1' | 'L2' | 'L3' | 'L4' | 'L5';
 
 export interface LevelSeveritySummary {
   total: number;

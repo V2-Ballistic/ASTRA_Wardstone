@@ -29,7 +29,7 @@ import type {
   OrphanRequirementResponse,
 } from '@/lib/coverage-types';
 
-const LEVELS: ('L1' | 'L2' | 'L3' | 'L4' | 'L5')[] = ['L1', 'L2', 'L3', 'L4', 'L5'];
+const LEVELS: ('L0' | 'L1' | 'L2' | 'L3' | 'L4' | 'L5')[] = ['L0', 'L1', 'L2', 'L3', 'L4', 'L5'];
 
 function levelColor(s: LevelSeveritySummary | undefined): {
   fg: string; bg: string; border: string; label: string;

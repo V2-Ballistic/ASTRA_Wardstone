@@ -87,11 +87,12 @@ class RequirementPriority(str, enum.Enum):
 
 
 class RequirementLevel(str, enum.Enum):
-    L1 = "L1"
-    L2 = "L2"
-    L3 = "L3"
-    L4 = "L4"
-    L5 = "L5"
+    L0 = "L0"   # Customer / Contractual (MRD, SOW, contract)
+    L1 = "L1"   # System
+    L2 = "L2"   # Subsystem
+    L3 = "L3"   # Component
+    L4 = "L4"   # Sub-component
+    L5 = "L5"   # Detail
 
 
 class RequirementStatus(str, enum.Enum):
@@ -215,6 +216,16 @@ class Requirement(Base):
     project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
     parent_id = Column(Integer, ForeignKey("requirements.id"), nullable=True)
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+
+    # ASTRA-TDD-LEVELS-001: required for L0 (Customer/Contractual) reqs to
+    # link back to the originating MRD/SOW/contract document. Nullable for
+    # L1–L5 where the link is optional.
+    source_artifact_id = Column(
+        Integer,
+        ForeignKey("source_artifacts.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
