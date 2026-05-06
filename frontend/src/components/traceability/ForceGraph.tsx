@@ -24,11 +24,11 @@ import { ZoomIn, ZoomOut, Maximize2 } from 'lucide-react';
 // ── Color maps ──
 
 const LEVEL_COLORS: Record<string, string> = {
-  L1: '#EF4444', L2: '#F59E0B', L3: '#3B82F6', L4: '#8B5CF6', L5: '#6B7280',
+  L0: '#DC2626', L1: '#EF4444', L2: '#F59E0B', L3: '#3B82F6', L4: '#8B5CF6', L5: '#6B7280',
 };
 
 const LEVEL_LABELS: Record<string, string> = {
-  L1: 'System', L2: 'Subsystem', L3: 'Component', L4: 'Sub-component', L5: 'Detail',
+  L0: 'Customer', L1: 'System', L2: 'Subsystem', L3: 'Component', L4: 'Sub-component', L5: 'Detail',
 };
 
 const LINK_COLORS: Record<string, string> = {
@@ -139,7 +139,7 @@ export default function ForceGraph({ nodes, edges, onNodeClick }: ForceGraphProp
       levelGroups[lv].push(n);
     });
 
-    const levels = ['L1', 'L2', 'L3', 'L4', 'L5'];
+    const levels = ['L0', 'L1', 'L2', 'L3', 'L4', 'L5'];
     const usedLevels = levels.filter((l) => levelGroups[l]?.length > 0);
 
     usedLevels.forEach((level, li) => {
@@ -561,8 +561,8 @@ export default function ForceGraph({ nodes, edges, onNodeClick }: ForceGraphProp
           })}
 
           {/* Level legend (bottom-left) */}
-          {['L1', 'L2', 'L3', 'L4', 'L5'].map((level, i) => (
-            <g key={`legend-${level}`} transform={`translate(20, ${H - 130 + i * 22})`}>
+          {['L0', 'L1', 'L2', 'L3', 'L4', 'L5'].map((level, i) => (
+            <g key={`legend-${level}`} transform={`translate(20, ${H - 152 + i * 22})`}>
               <circle cx={6} cy={6} r={6} fill={LEVEL_COLORS[level] + '30'} stroke={LEVEL_COLORS[level]} strokeWidth={1.5} />
               <text x={18} y={10} fill="#94A3B8" fontSize="10" fontWeight="600">
                 {level} — {LEVEL_LABELS[level]}

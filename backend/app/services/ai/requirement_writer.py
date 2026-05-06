@@ -68,7 +68,7 @@ For each requirement you extract:
 2. Generate a concise title
 3. Suggest a type: functional, performance, interface, safety, security, environmental, reliability, constraint, maintainability, derived
 4. Suggest a priority: critical, high, medium, low
-5. Suggest a level: L1 (system), L2 (subsystem), L3 (component), L4 (sub-component), L5 (detail)
+5. Suggest a level: L1 (system), L2 (subsystem), L3 (component), L4 (sub-component), L5 (detail) — never L0 (customer/contractual is human-authored only)
 6. Write a rationale explaining why this requirement exists
 7. Note which fragment of the original prose it came from
 
@@ -288,10 +288,16 @@ Respond with:
   "decomposition_rationale": "This requirement was decomposed into N sub-requirements because..."
 }}"""
 
-_LEVEL_NEXT = {"L1": "L2", "L2": "L3", "L3": "L4", "L4": "L5", "L5": "L5"}
+_LEVEL_NEXT = {
+    "L0": "L1", "L1": "L2", "L2": "L3", "L3": "L4", "L4": "L5", "L5": "L5",
+}
 _LEVEL_LABELS = {
-    "L1": "System", "L2": "Subsystem", "L3": "Component",
-    "L4": "Sub-component", "L5": "Detail",
+    "L0": "Customer/Contractual",
+    "L1": "System",
+    "L2": "Subsystem",
+    "L3": "Component",
+    "L4": "Sub-component",
+    "L5": "Detail",
 }
 
 
@@ -589,7 +595,7 @@ _VALID_TYPES = {
     "environmental", "reliability", "constraint", "maintainability", "derived",
 }
 _VALID_PRIORITIES = {"critical", "high", "medium", "low"}
-_VALID_LEVELS = {"L1", "L2", "L3", "L4", "L5"}
+_VALID_LEVELS = {"L0", "L1", "L2", "L3", "L4", "L5"}
 
 
 def _validate_type(v: str) -> str:

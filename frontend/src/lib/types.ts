@@ -39,6 +39,7 @@ export interface Requirement {
   project_id: number;
   parent_id?: number;
   owner_id: number;
+  source_artifact_id?: number;
   created_at: string;
   updated_at: string;
 }
@@ -189,7 +190,7 @@ export type RequirementType =
 
 export type Priority = 'critical' | 'high' | 'medium' | 'low';
 
-export type RequirementLevel = 'L1' | 'L2' | 'L3' | 'L4' | 'L5';
+export type RequirementLevel = 'L0' | 'L1' | 'L2' | 'L3' | 'L4' | 'L5';
 
 export type RequirementStatus =
   | 'draft' | 'under_review' | 'approved' | 'baselined'
@@ -246,6 +247,7 @@ export const TYPE_PREFIXES: Record<RequirementType, string> = {
 };
 
 export const LEVEL_LABELS: Record<RequirementLevel, string> = {
+  L0: 'L0 — Customer / Contractual',
   L1: 'L1 — System',
   L2: 'L2 — Subsystem',
   L3: 'L3 — Component',
@@ -254,6 +256,7 @@ export const LEVEL_LABELS: Record<RequirementLevel, string> = {
 };
 
 export const LEVEL_COLORS: Record<RequirementLevel, string> = {
+  L0: '#DC2626',
   L1: '#EF4444',
   L2: '#F59E0B',
   L3: '#3B82F6',

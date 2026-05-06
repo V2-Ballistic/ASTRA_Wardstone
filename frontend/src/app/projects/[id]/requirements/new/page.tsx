@@ -22,8 +22,9 @@ import {
 import {
   LEVEL_COLORS, LEVEL_LABELS, PRIORITY_COLORS,
   type RequirementType, type RequirementLevel, type Priority, type Requirement,
+  type SourceArtifact,
 } from '@/lib/types';
-import { requirementsAPI, projectsAPI } from '@/lib/api';
+import { requirementsAPI, projectsAPI, artifactsAPI } from '@/lib/api';
 
 // F-084: runtime require() shims replaced with normal typed imports.
 import { aiAPI } from '@/lib/ai-api';
@@ -107,6 +108,10 @@ export default function NewRequirementPage() {
   const [parentSearch, setParentSearch] = useState('');
   const [showParentPicker, setShowParentPicker] = useState(false);
 
+  // ASTRA-TDD-LEVELS-001: source artifact picker for L0 (Customer/Contractual) reqs.
+  const [artifacts, setArtifacts] = useState<SourceArtifact[]>([]);
+  const [sourceArtifactId, setSourceArtifactId] = useState<number | null>(null);
+
   // Quality
   const [quality, setQuality] = useState<any>({ score: 0, passed: false, warnings: [], suggestions: [] });
 
@@ -121,12 +126,15 @@ export default function NewRequirementPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
-  // ── Load project + existing requirements ──
+  // ── Load project + existing requirements + source artifacts ──
   useEffect(() => {
     projectsAPI.get(projectId).then((res) => setProjectCode(res.data.code)).catch(() => {});
     requirementsAPI.list(projectId, { limit: 200 })
       .then((res) => setAllRequirements(Array.isArray(res.data) ? res.data : []))
       .catch(() => {});
+    artifactsAPI.list(projectId)
+      .then((res) => setArtifacts(Array.isArray(res.data) ? res.data : []))
+      .catch(() => setArtifacts([]));
   }, [projectId]);
 
   // ── Live quality scoring (debounced 300ms) ──
@@ -191,6 +199,14 @@ export default function NewRequirementPage() {
   // ── Save ──
   const handleSave = async () => {
     if (!projectId) return;
+    // ASTRA-TDD-LEVELS-001: client-side guard so the user gets a clear
+    // message instead of a 400 from the backend validator.
+    if (level === 'L0' && !sourceArtifactId) {
+      setError(
+        'L0 (Customer/Contractual) requirements must link to a source artifact (MRD, SOW, contract). Pick one from the dropdown.',
+      );
+      return;
+    }
     setError('');
     setSaving(true);
     try {
@@ -198,6 +214,7 @@ export default function NewRequirementPage() {
         title, statement, rationale: rationale || undefined,
         req_type: reqType, priority, level,
         parent_id: parentId || undefined,
+        source_artifact_id: sourceArtifactId || undefined,
       });
       router.push(`${p}/requirements`);
     } catch (err: any) {
@@ -206,7 +223,10 @@ export default function NewRequirementPage() {
     setSaving(false);
   };
 
-  const canSave = title.trim().length >= 3 && statement.trim().length >= 10;
+  const canSave =
+    title.trim().length >= 3 &&
+    statement.trim().length >= 10 &&
+    (level !== 'L0' || sourceArtifactId !== null);
   const filteredParents = allRequirements.filter((r) => {
     if (!parentSearch) return true;
     const s = parentSearch.toLowerCase();
@@ -250,7 +270,7 @@ export default function NewRequirementPage() {
             <div>
               <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wider text-slate-500">Level</label>
               <div className="flex gap-1.5">
-                {(['L1', 'L2', 'L3', 'L4', 'L5'] as RequirementLevel[]).map((l) => (
+                {(['L0', 'L1', 'L2', 'L3', 'L4', 'L5'] as RequirementLevel[]).map((l) => (
                   <button key={l} onClick={() => { setLevel(l); setLevelManuallyChosen(true); }}
                     className={`flex-1 rounded-lg py-2 text-xs font-bold transition-all ${
                       level === l ? 'text-white shadow-lg' : 'border border-astra-border bg-astra-surface text-slate-400 hover:border-blue-500/30'
@@ -286,6 +306,33 @@ export default function NewRequirementPage() {
               </div>
             </div>
           </div>
+
+          {/* ASTRA-TDD-LEVELS-001: L0 source-artifact picker (only shown for L0). */}
+          {level === 'L0' && (
+            <div className="rounded-xl border border-red-500/30 bg-red-500/5 p-4">
+              <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wider text-red-300">
+                Source Artifact <span className="text-red-400">*</span>
+              </label>
+              <select
+                value={sourceArtifactId ?? ''}
+                onChange={(e) => setSourceArtifactId(e.target.value ? Number(e.target.value) : null)}
+                className="w-full appearance-none rounded-lg border border-astra-border bg-astra-surface px-3 py-2.5 pr-8 text-sm text-slate-200 outline-none focus:border-red-500/50"
+              >
+                <option value="">— Select MRD / SOW / contract document —</option>
+                {artifacts.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.artifact_id} — {a.title}
+                  </option>
+                ))}
+              </select>
+              <div className="mt-2 text-[10px] text-red-300/80">
+                L0 (Customer/Contractual) requirements must trace back to an originating contract artifact.
+                {artifacts.length === 0 && (
+                  <> No artifacts in this project — create one in Source Artifacts before saving.</>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Title */}
           <div>

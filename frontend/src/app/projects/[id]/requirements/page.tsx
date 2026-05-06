@@ -235,7 +235,7 @@ function TreeNodeRow({
 // ══════════════════════════════════════
 
 function LevelSummary({ requirements }: { requirements: Requirement[] }) {
-  const levels = ['L1', 'L2', 'L3', 'L4', 'L5'] as RequirementLevel[];
+  const levels = ['L0', 'L1', 'L2', 'L3', 'L4', 'L5'] as RequirementLevel[];
   const counts = levels.map(l => ({
     level: l,
     count: requirements.filter(r => (r.level || 'L1') === l).length,

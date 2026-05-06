@@ -580,7 +580,7 @@ export default function ProjectDashboard() {
               <span className="text-[10px] font-bold text-slate-400">{totalReqs} total</span>
             </div>
             <div className="space-y-2.5">
-              {(['L1', 'L2', 'L3', 'L4', 'L5'] as RequirementLevel[]).map((lv) => (
+              {(['L0', 'L1', 'L2', 'L3', 'L4', 'L5'] as RequirementLevel[]).map((lv) => (
                 <LevelBar key={lv} level={lv} count={byLevel[lv] || 0} total={totalReqs} />
               ))}
             </div>

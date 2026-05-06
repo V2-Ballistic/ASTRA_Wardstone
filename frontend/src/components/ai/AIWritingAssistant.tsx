@@ -551,7 +551,7 @@ function DecomposePanel({
   const [result, setResult] = useState<DecomposeResponse | null>(null);
   const [error, setError] = useState('');
 
-  const LEVEL_NEXT: Record<string, string> = { L1: 'L2', L2: 'L3', L3: 'L4', L4: 'L5' };
+  const LEVEL_NEXT: Record<string, string> = { L0: 'L1', L1: 'L2', L2: 'L3', L3: 'L4', L4: 'L5' };
   const targetLevel = LEVEL_NEXT[currentLevel] || 'L2';
 
   const handleDecompose = async () => {

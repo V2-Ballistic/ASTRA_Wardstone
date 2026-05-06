@@ -35,6 +35,10 @@ from app.schemas import (
     VerificationCreate, VerificationResponse,
 )
 from app.services.auth import get_current_user
+from app.services.level_validator import (
+    enforce_l0_admin_only,
+    validate_l0_source_artifact,
+)
 from app.services.quality_checker import check_requirement_quality, generate_requirement_id
 
 # AI imports (optional — all functions handle unavailability gracefully)
@@ -311,6 +315,13 @@ def create_requirement(
     project: Project = Depends(project_member_required),
 ):
 
+    # ASTRA-TDD-LEVELS-001: L0 reqs must link a source artifact at create time.
+    validate_l0_source_artifact(
+        db=db,
+        level=req_data.level,
+        source_artifact_id=getattr(req_data, "source_artifact_id", None),
+    )
+
     # F-203: next_human_id replaces the race-prone `count + 1` pattern.
     # The id_sequences row is locked FOR UPDATE inside the helper so
     # two concurrent POSTs serialize and produce distinct req_ids.
@@ -331,6 +342,7 @@ def create_requirement(
         priority=req_data.priority, level=req_data.level,
         project_id=project_id, owner_id=current_user.id,
         created_by_id=current_user.id, parent_id=req_data.parent_id,
+        source_artifact_id=getattr(req_data, "source_artifact_id", None),
         quality_score=quality["score"],
     )
     db.add(req)
@@ -375,6 +387,18 @@ def update_requirement(
     req = db.query(Requirement).filter(Requirement.id == req_id).first()
     if not req:
         raise HTTPException(404, "Requirement not found")
+
+    # ASTRA-TDD-LEVELS-001: block non-admins from editing existing L0 reqs.
+    enforce_l0_admin_only(req, current_user, operation="modify")
+
+    # If the update changes level → L0 (or keeps L0), require a source artifact link.
+    new_level = req_data.level if req_data.level is not None else req.level
+    new_artifact_id = (
+        req_data.source_artifact_id
+        if hasattr(req_data, "source_artifact_id") and req_data.source_artifact_id is not None
+        else getattr(req, "source_artifact_id", None)
+    )
+    validate_l0_source_artifact(db, new_level, new_artifact_id)
 
     update_data = req_data.model_dump(exclude_unset=True)
     changes: dict = {}
@@ -474,6 +498,14 @@ def bulk_delete_requirements(
                 forbidden.append(req_id)
                 continue
             raise
+        # ASTRA-TDD-LEVELS-001: block non-admin bulk-delete of L0 reqs.
+        try:
+            enforce_l0_admin_only(req, current_user, operation="delete")
+        except HTTPException as exc:
+            if exc.status_code == 403:
+                forbidden.append(req_id)
+                continue
+            raise
         old_status = _ev(req.status)
         if old_status == "deleted":
             skipped_already_deleted.append(req_id)
@@ -522,6 +554,10 @@ def delete_requirement(req_id: int, request: Request = None,
     req = db.query(Requirement).filter(Requirement.id == req_id).first()
     if not req:
         raise HTTPException(404, "Requirement not found")
+
+    # ASTRA-TDD-LEVELS-001: block non-admins from deleting existing L0 reqs.
+    enforce_l0_admin_only(req, current_user, operation="delete")
+
     old_status = _ev(req.status)
     if old_status == "deleted":
         raise HTTPException(400, "Requirement is already deleted")

@@ -70,6 +70,7 @@ class RequirementCreate(BaseModel):
     priority: str = "medium"
     level: str = "L1"
     parent_id: Optional[int] = None
+    source_artifact_id: Optional[int] = None
 
 class RequirementUpdate(BaseModel):
     title: Optional[str] = None
@@ -80,6 +81,7 @@ class RequirementUpdate(BaseModel):
     status: Optional[str] = None
     level: Optional[str] = None
     parent_id: Optional[int] = None
+    source_artifact_id: Optional[int] = None
 
 class RequirementResponse(BaseModel):
     id: int
@@ -96,6 +98,7 @@ class RequirementResponse(BaseModel):
     project_id: int
     parent_id: Optional[int]
     owner_id: int
+    source_artifact_id: Optional[int] = None
     created_at: datetime
     updated_at: datetime
     class Config:
