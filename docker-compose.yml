@@ -98,7 +98,7 @@ services:
     # backend's true readiness, and `depends_on … condition:
     # service_healthy` works locally.
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')\""]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -121,10 +121,11 @@ services:
     # F-105: dev healthcheck for the Next.js dev server. wget -qO- on
     # the root path returns 200 once Next is ready; before that it 502s.
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3000 || exit 1"]
-      interval: 15s
-      timeout: 5s
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000 || exit 1"]
+      interval: 30s
+      timeout: 10s
       retries: 5
+      start_period: 60s
 
 volumes:
   postgres_data:
