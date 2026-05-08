@@ -10,6 +10,11 @@
  *   - Main content area adjusts for sidebar width
  *   - Login page gets proper landmark structure
  *   - LiveRegionProvider wraps entire app for screen reader announcements
+ *
+ * Phase 0 (CLAUDE_CODE_PROMPT_PHASE0 §Fix 0b):
+ *   - Installs the axios refresh-token interceptor at app boot.
+ *   - Mounts <SessionMonitor /> for the idle-timeout watchdog inside the
+ *     authenticated branch.
  */
 
 import { useEffect } from 'react';
@@ -17,6 +22,8 @@ import { usePathname, useRouter } from 'next/navigation';
 import { AuthProvider, useAuth } from '@/lib/auth';
 import { LiveRegionProvider } from '@/components/a11y/LiveRegion';
 import Sidebar from './Sidebar';
+import SessionMonitor from '@/components/SessionMonitor';
+import { installAuthRefreshInterceptors } from '@/lib/auth-refresh';
 import { Loader2 } from 'lucide-react';
 
 function AuthGate({ children }: { children: React.ReactNode }) {
@@ -79,6 +86,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
   return (
     <>
       <Sidebar />
+      <SessionMonitor />
       <main
         id="main-content"
         role="main"
@@ -92,6 +100,12 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 }
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
+  // Phase 0 Fix 0b: install axios interceptors once. Idempotent — the
+  // module guards against double-install.
+  useEffect(() => {
+    installAuthRefreshInterceptors();
+  }, []);
+
   return (
     <AuthProvider>
       <LiveRegionProvider>

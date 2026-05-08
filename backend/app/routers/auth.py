@@ -9,9 +9,10 @@ trail for both successful AND failed authentication attempts
 """
 
 import logging
+import os
 from datetime import datetime
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from pydantic import BaseModel
@@ -20,12 +21,61 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import get_db
 from app.models import User, UserRole
+from app.models.auth_models import RefreshToken
 from app.schemas import UserCreate, UserResponse, Token
 from app.services import account_lockout
 from app.services.auth import (
     verify_password, get_password_hash, create_access_token, get_current_user,
     revoke_access_token_jti, oauth2_scheme,
 )
+from app.services.auth_manager import (
+    create_refresh_token as _issue_refresh_token,
+    refresh_access_token as _rotate_refresh_token,
+)
+
+
+# Phase 0 (CLAUDE_CODE_PROMPT_PHASE0 §Fix 0b) — sliding-session refresh cookie.
+#
+# `/auth/login` already issues an access token in the response body. We now
+# also mint a refresh token, store its hash in the existing `refresh_tokens`
+# table (created in migration 0001), and set it as an httpOnly,
+# samesite='lax' cookie. `/auth/refresh` reads the cookie (or body for
+# legacy clients), rotates via the existing helper, and sets the new
+# cookie. `/auth/logout` revokes ALL outstanding refresh tokens for the
+# user and clears the cookie.
+#
+# We do NOT create a new `refresh_tokens` table — it already exists. The
+# prompt's call for migration 0029 is therefore skipped, with the existing
+# infrastructure reused per the prompt's standing rule against refactoring
+# auth code beyond what these fixes require.
+
+REFRESH_COOKIE_NAME = "refresh_token"
+REFRESH_COOKIE_MAX_AGE_S = 30 * 24 * 60 * 60  # 30 days, matches REFRESH_TOKEN_EXPIRE_DAYS
+_REFRESH_COOKIE_SECURE = (
+    os.getenv("ENVIRONMENT", "development").lower() == "production"
+)
+
+
+def _set_refresh_cookie(response: Response, raw: str) -> None:
+    response.set_cookie(
+        key=REFRESH_COOKIE_NAME,
+        value=raw,
+        max_age=REFRESH_COOKIE_MAX_AGE_S,
+        httponly=True,
+        samesite="lax",
+        secure=_REFRESH_COOKIE_SECURE,
+        path="/",
+    )
+
+
+def _clear_refresh_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=REFRESH_COOKIE_NAME,
+        path="/",
+        samesite="lax",
+        secure=_REFRESH_COOKIE_SECURE,
+        httponly=True,
+    )
 
 
 # F-122: dedicated /me response shape, decoupled from UserResponse.
@@ -113,6 +163,7 @@ def _retry_after_seconds(locked_until_iso: str | None) -> str:
 @router.post("/login", response_model=Token)
 def login(
     request: Request,
+    response: Response,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
 ):
@@ -210,6 +261,12 @@ def login(
 
     access_token = create_access_token(data={"sub": user.username})
 
+    # Phase 0 Fix 0b: issue a refresh token + httpOnly cookie. Reuses the
+    # existing `refresh_tokens` table + `auth_manager.create_refresh_token`
+    # helper (rotation already handled there).
+    raw_refresh = _issue_refresh_token(db, user.id)
+    _set_refresh_cookie(response, raw_refresh)
+
     # F-124: no try/except here. record_event has its own retry / chain
     # semantics; if it raises, the login surfaces the failure rather
     # than silently dropping the audit trail.
@@ -237,6 +294,7 @@ def get_me(current_user: User = Depends(get_current_user)):
 @router.post("/logout", status_code=204)
 def logout(
     request: Request,
+    response: Response,
     token: str = Depends(oauth2_scheme),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -266,9 +324,26 @@ def logout(
             db, jti, exp_dt, user_id=current_user.id, reason="logout",
         )
 
+    # Phase 0 Fix 0b: revoke ALL outstanding refresh tokens for this user
+    # so a stolen refresh on another device cannot keep the session alive
+    # past an explicit logout. This was previously a no-op — the F-063 fix
+    # only revoked the current access JWT.
+    revoked_count = (
+        db.query(RefreshToken)
+        .filter(
+            RefreshToken.user_id == current_user.id,
+            RefreshToken.revoked.is_(False),
+        )
+        .update({"revoked": True}, synchronize_session=False)
+    )
+    db.commit()
+
+    _clear_refresh_cookie(response)
+
     _audit(
         db, "auth.logout", "user", current_user.id, current_user.id,
-        {"jti": jti}, request=request,
+        {"jti": jti, "refresh_tokens_revoked": revoked_count},
+        request=request,
     )
 
     return None
@@ -279,23 +354,40 @@ def logout(
 # ══════════════════════════════════════
 
 class RefreshRequest(BaseModel):
-    refresh_token: str
+    refresh_token: Optional[str] = None
 
 
 @router.post("/refresh", response_model=Token)
-def refresh(payload: RefreshRequest, db: Session = Depends(get_db)):
-    """F-068: rotate the refresh token. Returns a new
-    (access_token, refresh_token) pair; the incoming refresh token is
-    revoked atomically so a stolen refresh can be used at most once
-    before the legitimate user's next refresh invalidates it."""
-    from app.services.auth_manager import refresh_access_token
+def refresh(
+    response: Response,
+    payload: Optional[RefreshRequest] = None,
+    refresh_token: Optional[str] = Cookie(default=None),
+    db: Session = Depends(get_db),
+):
+    """F-068 + Phase 0 Fix 0b: rotate the refresh token.
 
-    result = refresh_access_token(db, payload.refresh_token)
+    Accepts the refresh token from EITHER the httpOnly cookie (preferred,
+    Phase 0) or the JSON body (legacy clients pre-Phase 0). On success
+    sets a new cookie and revokes the incoming token; on failure clears
+    the cookie so the SPA's interceptor does not loop.
+    """
+    raw = (payload.refresh_token if payload else None) or refresh_token
+    if not raw:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token missing",
+        )
+
+    result = _rotate_refresh_token(db, raw)
     if result is None:
+        # Clear the bad cookie so the client doesn't keep retrying with it.
+        _clear_refresh_cookie(response)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired refresh token",
         )
+
+    _set_refresh_cookie(response, result["refresh_token"])
     return {
         "access_token": result["access_token"],
         "refresh_token": result["refresh_token"],
