@@ -84,6 +84,7 @@ from app.models.catalog import (
     PendingCatalogImport,
     PendingImportStatus,
     Supplier,
+    SupplierAlias,                      # TDD-CAT-002
     SupplierDocument,
     SupplierDocumentType,
 )
@@ -102,6 +103,7 @@ from app.schemas.catalog import (
     PendingCatalogImportResponse,
     PendingCatalogImportUpdate,
     PendingImportRejectRequest,
+    StepUploadResponse,                # TDD-CAT-002
     SupplierCreate,
     SupplierDocumentResponse,
     SupplierResponse,
@@ -1329,3 +1331,294 @@ def reject_pending_import(
         request=request,
     )
     return PendingCatalogImportResponse.model_validate(pending)
+
+
+# ══════════════════════════════════════════════════════════════
+#  TDD-CAT-002 — STEP file upload (additive endpoint)
+# ══════════════════════════════════════════════════════════════
+#
+# The PDF / datasheet flow uploads a document FIRST (with the supplier
+# known up-front) then runs an LLM-driven ICD extractor in the
+# background. STEP files invert that: the supplier is auto-detected
+# from the filename, the parser runs INLINE (CPU only), and the row
+# lands in the existing pending_catalog_imports queue ready for review
+# via the existing /pending-imports/{id}/approve endpoint.
+#
+# The two flows share the underlying tables (suppliers,
+# supplier_documents, pending_catalog_imports) but use distinct upload
+# routes — keeps each handler small and avoids overloading the PDF
+# upload semantics. AD-3 in CAT-002.
+# ══════════════════════════════════════════════════════════════
+
+from app.services.cad.step_parser import (   # noqa: E402  (after main imports)
+    PARSER_VERSION as _STEP_PARSER_VERSION,
+    average_confidence as _step_avg_confidence,
+    parse_step_file as _parse_step_file,
+)
+
+
+def _resolve_supplier_for_step(
+    db: Session,
+    canonical: Optional[str],
+    aliases: List[str],
+    current_user: User,
+) -> tuple[Supplier, bool]:
+    """Look up the canonical-named supplier (alias → name match), creating
+    a new row + alias entries when nothing matches.
+
+    Returns ``(supplier, was_created)``. When ``canonical`` is None the
+    caller resolves to Wardstone separately; this helper assumes a vendor
+    name is in hand.
+    """
+    if not canonical:
+        raise ValueError("_resolve_supplier_for_step requires a canonical name")
+
+    # 1. Alias hit (case-insensitive across the canonical + detected aliases)
+    candidates = list(dict.fromkeys([canonical, *aliases]))
+    lower_candidates = [c.lower() for c in candidates if c]
+    alias_hit = (
+        db.query(SupplierAlias)
+        .filter(func.lower(SupplierAlias.alias).in_(lower_candidates))
+        .first()
+    )
+    if alias_hit is not None:
+        sup = db.query(Supplier).filter(Supplier.id == alias_hit.supplier_id).first()
+        if sup is not None:
+            return sup, False
+
+    # 2. Direct supplier-name match (case-insensitive against canonical)
+    name_hit = (
+        db.query(Supplier)
+        .filter(func.lower(Supplier.name) == canonical.lower())
+        .first()
+    )
+    if name_hit is not None:
+        return name_hit, False
+
+    # 3. Auto-create
+    sup = Supplier(
+        name=canonical,
+        is_active=True,
+        is_in_house=False,
+        notes=f"Auto-created from STEP upload at {datetime.utcnow().isoformat()}.",
+        created_by_id=current_user.id,
+    )
+    db.add(sup)
+    db.flush()  # need sup.id for alias inserts
+
+    # Insert each detected alias. UNIQUE collisions are silently skipped
+    # — another supplier may already own the alias text. (Common gotcha
+    # §13.) Use a SAVEPOINT around each insert so a failure on one alias
+    # doesn't abort the whole transaction.
+    for raw_alias in candidates:
+        if not raw_alias:
+            continue
+        try:
+            with db.begin_nested():
+                db.add(SupplierAlias(supplier_id=sup.id, alias=raw_alias))
+                # Force the INSERT now so a UNIQUE collision raises
+                # inside this with-block (savepoint can roll back),
+                # not at outer commit (where the whole tx blows up).
+                db.flush()
+        except Exception as exc:  # noqa: BLE001 - integrity errors stay narrow
+            logger.info(
+                "Skipping alias %r for new supplier %r (collision): %s",
+                raw_alias, canonical, exc,
+            )
+    db.flush()
+    return sup, True
+
+
+def _wardstone_or_500(db: Session) -> Supplier:
+    sup = (
+        db.query(Supplier)
+        .filter(func.lower(Supplier.name) == "wardstone")
+        .first()
+    )
+    if sup is None:
+        raise HTTPException(
+            500,
+            "Wardstone supplier missing — apply migration 0029 (`alembic upgrade head`).",
+        )
+    return sup
+
+
+@router.post(
+    "/upload-step",
+    response_model=StepUploadResponse,
+    status_code=201,
+)
+async def upload_step_file(
+    file: UploadFile = File(...),
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """TDD-CAT-002 — STEP file ingest.
+
+    Pipeline (synchronous):
+      1. SHA-256 dedup across ALL suppliers (STEP files are globally
+         identifiable by content — same hash = same geometry).
+      2. Run the pure-Python STEP parser (`backend/app/services/cad`).
+         pythonOCC enrichment is opportunistic.
+      3. Resolve the detected supplier — alias map → name match →
+         auto-create new Supplier row + alias entries. No vendor
+         detected → link to Wardstone (the in-house default seeded in
+         migration 0029).
+      4. Save the file under SUPPLIER_DOC_DIR/{uuid}.step.
+      5. Create a SupplierDocument (extraction_status=PENDING_REVIEW —
+         the parser already ran).
+      6. Create a PendingCatalogImport with the parser's extracted_data
+         JSONB. Reviewer approves via the existing
+         /pending-imports/{id}/approve endpoint.
+      7. Return IDs + detection result.
+
+    RBAC: req_eng+ (mirrors document upload).
+    """
+    _require_req_eng_plus(current_user)
+
+    # ── 1. read + dedup ──
+    content = await file.read()
+    if not content:
+        raise HTTPException(422, "uploaded file is empty")
+    sha256 = hashlib.sha256(content).hexdigest()
+
+    # Global hash dedup — STEP geometry hash collisions across vendors
+    # are essentially impossible; if we've seen this hash already, the
+    # caller is re-uploading.
+    dup = (
+        db.query(SupplierDocument.id, SupplierDocument.supplier_id)
+        .filter(SupplierDocument.sha256 == sha256)
+        .first()
+    )
+    if dup is not None:
+        raise HTTPException(
+            409,
+            f"STEP file with sha256={sha256[:12]}… already uploaded "
+            f"(supplier_document_id={dup[0]}, supplier_id={dup[1]}). "
+            "Open the existing pending import instead.",
+        )
+
+    # ── 2. save to disk + parse ──
+    SUPPLIER_DOC_DIR.mkdir(parents=True, exist_ok=True)
+    file_uuid = uuid.uuid4().hex
+    stored_path = SUPPLIER_DOC_DIR / f"{file_uuid}.step"
+    stored_path.write_bytes(content)
+
+    try:
+        parsed = _parse_step_file(stored_path, run_pythonocc=True)
+    except ValueError as exc:
+        # Clean up the partial save before bubbling.
+        try:
+            stored_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise HTTPException(422, f"STEP parse failed: {exc}") from exc
+
+    original_filename = file.filename or "upload.step"
+
+    # ── 3. resolve / auto-create supplier ──
+    supplier_was_created = False
+    if parsed.detected_supplier_canonical:
+        supplier, supplier_was_created = _resolve_supplier_for_step(
+            db,
+            canonical=parsed.detected_supplier_canonical,
+            aliases=parsed.detected_supplier_aliases,
+            current_user=current_user,
+        )
+    else:
+        # In-house default
+        supplier = _wardstone_or_500(db)
+        # Surface the in-house decision in the parsed result so the
+        # review UI can show the right banner.
+        parsed.extracted.setdefault("manufacturer", supplier.name)
+        parsed.confidence.setdefault("manufacturer", "low")
+
+    # IcdExtractionResultSchema requires a nested supplier.name on
+    # approve — synthesize it here so /pending-imports/{id}/approve
+    # validates without per-handler special-casing.
+    parsed.extracted["supplier"] = {
+        "name": supplier.name,
+        "cage_code": supplier.cage_code,
+        "country": supplier.country,
+    }
+
+    # ── 5. SupplierDocument ──
+    extraction_log = {
+        "warnings": parsed.warnings,
+        "parser_version": parsed.parser_version,
+        "confidence_per_field": parsed.confidence,
+        "supplier_was_auto_created": supplier_was_created,
+    }
+
+    doc = SupplierDocument(
+        supplier_id=supplier.id,
+        title=original_filename,
+        document_type=SupplierDocumentType.OTHER,
+        file_path=str(stored_path),
+        file_size_bytes=len(content),
+        sha256=sha256,
+        mime_type="model/step",
+        extraction_status=ExtractionStatus.PENDING_REVIEW,
+        extraction_log=extraction_log,
+        extraction_at=datetime.utcnow(),
+        uploaded_by_id=current_user.id,
+    )
+    db.add(doc)
+    db.flush()
+
+    # ── 6. PendingCatalogImport ──
+    extraction_confidence = _step_avg_confidence(parsed.confidence)
+    pending = PendingCatalogImport(
+        source_document_id=doc.id,
+        supplier_id=supplier.id,
+        extracted_data=parsed.extracted,
+        extraction_warnings={
+            "warnings": parsed.warnings,
+            "supplier_was_auto_created": supplier_was_created,
+            "parser_version": parsed.parser_version,
+        },
+        extraction_confidence=extraction_confidence,
+        status=PendingImportStatus.PENDING,
+    )
+    db.add(pending)
+    db.commit()
+    db.refresh(pending)
+    db.refresh(doc)
+    db.refresh(supplier)
+
+    # ── 7. audit trail ──
+    if supplier_was_created:
+        _audit(
+            db, "catalog.supplier.auto_created", "supplier", supplier.id, current_user.id,
+            {
+                "detected_name": parsed.detected_supplier_canonical,
+                "alias_count": len(parsed.detected_supplier_aliases),
+                "supplier_document_id": doc.id,
+            },
+            request=request,
+        )
+
+    _audit(
+        db, "catalog.step_uploaded", "supplier_document", doc.id, current_user.id,
+        {
+            "supplier_id": supplier.id,
+            "supplier_was_created": supplier_was_created,
+            "pending_import_id": pending.id,
+            "mpn": parsed.extracted.get("part_number"),
+            "sha256_short": sha256[:12],
+            "size_bytes": len(content),
+            "extraction_confidence": float(extraction_confidence),
+        },
+        request=request,
+    )
+
+    return StepUploadResponse(
+        pending_import_id=pending.id,
+        supplier_document_id=doc.id,
+        detected_supplier_id=supplier.id,
+        detected_supplier_name=supplier.name,
+        supplier_was_created=supplier_was_created,
+        extraction_confidence=float(extraction_confidence),
+        warnings=parsed.warnings,
+    )
