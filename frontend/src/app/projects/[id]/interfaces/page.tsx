@@ -13,11 +13,12 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useRouter } from 'next/navigation';
+import Link from 'next/link';
 import {
   Loader2, RefreshCw, Plus, Search, ChevronRight, ChevronDown,
   Cable, Network, Box, Zap, Shield, Radio, Layers, Cpu,
   X, ArrowRight, Grid3X3, AlertTriangle, FileSpreadsheet, GitMerge,
-  Package, Clock,
+  Package, Clock, Info,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { projectsAPI } from '@/lib/api';
@@ -682,6 +683,22 @@ export default function InterfacesPage() {
       {/* ══════════════════════════════════════ */}
       {tab === 'systems' && !loading && (
         <div>
+          {/* TDD-SYSARCH-002 §6.5: deprecation banner. Tab content
+              stays functional; full removal is deferred to
+              TDD-EI-CLEANUP-001 after a soak release. */}
+          <div className="mb-4 flex items-center gap-2 rounded-xl border border-blue-500/30 bg-blue-500/10 px-4 py-3">
+            <Info className="h-4 w-4 flex-shrink-0 text-blue-400" aria-hidden="true" />
+            <span className="flex-1 text-sm text-blue-200">
+              Systems and Units are now managed in <strong>System Architecture</strong>. This tab will be removed in a future release.
+            </span>
+            <Link
+              href={`${p}/system-architecture?tab=systems`}
+              className="rounded-lg bg-gradient-to-br from-blue-500 to-violet-500 px-3 py-1.5 text-xs font-semibold text-white transition hover:shadow-lg"
+            >
+              Open System Architecture →
+            </Link>
+          </div>
+
           {/* Toolbar */}
           <div className="mb-4 flex gap-2">
             <div className="relative flex-1">

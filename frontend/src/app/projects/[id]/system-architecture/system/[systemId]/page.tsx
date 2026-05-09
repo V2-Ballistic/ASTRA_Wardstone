@@ -3,7 +3,11 @@
 /**
  * ASTRA — System Detail Page
  * ==============================
- * File: frontend/src/app/projects/[id]/interfaces/system/[systemId]/page.tsx
+ * File: frontend/src/app/projects/[id]/system-architecture/system/[systemId]/page.tsx
+ *
+ * Relocated from /interfaces/system/[systemId]/ to /system-architecture/...
+ * by TDD-SYSARCH-002 Phase 6. The old path 307-redirects via
+ * frontend/next.config.js so existing bookmarks survive.
  *
  * Layout per spec:
  *   1. Breadcrumb: Interfaces → {System Name}
@@ -25,7 +29,7 @@ import { useParams, useRouter } from 'next/navigation';
 import {
   ArrowLeft, Loader2, Edit3, Save, X, Plus, Trash2, RefreshCw,
   Box, Cpu, Cable, Radio, Zap, Shield, Network, ChevronRight,
-  AlertTriangle, Search, GitMerge,
+  AlertTriangle, Search, GitMerge, Link2,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { interfaceAPI } from '@/lib/interface-api';
@@ -653,7 +657,7 @@ export default function SystemDetailPage() {
   const handleDeleteSystem = async () => {
     try {
       await interfaceAPI.deleteSystem(systemId, true);
-      router.push(`${p}/interfaces`);
+      router.push(`${p}/system-architecture?tab=systems`);
     } catch (e: any) {
       setMsg(e?.response?.data?.detail || 'Delete failed');
       setShowDeleteSystem(false);
@@ -701,9 +705,9 @@ export default function SystemDetailPage() {
       <div className="py-20 text-center">
         <AlertTriangle className="mx-auto h-10 w-10 text-red-400 mb-3" />
         <p className="text-sm text-slate-400">System not found.</p>
-        <button onClick={() => router.push(`${p}/interfaces`)}
+        <button onClick={() => router.push(`${p}/system-architecture?tab=systems`)}
           className="mt-3 text-xs text-blue-400 hover:underline">
-          Back to Interfaces
+          Back to System Architecture
         </button>
       </div>
     );
@@ -717,9 +721,9 @@ export default function SystemDetailPage() {
     <div>
       {/* ─── 1. Breadcrumb ─── */}
       <div className="mb-4 flex items-center gap-1.5 text-[11px] text-slate-500">
-        <button onClick={() => router.push(`${p}/interfaces`)}
+        <button onClick={() => router.push(`${p}/system-architecture?tab=systems`)}
           className="hover:text-blue-400 transition">
-          Interfaces
+          System Architecture
         </button>
         <ChevronRight className="h-3 w-3" />
         <span className="text-slate-300 font-semibold">{system.name}</span>
@@ -728,7 +732,7 @@ export default function SystemDetailPage() {
       {/* ─── 2. Header ─── */}
       <div className="mb-6 flex items-start justify-between">
         <div className="flex items-start gap-4">
-          <button onClick={() => router.push(`${p}/interfaces`)}
+          <button onClick={() => router.push(`${p}/system-architecture?tab=systems`)}
             className="mt-1 rounded-lg border border-astra-border p-2 text-slate-500 hover:text-slate-300 hover:border-blue-500/30 transition">
             <ArrowLeft className="h-4 w-4" />
           </button>
@@ -925,7 +929,7 @@ export default function SystemDetailPage() {
           {filteredUnits.map(u => (
             <div key={u.id}
               className="group relative rounded-xl border border-astra-border bg-astra-surface p-4 hover:border-blue-500/30 transition cursor-pointer"
-              onClick={() => router.push(`${p}/interfaces/unit/${u.id}`)}>
+              onClick={() => router.push(`${p}/system-architecture/unit/${u.id}`)}>
 
               {/* Delete button — top right, hover-visible */}
               <button
@@ -948,9 +952,19 @@ export default function SystemDetailPage() {
               </h3>
 
               {/* Manufacturer + Part Number */}
-              <p className="text-[11px] text-slate-500 mb-3 truncate">
+              <p className="text-[11px] text-slate-500 mb-2 truncate">
                 {u.manufacturer} · {u.part_number}
               </p>
+
+              {/* TDD-SYSARCH-002 §6.1: catalog linkage chip when this
+                  unit is linked to a CatalogPart. Backend Phase 2
+                  populates u.catalog_part_summary on UnitSummary. */}
+              {u.catalog_part_summary && (
+                <div className="mb-3 inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-300">
+                  <Link2 className="h-3 w-3" aria-hidden="true" />
+                  <span className="font-mono">{u.catalog_part_summary.part_number}</span>
+                </div>
+              )}
 
               {/* Stats row */}
               <div className="flex gap-5 pt-2.5 border-t border-astra-border">

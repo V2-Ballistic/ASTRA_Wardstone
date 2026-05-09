@@ -3,12 +3,13 @@
 /**
  * ASTRA — Unit Detail Page (Full Rewrite)
  * ==========================================
- * File: frontend/src/app/projects/[id]/interfaces/unit/[unitId]/page.tsx
+ * File: frontend/src/app/projects/[id]/system-architecture/unit/[unitId]/page.tsx
  *
- * NOTE: This page moves from /interfaces/[unitId] to /interfaces/unit/[unitId].
- *       Update System Detail page navigation accordingly.
+ * Relocated from /interfaces/unit/[unitId]/ by TDD-SYSARCH-002 Phase 6.
+ * The old path 307-redirects via frontend/next.config.js so existing
+ * bookmarks survive.
  *
- * Breadcrumb: Interfaces → {System Name} → {Unit Designation}
+ * Breadcrumb: System Architecture → {System Name} → {Unit Designation}
  * Tabs: Overview | Connectors | Communication | Specifications
  *
  * API calls:
@@ -27,8 +28,10 @@ import {
   ArrowLeft, Loader2, Edit3, Save, X, Plus, Cpu, Box,
   Cable, Radio, Zap, ChevronRight, ChevronDown, Trash2,
   RefreshCw, Wifi, Thermometer, Shield, AlertTriangle,
-  CheckCircle, Package, GitBranch,
+  CheckCircle, Package, GitBranch, Link2, Unlink,
 } from 'lucide-react';
+import CatalogPartPicker from '@/components/catalog/CatalogPartPicker';
+import type { CatalogPart, PartClass } from '@/lib/catalog-types';
 import clsx from 'clsx';
 import { interfaceAPI } from '@/lib/interface-api';
 import type {
@@ -142,6 +145,92 @@ function SpecRow({ label, value, unit: u }: { label: string; value: any; unit?: 
   );
 }
 
+
+/**
+ * TDD-SYSARCH-002 §6.2 — catalog linkage banner.
+ *
+ * Sits at the top of the Unit Detail Overview tab. Two visual states:
+ *   - Green when `unit.catalog_part_summary` is populated. Shows the
+ *     part number, name, mass, attached-CAD/ICD chips, supplier, and
+ *     "in-house" indicator. Buttons: Edit Link / Unlink.
+ *   - Amber when not linked. Single CTA: "Link to Catalog".
+ */
+function CatalogLinkageBanner({
+  unit,
+  onUnlinkRequested,
+  onLinkRequested,
+}: {
+  unit: UnitDetail;
+  onUnlinkRequested: () => void;
+  onLinkRequested: () => void;
+}) {
+  const cp = unit.catalog_part_summary;
+  if (!cp) {
+    return (
+      <div className="mb-4 flex items-center gap-3 rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3">
+        <Unlink className="h-4 w-4 flex-shrink-0 text-amber-400" aria-hidden="true" />
+        <div className="flex-1">
+          <p className="text-[12px] font-semibold text-amber-200">Not linked to catalog</p>
+          <p className="text-[10px] text-amber-300/70">
+            Link to a CatalogPart to source manufacturer / part number / mass automatically.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onLinkRequested}
+          className="rounded-lg bg-gradient-to-br from-blue-500 to-violet-500 px-3 py-1.5 text-[11px] font-semibold text-white hover:shadow-lg"
+        >
+          Link to Catalog
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-emerald-500/30 bg-emerald-500/5 px-4 py-3">
+      <Link2 className="h-4 w-4 flex-shrink-0 text-emerald-400" aria-hidden="true" />
+      <div className="flex flex-1 flex-wrap items-center gap-2">
+        <span className="text-[12px] text-emerald-200">
+          Linked to <strong className="font-mono">{cp.part_number}</strong> · {cp.name}
+        </span>
+        {cp.mass_kg != null && (
+          <span className="rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-300">
+            {cp.mass_kg} kg
+          </span>
+        )}
+        {cp.cad_step_path && (
+          <span className="rounded-full bg-blue-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-blue-300">
+            CAD attached
+          </span>
+        )}
+        {cp.supplier_name && (
+          <span className="rounded-full bg-slate-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-slate-200">
+            {cp.supplier_name}
+            {cp.supplier_is_in_house && (
+              <span className="ml-1 text-emerald-300">· in-house</span>
+            )}
+          </span>
+        )}
+      </div>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={onLinkRequested}
+          className="rounded border border-astra-border px-2.5 py-1 text-[11px] text-slate-300 hover:border-blue-500/30 hover:text-blue-300"
+        >
+          Edit link
+        </button>
+        <button
+          type="button"
+          onClick={onUnlinkRequested}
+          className="rounded border border-red-500/30 bg-red-500/10 px-2.5 py-1 text-[11px] text-red-300 hover:bg-red-500/20"
+        >
+          Unlink
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── Editable spec row ──
 function EditRow({ label, field, value, onChange, type = 'text', unit: u }: {
   label: string; field: string; value: any; onChange: (f: string, v: any) => void;
@@ -201,6 +290,12 @@ export default function UnitDetailPage() {
   const [editingOverview, setEditingOverview]   = useState(false);
   const [editFields, setEditFields]             = useState<Record<string, any>>({});
   const [savingOverview, setSavingOverview]      = useState(false);
+
+  // ── TDD-SYSARCH-002 §6.2: catalog link / unlink modals ──
+  const [showLinkPicker, setShowLinkPicker]     = useState(false);
+  const [showUnlinkConfirm, setShowUnlinkConfirm] = useState(false);
+  const [linkSaving, setLinkSaving]              = useState(false);
+  const [linkError, setLinkError]                = useState<string | null>(null);
 
   // ── Specs editing ──
   const [editingSpecs, setEditingSpecs]   = useState(false);
@@ -279,6 +374,46 @@ export default function UnitDetailPage() {
       fetchUnit();
     } catch (e: any) { flash(e?.response?.data?.detail || 'Save failed'); }
     setSavingOverview(false);
+  };
+
+  // ── TDD-SYSARCH-002 §6.2: catalog link / unlink handlers ──
+  const handleLinkCatalog = async (cp: CatalogPart | null) => {
+    if (cp == null) {
+      setShowLinkPicker(false);
+      return;
+    }
+    setLinkSaving(true);
+    setLinkError(null);
+    try {
+      // PATCH catalog_part_id; backend Phase 2 fires the right audit
+      // event (linked_to_catalog vs catalog_link_changed) and returns
+      // the eager-loaded catalog_part_summary on the response.
+      await interfaceAPI.updateUnit(unitId, { catalog_part_id: cp.id } as Record<string, unknown>);
+      setShowLinkPicker(false);
+      flash(`Linked to catalog part ${cp.part_number}`);
+      fetchUnit();
+    } catch (e: any) {
+      const detail = e?.response?.data?.detail || e?.message || 'Link failed';
+      setLinkError(typeof detail === 'string' ? detail : JSON.stringify(detail));
+    } finally {
+      setLinkSaving(false);
+    }
+  };
+
+  const handleUnlinkCatalog = async () => {
+    setLinkSaving(true);
+    setLinkError(null);
+    try {
+      await interfaceAPI.updateUnit(unitId, { catalog_part_id: null } as Record<string, unknown>);
+      setShowUnlinkConfirm(false);
+      flash('Unlinked from catalog');
+      fetchUnit();
+    } catch (e: any) {
+      const detail = e?.response?.data?.detail || e?.message || 'Unlink failed';
+      setLinkError(typeof detail === 'string' ? detail : JSON.stringify(detail));
+    } finally {
+      setLinkSaving(false);
+    }
   };
 
   const onEditField = (field: string, value: any) => {
@@ -381,7 +516,7 @@ export default function UnitDetailPage() {
     <div className="py-20 text-center">
       <AlertTriangle className="mx-auto h-10 w-10 text-red-400 mb-3" />
       <p className="text-sm text-slate-400">Unit not found.</p>
-      <button onClick={() => router.push(`${p}/interfaces`)} className="mt-3 text-xs text-blue-400 hover:underline">Back to Interfaces</button>
+      <button onClick={() => router.push(`${p}/system-architecture?tab=units`)} className="mt-3 text-xs text-blue-400 hover:underline">Back to System Architecture</button>
     </div>
   );
 
@@ -389,11 +524,11 @@ export default function UnitDetailPage() {
     <div>
       {/* ── Breadcrumb ── */}
       <div className="mb-4 flex items-center gap-1.5 text-[11px] text-slate-500">
-        <button onClick={() => router.push(`${p}/interfaces`)} className="hover:text-blue-400 transition">Interfaces</button>
+        <button onClick={() => router.push(`${p}/system-architecture?tab=units`)} className="hover:text-blue-400 transition">System Architecture</button>
         <ChevronRight className="h-3 w-3" />
         {unit.system_id && (
           <>
-            <button onClick={() => router.push(`${p}/interfaces/system/${unit.system_id}`)} className="hover:text-blue-400 transition">
+            <button onClick={() => router.push(`${p}/system-architecture/system/${unit.system_id}`)} className="hover:text-blue-400 transition">
               {systemName || 'System'}
             </button>
             <ChevronRight className="h-3 w-3" />
@@ -525,6 +660,14 @@ export default function UnitDetailPage() {
               className="absolute top-4 right-4 flex items-center gap-1 rounded-lg border border-astra-border px-3 py-1.5 text-xs text-slate-400 hover:text-blue-400 hover:border-blue-500/30 z-10">
               <Edit3 className="h-3 w-3" /> Edit
             </button>
+
+            {/* TDD-SYSARCH-002 §6.2: catalog linkage banner */}
+            <CatalogLinkageBanner
+              unit={unit}
+              onUnlinkRequested={() => setShowUnlinkConfirm(true)}
+              onLinkRequested={() => setShowLinkPicker(true)}
+            />
+
             <div className="grid grid-cols-2 gap-6">
               <div className="rounded-xl border border-astra-border bg-astra-surface p-4">
                 <h3 className="text-xs font-bold text-slate-400 mb-3">IDENTIFICATION</h3>
@@ -936,6 +1079,95 @@ export default function UnitDetailPage() {
               )}
             </div>
           )}
+        </div>
+      )}
+
+      {/* TDD-SYSARCH-002 §6.2 — link picker modal */}
+      {showLinkPicker && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Link unit to a catalog part"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+          onClick={(e) => { if (e.target === e.currentTarget) setShowLinkPicker(false); }}
+        >
+          <div className="w-full max-w-lg rounded-xl border border-astra-border bg-astra-surface p-5 shadow-2xl">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-base font-bold text-slate-100">Link to catalog part</h2>
+              <button
+                type="button"
+                onClick={() => setShowLinkPicker(false)}
+                disabled={linkSaving}
+                aria-label="Close"
+                className="rounded p-1 text-slate-400 hover:bg-astra-surface-alt hover:text-slate-200"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            {linkError && (
+              <div role="alert" className="mb-3 rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+                {linkError}
+              </div>
+            )}
+            <CatalogPartPicker
+              label="Catalog part"
+              value={null}
+              onChange={handleLinkCatalog}
+              allowedClasses={[
+                'processor', 'sensor', 'power_supply', 'radio', 'antenna', 'actuator',
+                'display', 'harness', 'connector_only', 'compute_module',
+                'power_distribution', 'interface_card', 'other',
+              ] as PartClass[]}
+              placeholder="Search and pick a catalog part…"
+              disabled={linkSaving}
+            />
+            <p className="mt-2 text-[10px] text-slate-500">
+              Picking a part links this unit; the change is recorded in the audit log.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* TDD-SYSARCH-002 §6.2 — unlink confirmation */}
+      {showUnlinkConfirm && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Unlink unit from catalog"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+          onClick={(e) => { if (e.target === e.currentTarget) setShowUnlinkConfirm(false); }}
+        >
+          <div className="w-full max-w-md rounded-xl border border-astra-border bg-astra-surface p-5 shadow-2xl">
+            <h2 className="text-base font-bold text-slate-100">Unlink from catalog?</h2>
+            <p className="mt-2 text-[12px] text-slate-300">
+              The unit will keep its current field values, but they&apos;ll no longer
+              be sourced from a CatalogPart. The change is recorded in the audit log.
+            </p>
+            {linkError && (
+              <div role="alert" className="mt-3 rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+                {linkError}
+              </div>
+            )}
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowUnlinkConfirm(false)}
+                disabled={linkSaving}
+                className="rounded border border-astra-border px-3 py-1.5 text-xs text-slate-300 hover:bg-astra-surface-alt"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleUnlinkCatalog}
+                disabled={linkSaving}
+                className="flex items-center gap-1.5 rounded bg-red-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-red-500 disabled:opacity-50"
+              >
+                {linkSaving && <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />}
+                Unlink
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
