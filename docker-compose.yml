@@ -81,6 +81,14 @@ services:
       - ./backend/app:/app/app
       - ./backend/alembic:/app/alembic
       - ./backend/alembic.ini:/app/alembic.ini
+      # CAT-002: catalog_seed JSON (vendor patterns, material lexicon,
+      # part-type lexicon) is loaded by app/services/cad/step_parser.py
+      # at module import — without this mount the parser silently falls
+      # through to "mechanical_other" / no-vendor on every upload.
+      - ./backend/catalog_seed:/app/catalog_seed
+      # SYSARCH-002 Phase 0: bind tests so `docker compose exec backend
+      # python -m pytest` runs the host-side test files.
+      - ./backend/tests:/app/tests
       - upload_data:/app/uploads
     depends_on:
       db:
@@ -115,6 +123,9 @@ services:
     volumes:
       - ./frontend/src:/app/src
       - ./frontend/public:/app/public
+      # SYSARCH-002 Phase 0: bind tsconfig.json so host edits to the
+      # exclude list are visible to `docker compose exec frontend npx tsc`.
+      - ./frontend/tsconfig.json:/app/tsconfig.json
     depends_on:
       - backend
     command: npm run dev

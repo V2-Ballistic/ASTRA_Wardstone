@@ -1505,8 +1505,15 @@ async def upload_step_file(
     stored_path = SUPPLIER_DOC_DIR / f"{file_uuid}.step"
     stored_path.write_bytes(content)
 
+    original_filename = file.filename or "upload.step"
     try:
-        parsed = _parse_step_file(stored_path, run_pythonocc=True)
+        # Pass the user-supplied filename so vendor regex / lexicon
+        # match against the real name, not the UUID storage path.
+        parsed = _parse_step_file(
+            stored_path,
+            run_pythonocc=True,
+            original_filename=original_filename,
+        )
     except ValueError as exc:
         # Clean up the partial save before bubbling.
         try:
@@ -1514,8 +1521,6 @@ async def upload_step_file(
         except OSError:
             pass
         raise HTTPException(422, f"STEP parse failed: {exc}") from exc
-
-    original_filename = file.filename or "upload.step"
 
     # ── 3. resolve / auto-create supplier ──
     supplier_was_created = False

@@ -60,8 +60,14 @@ _FILE_SCHEMA_RE = re.compile(
     r"FILE_SCHEMA\s*\(\s*\(\s*'([^']+)'", re.IGNORECASE
 )
 
+# PRODUCT entity has the form:
+#   #N = PRODUCT('id', 'name', '...', (...));
+# The first arg is the part identifier (often the MPN); the second is
+# the descriptive product name that the lexicon needs to hit. Capture
+# both so the part-type / material lookups have a real string to search.
 _PRODUCT_RE = re.compile(
-    r"#(\d+)\s*=\s*PRODUCT\s*\(\s*'([^']*)'", re.IGNORECASE
+    r"#(\d+)\s*=\s*PRODUCT\s*\(\s*'([^']*)'\s*,\s*'([^']*)'",
+    re.IGNORECASE,
 )
 
 _PRP_CATEGORY_RE = re.compile(
@@ -238,6 +244,7 @@ def parse_step_file(
     file_path: Path | str,
     *,
     run_pythonocc: bool = True,
+    original_filename: Optional[str] = None,
 ) -> ParsedStepResult:
     """Parse a STEP file and produce a ParsedStepResult.
 
@@ -273,7 +280,10 @@ def parse_step_file(
             "file does not look like a STEP file (no ISO-10303 marker)"
         )
 
-    basename = p.name
+    # Vendor detection runs against the user-supplied filename, not the
+    # on-disk path — the upload handler stores the bytes under a UUID
+    # to avoid collisions, which would otherwise hide the MPN regex.
+    basename = (original_filename or p.name)
     result.extracted["original_filename"] = basename
     result.confidence["original_filename"] = "high"
 
@@ -307,7 +317,14 @@ def parse_step_file(
     pm = _PRODUCT_RE.search(text)
     if pm:
         result.extracted["step_entity_id"] = f"#PRODUCT:{pm.group(1)}"
-        product_name = pm.group(2).strip()
+        # Group 2 is the part identifier (often the MPN); group 3 is the
+        # descriptive name. Lexicon matching wants the descriptive name;
+        # fall back to the identifier when the description is empty.
+        product_id = pm.group(2).strip()
+        product_desc = pm.group(3).strip()
+        product_name = product_desc or product_id
+        if product_id:
+            result.extracted["product_id"] = product_id
         result.extracted["product_name"] = product_name
         result.confidence["step_entity_id"] = "high"
         result.confidence["product_name"] = "high"

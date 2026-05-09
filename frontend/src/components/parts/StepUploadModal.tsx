@@ -34,7 +34,11 @@ export function StepUploadModal({
     return null;
   };
 
-  const handleFileSelect = (f: File) => {
+  // Phase 0 (sysarch-prep §0.3) — wrap in useCallback so the eslint
+  // react-hooks/exhaustive-deps rule is satisfied when handleDrop (also
+  // useCallback) lists it as a dependency. The body only references
+  // state setters, which are stable identities — empty dep array is OK.
+  const handleFileSelect = useCallback((f: File) => {
     const err = validateFile(f);
     if (err) {
       setError(err);
@@ -42,14 +46,14 @@ export function StepUploadModal({
     }
     setFile(f);
     setError(null);
-  };
+  }, []);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setDragOver(false);
     const dropped = e.dataTransfer.files[0];
     if (dropped) handleFileSelect(dropped);
-  }, []);
+  }, [handleFileSelect]);
 
   const handleUpload = async () => {
     if (!file) return;
