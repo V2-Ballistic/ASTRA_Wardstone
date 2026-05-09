@@ -89,6 +89,8 @@ for _mod, _attr in [
     ("app.routers.parts_library", "router"),
     ("app.routers.project_parts", "router"),
     ("app.routers.mechanical_joints", "router"),
+    # System Architecture (TDD-SYSARCH-002)
+    ("app.routers.system_architecture", "router"),
 ]:
     try:
         _m = __import__(_mod, fromlist=[_attr])
