@@ -38,12 +38,15 @@ from app.models.interface import (
     # INTF-002 Phase 4 — Connection Builder uses these enums for cb_start
     InterfaceType, InterfaceDirection, InterfaceStatus, InterfaceCriticality,
 )
+# TDD-SYSARCH-002 Phase 2 — populate Unit.catalog_part_summary on responses
+from app.models.catalog import CatalogPart, Supplier
 from app.models import Requirement
 from app.schemas.interface import (
     # Systems
     SystemCreate, SystemUpdate, SystemResponse, SystemDetail,
     # Units
     UnitCreate, UnitUpdate, UnitSummary, UnitResponse, UnitDetail,
+    UnitCatalogPartSummary,
     # Connectors
     ConnectorCreate, ConnectorUpdate, ConnectorResponse, ConnectorWithPins,
     # Pins
@@ -121,6 +124,87 @@ class AutoReqRejectRequest(BaseModel):
 def _ev(v) -> str:
     """Enum-safe value extraction."""
     return v.value if hasattr(v, "value") else str(v) if v else ""
+
+
+# ══════════════════════════════════════════════════════════════
+#  TDD-SYSARCH-002 Phase 2: catalog linkage helpers
+# ══════════════════════════════════════════════════════════════
+
+def _build_catalog_part_summary(
+    cp: Optional[CatalogPart],
+    sup: Optional[Supplier],
+) -> Optional[UnitCatalogPartSummary]:
+    """Compose the embedded summary the System Architecture views show
+    on every Unit. Returns None when the unit isn't linked to a catalog
+    part — UnitResponse / UnitSummary then serializes ``catalog_part_summary``
+    as ``null`` (Pydantic) rather than ``{}``.
+    """
+    if cp is None:
+        return None
+    return UnitCatalogPartSummary(
+        id=cp.id,
+        part_number=cp.part_number,
+        name=cp.name,
+        part_class=(
+            cp.part_class.value if hasattr(cp.part_class, "value") else str(cp.part_class)
+        ),
+        part_subtype=getattr(cp, "part_subtype", None),
+        mass_kg=float(cp.mass_kg) if cp.mass_kg is not None else None,
+        cad_step_path=getattr(cp, "cad_step_path", None),
+        cad_preview_path=getattr(cp, "cad_preview_path", None),
+        supplier_name=sup.name if sup is not None else None,
+        supplier_is_in_house=bool(getattr(sup, "is_in_house", False)) if sup is not None else None,
+    )
+
+
+def _populate_unit_catalog(
+    resp: UnitResponse | UnitSummary | UnitDetail,
+    unit: Unit,
+) -> None:
+    """Mutate the Pydantic response in place with the unit's catalog
+    linkage fields.
+
+    The relationship ``Unit.catalog_part`` is eager-loaded via the
+    handler's joinedload. ``CatalogPart.supplier`` is also eager-loaded
+    (one extra join in the same query) so the summary's ``supplier_name``
+    / ``supplier_is_in_house`` fields don't trigger a per-row lookup.
+    """
+    resp.catalog_part_id = unit.catalog_part_id
+    cp: Optional[CatalogPart] = getattr(unit, "catalog_part", None)
+    sup: Optional[Supplier] = getattr(cp, "supplier", None) if cp is not None else None
+    resp.catalog_part_summary = _build_catalog_part_summary(cp, sup)
+
+
+def _emit_catalog_link_audit(
+    db: Session,
+    unit: Unit,
+    *,
+    old_catalog_part_id: Optional[int],
+    new_catalog_part_id: Optional[int],
+    current_user_id: int,
+    request: Optional[Request] = None,
+) -> None:
+    """Three audit events depending on the kind of change. No-op when
+    the catalog_part_id is unchanged."""
+    if old_catalog_part_id == new_catalog_part_id:
+        return
+    if old_catalog_part_id is None and new_catalog_part_id is not None:
+        action = "unit.linked_to_catalog"
+    elif old_catalog_part_id is not None and new_catalog_part_id is None:
+        action = "unit.unlinked_from_catalog"
+    else:
+        action = "unit.catalog_link_changed"
+    _audit(
+        db, action, "unit", unit.id, current_user_id,
+        {
+            "unit_id": unit.id,
+            "old_catalog_part_id": old_catalog_part_id,
+            "new_catalog_part_id": new_catalog_part_id,
+            "project_id": unit.project_id,
+        },
+        project_id=unit.project_id,
+        request=request,
+    )
 
 
 def _next_id(db: Session, model, project_id: int, prefix: str, id_field: str) -> str:
@@ -419,18 +503,36 @@ def list_units(
     system_id: Optional[int] = None,
     unit_type: Optional[str] = None,
     search: Optional[str] = None,
+    # TDD-SYSARCH-002 Phase 2: catalog-linkage filter for the new
+    # System Architecture Units tab. None = all, True = linked only,
+    # False = unlinked only.
+    linked_to_catalog: Optional[bool] = Query(
+        None,
+        description="Filter by catalog linkage: True=linked, False=unlinked, omitted=any.",
+    ),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     _require_project(db, project_id, current_user)
-    query = db.query(Unit).filter(Unit.project_id == project_id)
+    # joinedload pulls Unit.catalog_part + the linked Supplier in the
+    # same SELECT — no per-row N+1 lookup when populating
+    # catalog_part_summary below.
+    query = (
+        db.query(Unit)
+        .options(joinedload(Unit.catalog_part).joinedload(CatalogPart.supplier))
+        .filter(Unit.project_id == project_id)
+    )
 
     if system_id:
         query = query.filter(Unit.system_id == system_id)
     if unit_type:
         query = query.filter(Unit.unit_type == unit_type)
+    if linked_to_catalog is True:
+        query = query.filter(Unit.catalog_part_id.isnot(None))
+    elif linked_to_catalog is False:
+        query = query.filter(Unit.catalog_part_id.is_(None))
     if search:
         t = f"%{search}%"
         query = query.filter(
@@ -461,6 +563,7 @@ def list_units(
         s = UnitSummary.model_validate(u)
         s.connector_count = conn_counts.get(u.id, 0)
         s.bus_count = bus_counts.get(u.id, 0)
+        _populate_unit_catalog(s, u)
         results.append(s)
     return results
 
@@ -496,16 +599,37 @@ def create_unit(
     )
     db.add(unit)
     db.commit()
-    db.refresh(unit)
+    # Re-fetch with the catalog joinedload so the response surfaces the
+    # linked CatalogPart's summary on create — UI auto-fills hint comes
+    # from the same payload.
+    unit = (
+        db.query(Unit)
+        .options(joinedload(Unit.catalog_part).joinedload(CatalogPart.supplier))
+        .filter(Unit.id == unit.id)
+        .first()
+    )
 
     _audit(db, "unit.created", "unit", unit.id, current_user.id,
            {"unit_id": unit_id, "designation": data.designation, "type": data.unit_type},
            project_id=project_id, request=request)
 
+    # TDD-SYSARCH-002 Phase 2: when the unit is created already linked
+    # to a catalog part, emit the link audit event so the audit trail
+    # captures the initial link as well as later changes.
+    if unit.catalog_part_id is not None:
+        _emit_catalog_link_audit(
+            db, unit,
+            old_catalog_part_id=None,
+            new_catalog_part_id=unit.catalog_part_id,
+            current_user_id=current_user.id,
+            request=request,
+        )
+
     resp = UnitResponse.model_validate(unit)
     resp.connector_count = 0
     resp.bus_count = 0
     resp.message_count = 0
+    _populate_unit_catalog(resp, unit)
     return resp
 
 
@@ -515,7 +639,15 @@ def get_unit(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    unit = db.query(Unit).filter(Unit.id == unit_pk).first()
+    unit = (
+        db.query(Unit)
+        # TDD-SYSARCH-002 Phase 2: eager-load the catalog linkage so
+        # the response builder can populate catalog_part_summary
+        # without per-detail extra queries.
+        .options(joinedload(Unit.catalog_part).joinedload(CatalogPart.supplier))
+        .filter(Unit.id == unit_pk)
+        .first()
+    )
     if not unit:
         raise HTTPException(404, "Unit not found")
     _assert_member_for_entity(db, current_user, unit)
@@ -698,6 +830,7 @@ def get_unit(
     resp.connectors = connector_list
     resp.bus_definitions = bus_list
     resp.environmental_specs = env_list
+    _populate_unit_catalog(resp, unit)
     return resp
 
 
@@ -726,15 +859,37 @@ def update_unit(
         if dup:
             raise HTTPException(409, f"Designation '{updates['designation']}' already exists")
 
+    # TDD-SYSARCH-002 Phase 2: snapshot the catalog_part_id BEFORE the
+    # mutation so we can fire the right link-change audit event after.
+    old_catalog_part_id = unit.catalog_part_id
+
     for field, value in updates.items():
         setattr(unit, field, value)
     unit.updated_at = datetime.utcnow()
     db.commit()
-    db.refresh(unit)
+
+    # Re-fetch with eager-load so the response builder has the linked
+    # CatalogPart + Supplier without an extra round-trip.
+    unit = (
+        db.query(Unit)
+        .options(joinedload(Unit.catalog_part).joinedload(CatalogPart.supplier))
+        .filter(Unit.id == unit_pk)
+        .first()
+    )
 
     _audit(db, "unit.updated", "unit", unit.id, current_user.id,
            {"fields": list(updates.keys())},
            project_id=unit.project_id, request=request)
+
+    # Phase 2: emit one of three link-change events when the FK moved.
+    if "catalog_part_id" in updates:
+        _emit_catalog_link_audit(
+            db, unit,
+            old_catalog_part_id=old_catalog_part_id,
+            new_catalog_part_id=unit.catalog_part_id,
+            current_user_id=current_user.id,
+            request=request,
+        )
 
     conn_count = db.query(func.count(Connector.id)).filter(Connector.unit_id == unit.id).scalar()
     bus_count = db.query(func.count(BusDefinition.id)).filter(BusDefinition.unit_id == unit.id).scalar()
@@ -746,6 +901,7 @@ def update_unit(
     resp.connector_count = conn_count
     resp.bus_count = bus_count
     resp.message_count = msg_count
+    _populate_unit_catalog(resp, unit)
     return resp
 
 
