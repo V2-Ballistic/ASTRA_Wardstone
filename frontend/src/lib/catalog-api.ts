@@ -23,6 +23,7 @@ import type {
   PendingCatalogImport,
   PendingCatalogImportUpdate,
   PendingImportStatus,
+  StepUploadResponse,
 } from './catalog-types';
 import type { Unit } from './interface-types';
 
@@ -210,4 +211,26 @@ export const catalogAPI = {
       `${BASE}/pending-imports/${id}/reject`,
       { reason: reason || null },
     ),
+
+  // ══════════════════════════════════════
+  //  TDD-CAT-002 — STEP file upload
+  // ══════════════════════════════════════
+
+  /**
+   * Upload a STEP file. The backend parser runs inline:
+   *   - SHA-256 dedup across ALL suppliers (409 on duplicate)
+   *   - vendor auto-detect from filename
+   *   - supplier auto-create on first vendor sighting
+   *   - returns the new pending_import_id for the review page
+   *
+   * Note: do NOT set Content-Type explicitly — Axios infers
+   * multipart/form-data with the right boundary when you pass a
+   * FormData. Setting it manually breaks the boundary in some setups
+   * (CAT-002 common gotcha §14).
+   */
+  uploadStep: (file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return api.post<StepUploadResponse>(`${BASE}/upload-step`, form);
+  },
 };

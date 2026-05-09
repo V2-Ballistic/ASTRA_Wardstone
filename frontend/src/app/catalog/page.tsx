@@ -12,11 +12,11 @@
  * exists and returns [] until Phase 7's extraction pipeline runs).
  */
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Loader2, RefreshCw, Plus, Search, ChevronRight, Building2, Cpu,
-  FileSearch2, AlertTriangle, Package, Globe,
+  FileSearch2, AlertTriangle, Package, Globe, Upload,
 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -140,6 +140,11 @@ function SuppliersTab() {
                     <div className="flex items-center gap-2">
                       <Building2 className="h-3.5 w-3.5 text-blue-400" aria-hidden="true" />
                       {s.name}
+                      {s.is_in_house && (
+                        <span className="rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-400">
+                          In House
+                        </span>
+                      )}
                     </div>
                     {s.short_name && <div className="text-[10px] text-slate-500 ml-5">{s.short_name}</div>}
                   </td>
@@ -178,6 +183,9 @@ function PartsTab() {
   const [lifecycle, setLifecycle] = useState<LifecycleStatus | ''>('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  // ── TDD-CAT-002: STEP upload state ──
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const refresh = useCallback(() => {
     setLoading(true);
@@ -196,6 +204,30 @@ function PartsTab() {
     const h = setTimeout(refresh, 250);
     return () => clearTimeout(h);
   }, [refresh]);
+
+  // TDD-CAT-002: STEP upload handler — file picker → POST /catalog/upload-step
+  // → navigate to the new pending-imports review page.
+  const onPickStepFile = useCallback(() => {
+    fileInputRef.current?.click();
+  }, []);
+
+  const onStepFileSelected = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    setError('');
+    setUploading(true);
+    try {
+      const r = await catalogAPI.uploadStep(f);
+      router.push(`/catalog/pending-imports/${r.data.pending_import_id}`);
+    } catch (err) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+        || (err instanceof Error ? err.message : 'Upload failed');
+      setError(detail);
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  }, [router]);
 
   return (
     <div>
@@ -235,6 +267,28 @@ function PartsTab() {
           className="rounded-lg border border-astra-border p-2 text-slate-400 hover:border-blue-500/30 hover:text-slate-200"
         >
           <RefreshCw className={clsx('h-3.5 w-3.5', loading && 'animate-spin')} aria-hidden="true" />
+        </button>
+        {/* TDD-CAT-002 — Upload STEP button. Distinct from "New Part"
+            (manual create) by the emerald accent. Clicking triggers the
+            hidden file input below. */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".step,.stp,.STEP,.STP,model/step,application/STEP"
+          onChange={onStepFileSelected}
+          className="hidden"
+          aria-hidden="true"
+        />
+        <button
+          type="button"
+          onClick={onPickStepFile}
+          disabled={uploading}
+          className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-50"
+        >
+          {uploading
+            ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+            : <Upload className="h-3.5 w-3.5" aria-hidden="true" />}
+          {uploading ? 'Parsing STEP…' : 'Upload STEP'}
         </button>
         <button
           type="button"
@@ -318,6 +372,7 @@ function PartsTab() {
 // ══════════════════════════════════════
 
 function PendingImportsTab() {
+  const router = useRouter();
   const [items, setItems] = useState<PendingCatalogImport[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -332,14 +387,10 @@ function PendingImportsTab() {
 
   return (
     <div>
-      <div className="mb-3 rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-300 flex items-start gap-2">
-        <AlertTriangle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" aria-hidden="true" />
-        <div>
-          <strong>Phase 7 preview:</strong> ICD ingestion ships in Phase 7. The list
-          below reflects any pending imports already queued; the Approve / Reject
-          actions will become available alongside the AI extraction pipeline.
-        </div>
-      </div>
+      {/* TDD-CAT-002: STEP ingestion is live, so the prior "Phase 7 preview"
+          banner has been retired. ICD-PDF AI extraction is still the
+          old Phase 7 path; that's surfaced via the existing per-document
+          flow (POST /catalog/documents/{id}/extract). */}
 
       {error && (
         <div role="alert" className="mb-3 rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-400 flex items-center gap-2">
@@ -355,8 +406,7 @@ function PendingImportsTab() {
         ) : items.length === 0 ? (
           <div className="py-12 text-center text-sm text-slate-500">
             <FileSearch2 className="h-8 w-8 mx-auto mb-2 text-slate-600" aria-hidden="true" />
-            No pending imports. Once Phase 7 ships, AI-extracted catalog entries
-            from uploaded ICDs will queue here for review.
+            No pending imports. Drop a STEP file via the Parts tab to queue one.
           </div>
         ) : (
           <table className="w-full text-xs">
@@ -368,17 +418,25 @@ function PendingImportsTab() {
                 <th className="px-3 py-2 text-left font-semibold">Status</th>
                 <th className="px-3 py-2 text-left font-semibold">Confidence</th>
                 <th className="px-3 py-2 text-left font-semibold">Created</th>
+                <th className="px-3 py-2"></th>
               </tr>
             </thead>
             <tbody>
               {items.map((row) => (
-                <tr key={row.id} className="border-t border-astra-border">
+                <tr
+                  key={row.id}
+                  onClick={() => router.push(`/catalog/pending-imports/${row.id}`)}
+                  className="border-t border-astra-border hover:bg-astra-surface-alt cursor-pointer"
+                >
                   <td className="px-3 py-2 font-mono text-slate-300">#{row.id}</td>
                   <td className="px-3 py-2 text-slate-300">doc {row.source_document_id}</td>
                   <td className="px-3 py-2 text-slate-300">supplier {row.supplier_id}</td>
                   <td className="px-3 py-2 text-slate-300">{PENDING_IMPORT_STATUS_LABELS[row.status]}</td>
                   <td className="px-3 py-2 text-slate-400">{row.extraction_confidence ?? '—'}</td>
                   <td className="px-3 py-2 text-slate-500">{new Date(row.created_at).toLocaleString()}</td>
+                  <td className="px-3 py-2 text-right text-slate-500">
+                    <ChevronRight className="inline h-3.5 w-3.5" aria-hidden="true" />
+                  </td>
                 </tr>
               ))}
             </tbody>
