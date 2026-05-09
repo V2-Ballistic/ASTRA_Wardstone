@@ -45,6 +45,7 @@ _JSON = JSON().with_variant(JSONB(), "postgresql")
 # ══════════════════════════════════════════════════════════════
 
 class PartClass(str, enum.Enum):
+    # ── Existing electrical / electronic values (INTF-002) ──
     PROCESSOR        = "processor"
     SENSOR           = "sensor"
     POWER_SUPPLY     = "power_supply"
@@ -58,6 +59,21 @@ class PartClass(str, enum.Enum):
     POWER_DIST       = "power_distribution"
     INTERFACE_CARD   = "interface_card"
     OTHER            = "other"
+
+    # ── TDD-CAT-002: mechanical / structural values ──
+    # Added in migration 0029 via ALTER TYPE ... ADD VALUE.
+    FASTENER_SCREW       = "fastener_screw"
+    FASTENER_BOLT        = "fastener_bolt"
+    NUT                  = "nut"
+    WASHER               = "washer"
+    BRACKET              = "bracket"
+    HOUSING              = "housing"
+    ENCLOSURE            = "enclosure"
+    SEAL_O_RING          = "seal_o_ring"
+    BEARING              = "bearing"
+    SPRING               = "spring"
+    STRUCTURAL_MEMBER    = "structural_member"
+    MECHANICAL_OTHER     = "mechanical_other"
 
 
 class LRUClass(str, enum.Enum):
@@ -186,6 +202,10 @@ class Supplier(Base):
     primary_email     = Column(String(200), nullable=True)
     notes             = Column(Text, nullable=True)
     is_active         = Column(Boolean, default=True, nullable=False)
+    # TDD-CAT-002: in-house parts default to Wardstone when no vendor is
+    # detected from a STEP filename. Migration 0029 seeds Wardstone with
+    # is_in_house=True; vendor-detected suppliers default to False.
+    is_in_house       = Column(Boolean, default=False, nullable=False)
 
     created_at        = Column(DateTime(timezone=True), server_default=func.now())
     updated_at        = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -195,6 +215,10 @@ class Supplier(Base):
         "SupplierDocument", back_populates="supplier", cascade="all, delete-orphan"
     )
     catalog_parts     = relationship("CatalogPart", back_populates="supplier")
+    # TDD-CAT-002: name aliases for vendor auto-detect dedup
+    aliases           = relationship(
+        "SupplierAlias", back_populates="supplier", cascade="all, delete-orphan"
+    )
 
 
 # ══════════════════════════════════════════════════════════════
@@ -341,6 +365,24 @@ class CatalogPart(Base):
 
     notes               = Column(Text, nullable=True)
     image_path          = Column(String(1000), nullable=True)
+
+    # ════════════════════════════════════════════════════════════
+    # TDD-CAT-002: CAD / STEP-derived fields. All nullable — only
+    # populated when a part originated from a STEP upload (or was
+    # backfilled later). Migration 0029 adds the columns.
+    # ════════════════════════════════════════════════════════════
+    part_subtype        = Column(String(64), nullable=True, index=True)
+    material_name       = Column(String(128), nullable=True)
+    material_class      = Column(String(64), nullable=True, index=True)
+    bbox_x_mm           = Column(Numeric(10, 3), nullable=True)
+    bbox_y_mm           = Column(Numeric(10, 3), nullable=True)
+    bbox_z_mm           = Column(Numeric(10, 3), nullable=True)
+    volume_mm3          = Column(Numeric(14, 4), nullable=True)
+    cad_step_path       = Column(Text, nullable=True)
+    cad_preview_path    = Column(Text, nullable=True)
+    cad_authoring_tool  = Column(String(64), nullable=True)
+    native_units        = Column(String(16), nullable=True)
+    deleted_at          = Column(DateTime(timezone=True), nullable=True, index=True)
 
     created_at          = Column(DateTime(timezone=True), server_default=func.now())
     updated_at          = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -500,3 +542,31 @@ class PendingCatalogImport(Base):
     reviewed_by_id           = Column(Integer, ForeignKey("users.id"), nullable=True)
 
     source_document          = relationship("SupplierDocument", back_populates="pending_imports")
+
+
+# ══════════════════════════════════════════════════════════════
+#  TDD-CAT-002 — Supplier alias map (vendor-name dedup)
+# ══════════════════════════════════════════════════════════════
+
+class SupplierAlias(Base):
+    """Maps alternate-spelling vendor names back to their canonical Supplier.
+
+    Used by the STEP-upload supplier resolver: a filename matching a
+    McMaster-Carr regex emits the canonical name "McMaster-Carr" plus the
+    alias list ["McMaster", "MCMASTER", ...]. The resolver looks up via
+    case-insensitive alias match before falling back to ``suppliers.name``.
+    """
+
+    __tablename__ = "supplier_aliases"
+
+    id          = Column(BigInteger, primary_key=True)
+    supplier_id = Column(
+        Integer,
+        ForeignKey("suppliers.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    alias       = Column(String(255), nullable=False, unique=True)
+    created_at  = Column(DateTime(timezone=True), server_default=func.now())
+
+    supplier    = relationship("Supplier", back_populates="aliases")

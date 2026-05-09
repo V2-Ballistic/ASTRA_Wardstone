@@ -1,0 +1,48 @@
+{
+  "patterns": [
+    {
+      "supplier_canonical": "McMaster-Carr",
+      "filename_regex": "^(\\d{5}[A-Z]\\d{1,4})[_\\s.-]",
+      "mpn_capture_group": 1,
+      "aliases": [
+        "McMaster",
+        "McMaster-Carr",
+        "MCMASTER",
+        "Mcmaster-Carr",
+        "mcmaster.com",
+        "MCMASTER-CARR"
+      ]
+    },
+    {
+      "supplier_canonical": "Misumi",
+      "filename_regex": "(?i)(?:^|[_-])misumi[_-]([A-Z0-9-]+)",
+      "mpn_capture_group": 1,
+      "aliases": [
+        "MISUMI",
+        "misumi-ec",
+        "Misumi USA",
+        "Misumi Corporation"
+      ]
+    },
+    {
+      "supplier_canonical": "Grainger",
+      "filename_regex": "(?i)(?:^|[_-])grainger[_-](\\w{4,12})",
+      "mpn_capture_group": 1,
+      "aliases": [
+        "Grainger Inc",
+        "W.W. Grainger",
+        "WW Grainger"
+      ]
+    },
+    {
+      "supplier_canonical": "MSC Industrial",
+      "filename_regex": "(?i)(?:^|[_-])msc[_-](\\d{8,12})",
+      "mpn_capture_group": 1,
+      "aliases": [
+        "MSC",
+        "MSC Direct",
+        "msc.com"
+      ]
+    }
+  ]
+}

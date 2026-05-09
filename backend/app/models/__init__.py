@@ -30,6 +30,7 @@ from app.models.workflow import (
 from app.models.catalog import (
     Supplier, SupplierDocument, CatalogPart, CatalogConnector, CatalogPin,
     PendingCatalogImport,
+    SupplierAlias,  # TDD-CAT-002 — vendor auto-detect dedup map
     PartClass, LRUClass, LifecycleStatus,
     ConnectorGender as CatalogConnectorGender,
     SignalType as CatalogSignalType,
