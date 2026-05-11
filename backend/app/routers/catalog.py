@@ -109,6 +109,7 @@ from app.schemas.catalog import (
     SupplierResponse,
     SupplierUpdate,
 )
+from app.schemas.harold import CatalogDesignatorsResponse  # TDD-HAROLD-001
 from app.schemas.interface import UnitResponse
 from app.services.auth import get_current_user
 from app.services.catalog import placement as placement_svc
@@ -1626,4 +1627,59 @@ async def upload_step_file(
         supplier_was_created=supplier_was_created,
         extraction_confidence=float(extraction_confidence),
         warnings=parsed.warnings,
+    )
+
+
+
+# ═════════════════════════════════════════════════════════════════
+#  TDD-HAROLD-001: outbound designator feed (HAROLD ← ASTRA)
+# ═════════════════════════════════════════════════════════════════
+
+@router.get("/designators", response_model=CatalogDesignatorsResponse)
+def list_catalog_designators(
+    system: Optional[str] = Query(
+        None,
+        description="2-letter HAROLD system code, e.g. AV. Case-insensitive.",
+    ),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(200, ge=1, le=200),
+    db: Session = Depends(get_db),
+    # AD-8 + gotcha #8: this endpoint is consumed by HAROLD (a peer
+    # service running on the same host network), not a logged-in user.
+    # Leaving unauthenticated in v1 — the data exposed (part_number
+    # strings) is internal-network reference data. A shared-secret
+    # `X-Harold-Token` header is a Phase 2 follow-up if the deployment
+    # ever becomes internet-exposed.
+):
+    """List part_numbers ASTRA has issued, for HAROLD collision-avoidance.
+
+    When `system` is supplied, only returns part_numbers matching the
+    HAROLD CAD-part pattern `WS-<SYSTEM>-P%`. Otherwise returns every
+    non-soft-deleted catalog part_number, paginated.
+
+    Returns: `{designators, total, system_filter}`.
+    """
+    query = (
+        db.query(CatalogPart.part_number)
+        .filter(CatalogPart.deleted_at.is_(None))
+    )
+    sys_upper: Optional[str] = None
+    if system:
+        sys_upper = system.upper()
+        # Pattern: WS-<SYSTEM>-P<NNNN>-<REV>. Uppercase the input;
+        # catalog part_numbers in this repo are uppercase by convention
+        # (gotcha #5 — LIKE is case-sensitive).
+        query = query.filter(CatalogPart.part_number.like(f"WS-{sys_upper}-P%"))
+
+    total = query.count()
+    rows = (
+        query.order_by(CatalogPart.part_number)
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+    return CatalogDesignatorsResponse(
+        designators=[r[0] for r in rows],
+        total=int(total or 0),
+        system_filter=sys_upper,
     )
