@@ -49,6 +49,7 @@ from app.models.parts_library import (
     PartType, PartStatus, MaterialClass, ThreadStandard, HeadType,
     DriveType, LockingFeature, QualificationStatus, PendingPartsStatus,
     ConfidenceLevel, JointType, JointStatus, AssemblyParseJobStatus,
+    BomStatus,  # TDD-PROJPARTS-001 Path C
     WPNSequence, LibraryPart, PendingPartsImport,
     ProjectPart, SystemPartAssignment,
     MechanicalJointSequence, AssemblyParseJob, MechanicalJoint,

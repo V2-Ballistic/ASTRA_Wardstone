@@ -398,6 +398,12 @@ class CatalogPart(Base):
         order_by="CatalogConnector.position",
     )
     project_units       = relationship("Unit", back_populates="catalog_part")
+    # TDD-PROJPARTS-001 (Path C): reverse side of ProjectPart.catalog_part.
+    # Every BOM line that has been linked to its canonical catalog row.
+    project_part_instances = relationship(
+        "ProjectPart", back_populates="catalog_part",
+        foreign_keys="ProjectPart.catalog_part_id",
+    )
 
 
 # ══════════════════════════════════════════════════════════════
