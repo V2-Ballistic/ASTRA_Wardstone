@@ -122,8 +122,8 @@ export interface ProjectPartBomUpdate {
   catalog_part_id?: number;
   quantity?: number | string;
   quantity_unit?: string;
-  designation?: string;
-  bom_position?: string;
+  designation?: string | null;
+  bom_position?: string | null;
   parent_bom_id?: number | null;
   status?: BomStatus;
   unit_id?: number | null;
