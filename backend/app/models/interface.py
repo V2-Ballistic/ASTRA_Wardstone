@@ -1091,6 +1091,11 @@ class System(Base):
     responsible_org = Column(String(255))
     project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    # TDD-HAROLD-001: 2-letter system code matching HAROLD's canonical
+    # list (AV / ST / TH / …). Stored uppercase. No DB-level CHECK
+    # against the 17 values because HAROLD owns the list and may add
+    # entries faster than ASTRA can re-migrate.
+    system_code_2letter = Column(String(2), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
