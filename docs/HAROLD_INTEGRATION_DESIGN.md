@@ -1,606 +1,456 @@
-# HAROLD ↔ ASTRA Integration — Phase 0 Discovery Report
+# ASTRA ↔ HAROLD V2 Integration — Phase 0 Reconciliation Report
 
-Author: Phase 0 agent (HAROLD-INTEGRATION-001).
+Author: Phase 0 agent (HAROLD-INTEGRATION-002).
 Date: 2026-05-12.
-Status: **Stops here for Mason's review.** No Phase 1 work has started.
+Status: **Stops here for Mason's review.** No Phase 1 work has begun.
 
-This document supersedes `docs/HAROLD_INVESTIGATION.md` (Phase 0 of the
-older HAROLD-001 prompt, kept on disk for diff). The TL;DR at the top is
-the part most likely to change your mind about the next phase plan.
-
----
-
-## TL;DR — what changes vs the prompt's assumptions
-
-1. **HAROLD is a WRENCH plugin, not a standalone service.** Endpoints live
-   under WRENCH's framework at `POST /api/tools/{slug}/runs`. HAROLD itself
-   registers six `@register`-decorated tool functions. There is no
-   `/validate`, no `/suggest-wpn`, no `/data` at the top level — those slugs
-   are all accessed via the runs API.
-2. **HAROLD does not issue WPNs and does not track issuance.** It validates
-   format against the standard (`WS-<SYS>-P<NNNN>-<REV>` etc.) and offers
-   an NL-driven *pattern transformer* (`_wardstone-harold-search`) — but
-   there is no sequence allocator, no datastore of issued numbers, no
-   "next available" endpoint. So the prompt's AD-5 ("HAROLD is the
-   authoritative WPN issuer") is impossible as stated. We pivot to
-   **Phase 5 Option C**: HAROLD = spec/validator only, ASTRA = issuer.
-3. **HAROLD's "class code" is a SYSTEM code, not a part_class.** Valid
-   codes: `VH AE AS AV BT CC CG EE FC GN GS OR PR ST TH TS WH` (17
-   2-letter codes from `wardstone_harold.data.SYSTEMS`). The prompt's
-   running example `WS-FS-P0042-A` is invalid on two counts: `FS` is
-   not a real system code, and sequence `0042` is below the part range
-   (1000–9999). McMaster fasteners map to `ST` (Structures — explicitly
-   covers "Primary/secondary structure, brackets, fasteners").
-4. **A previous session already shipped phase-0/1/2/3 of the older
-   HAROLD-001 prompt** (commits `3054f96`, `4eee030`, `33f4f9b`,
-   `03895f7`). We have a partial HAROLD client, service, router, and
-   the `/catalog/designators` endpoint. They need extension, not
-   rewrite. The migration that landed (`0032_harold_seam.py`) adds
-   `systems.system_code_2letter`, **NOT** the
-   `catalog_parts.internal_part_number` column the new prompt wants.
-   Phase 1 of the new prompt still applies.
-5. **The existing `/catalog/designators` filters on the manufacturer
-   `part_number` column**, which for the one McMaster row currently
-   reads `92196A196`. That's the wrong column to expose to HAROLD for
-   collision avoidance once we have internal WPNs. Phase 3 needs to
-   pivot the filter to `internal_part_number` once Phase 1 lands.
-6. **AD-1 default is currently `False` in code.** The new prompt wants
-   `true`. We need your call before flipping it.
-
-If any of points 1–4 contradict what you thought you were getting, please
-say so before we proceed — they shape the whole rest of the plan.
+This document supersedes the earlier Phase 0 report from
+`HAROLD-INTEGRATION-001` (the pre-V2 speculative attempt). Saved
+companion: `docs/HAROLD_V2_OPENAPI.json` — V2's OpenAPI spec, captured
+live for reference.
 
 ---
 
-## 1. HAROLD's real surface
+## TL;DR
 
-### 1.1 Runtime
+1. **V2 is reachable from ASTRA's backend container** at
+   `http://host.docker.internal:8031`. `/health` returns 200
+   `{"status":"healthy","version":"2.0.0","db":"ok"}`. Confirmed live.
+2. **Prior ASTRA-side HAROLD code targets the wrong API shape**
+   throughout — it speaks WRENCH's `/api/tools/{slug}/runs` envelope,
+   not V2's native REST. ~660 lines across 7 files. **Recommend
+   Path A: delete and rebuild fresh against V2.** Salvage value is
+   low; rewrite cost is small; the migration 0032 stays.
+3. **Migration 0032** (`systems.system_code_2letter`) is present at
+   alembic head. Keep it — useful for future SYSTEM-level WPN context.
+4. **`catalog_parts`** has neither `internal_part_number` nor
+   `wpn_pending_sync` yet. Phase 1 lands them in migration 0033.
+   `catalog_wpn_fallback_sequences` table also doesn't exist yet.
+5. **`HAROLD_BASE_URL` default is `:8030`** in `backend/app/config.py`
+   — points at the WRENCH api, not V2 on `:8031`. Phase 2 must flip
+   this. Three HAROLD settings exist (enabled flag, base URL,
+   timeout); all three are kept but the URL changes.
+6. **`/api/v1/catalog/designators`** filters on
+   `catalog_parts.part_number` (manufacturer MPN) — wrong column.
+   Phase 3 changes it to `internal_part_number`. Confirmed visually
+   in `backend/app/routers/catalog.py:1638`.
+7. **The McMaster part** (`catalog_parts.id=1`, MPN `92196A196`) is
+   the smoke target. Current state: `part_class=fastener_screw`,
+   `part_subtype=socket_head_cap_screw` (lexicon fix landed at
+   commit `65e4cb3`), `internal_part_number` is null (column doesn't
+   exist yet).
+8. **All four prior ASTRA fixes confirmed shipped**: lexicon
+   broadening, `formatApiError` helper, STEP upload Content-Type,
+   CORS + CSP for LAN. None blocking.
 
-- **Plugin** at `C:\Tools\harold\wardstone-harold\` (`pyproject.toml`,
-  `src/wardstone_harold/`). Entry point:
-  `wardstone_harold = "wardstone_harold.wrench_integration"` registered
-  under `[project.entry-points."wrench.tools"]`.
-- **Host** is the WRENCH api container at `C:\opt\wrench\deploy\docker-compose.yml`.
-  WRENCH is a FastAPI app that auto-discovers plugins via entry points
-  and exposes them under `/api/tools/{slug}/runs`.
-- **Running copy** is at `C:\opt\wrench\tools-dev\wardstone-harold\` (a
-  robocopy `/MIR` destination — never edited directly). Sync is
-  one-shot via `pwsh C:\Tools\harold\deploy.ps1`, which restarts the
-  api/web containers.
-- **Diff main vs wrench copy:** identical except for build artifacts
-  (`.pytest_cache`, `wardstone_harold.egg-info`). Confirmed via
-  `diff -r --brief`.
+If point 2 (Path A) is right, Phase 1 starts with `git rm` on the
+prior `backend/app/services/harold/`, `routers/harold.py`,
+`schemas/harold.py`, plus the frontend's `harold-api.ts` /
+`harold-types.ts`. If you'd rather salvage (Path B), say so before
+Phase 1 — the rewrite would be smaller but messier.
 
-### 1.2 WRENCH HTTP surface (port 8030)
+---
 
-Captured from `GET http://localhost:8030/openapi.json` and saved to
-`docs/harold_openapi.json` (7.8 KB).
+## 1. V2 reachability
 
-| Method | Path | Use |
+```
+$ docker compose exec -T backend python -c \
+  "import urllib.request; r=urllib.request.urlopen( \
+   'http://host.docker.internal:8031/health', timeout=3); \
+   print('health:', r.status, r.read().decode())"
+health: 200 {"status":"healthy","version":"2.0.0","db":"ok"}
+```
+
+`host.docker.internal:8031` resolves cleanly from inside the
+backend container; Windows Docker Desktop's host-gateway DNS works
+as expected.
+
+## 2. V2 surface captured
+
+Saved to `docs/HAROLD_V2_OPENAPI.json` (19.6 KB), captured live from
+`GET http://localhost:8031/openapi.json`. Paths the integration will
+use:
+
+| Method | Path | Phase that calls it |
 |---|---|---|
-| GET  | `/health`                       | Liveness. Returns `{status, tools, sdk_version}`. |
-| GET  | `/api/tools`                    | List all registered tools across plugins. |
-| GET  | `/api/tools/_status`            | Per-tool status. |
-| GET  | `/api/tools/{slug}`             | Tool metadata + input/output JSON schema. |
-| POST | `/api/tools/{slug}/runs`        | Invoke a tool. Body: `{"inputs": {...}}`. |
-| GET  | `/api/runs`                     | List recent runs. |
-| GET  | `/api/runs/{run_id}`            | One run's record. |
-| GET  | `/api/recents`                  | UI recent-activity feed. |
+| GET  | `/health`                             | Phase 2 (HaroldClient.heartbeat) |
+| GET  | `/api/v1/system-codes`                | Phase 3 (`/harold/system-codes` proxy, optional) |
+| POST | `/api/v1/wpn/validate`                | Phase 3 (`/harold/validate` proxy + filename validator) |
+| POST | `/api/v1/wpn/validate-bulk`           | reserved — no Phase 1-6 caller |
+| GET  | `/api/v1/wpn/suggest?system_code=...` | Phase 3 (suggest_wpn_for_part) |
+| POST | `/api/v1/wpn/issue`                   | Phase 3 (issue_wpn_for_catalog_part, auto-allocate branch) |
+| POST | `/api/v1/wpn/issue-specific`          | Phase 3 (issue_wpn_for_catalog_part, caller-supplied branch); Phase 3 reconcile |
+| PATCH | `/api/v1/wpn/{wpn}`                  | reserved — no Phase 1-6 caller |
+| GET  | `/api/v1/ledger/{wpn}`                | reserved — useful for the manual reconcile path |
 
-The run envelope: `{runId, slug, inputs, output, success, elapsed_ms, error, created_at}`.
+Also exposed by V2 but not used in this integration: `/wpn/{wpn}`
+and `/` (browse UI), `/api/v1/ledger`, `/api/v1/ledger/export`,
+`/api/v1/wpn/{wpn}/retire`, `/supersede`, the `/api/tools/*` V1
+compat surface.
 
-### 1.3 HAROLD's six registered tools
-
-From `wrench_integration.py`:
-
-| Slug                              | Visibility | Timeout | Purpose |
-|-----------------------------------|-----------|---------|--------|
-| `wardstone-harold`                | public  | 10 s | Catalog shell. UI launches `/wardstone-harold`. |
-| `_wardstone-harold-data`          | hidden  | 10 s | Returns one of 13 sections of the standard (`SYSTEMS`, `PROJECTS`, `ARTIFACT_TYPES`, …). |
-| `_wardstone-harold-search`        | hidden  | 30 s | NL → pattern transformer. Calls Ollama (`run_search`). |
-| `_wardstone-harold-validate`      | hidden  | 10 s | Validate one name against the standard. Pure regex + tables, no LLM. |
-| `_wardstone-harold-bulk-validate` | hidden  | 20 s | Up to 200 names per call. |
-| `_wardstone-harold-add-project`   | hidden  | 10 s | Add a runtime project code (3-letter). |
-| `_wardstone-harold-delete-project`| hidden  | 10 s | Remove a user-added project code. |
-
-**Validate output** (what ASTRA's `validate_wpn` would consume):
-
-```json
-{
-  "name": "WS-ST-P1014-A",
-  "is_valid": true,
-  "pattern_id": "cad_part",
-  "pattern_label": "CAD part",
-  "pattern": "WS-<SYS>-P<NNNN>-<REV>",
-  "issues": [],
-  "parsed_fields": {"SYS": "ST", "NNNN": "1014", "REV": "A"},
-  "canonical_form": "WS-ST-P1014-A"
-}
-```
-
-When invalid, `issues` contains `{severity, field, message, suggestion?}`
-entries. Tested live:
+## 3. Existing migration + DB state
 
 ```
-POST /api/tools/_wardstone-harold-validate/runs {"inputs":{"name":"WS-ST-P0042-A"}}
-→ is_valid=false, issues=[{severity:error, field:sequence,
-   message:"Part sequence 0042 is out of range; expected 1000-9999
-   (detail 1000-8999; library 9000-9799; coupon 9800-9899;
-   hot-fix 9900-9999)."}]
+alembic_version → 0032
+\d systems
+  system_code_2letter | character varying(2)  | …
+  "ix_systems_code_2letter" btree (system_code_2letter)
+\d catalog_parts
+  internal_part_number    →  NOT PRESENT
+  wpn_pending_sync        →  NOT PRESENT
+catalog_wpn_fallback_sequences  →  TABLE DOES NOT EXIST
 ```
 
-### 1.4 The standard (canonical WPN patterns)
+Migration 0032 (`0032_harold_seam.py`, shipped by the prior
+HAROLD-001 session) lands `systems.system_code_2letter`. That column
+is a SYSARCH-level annotation — it lets a project's `systems` row
+reference a HAROLD 2-letter code (e.g. "Avionics" system → AV). Not
+load-bearing for the integration directly, but harmless and useful
+later. **Keep.**
 
-From `wardstone_harold/data.py:ARTIFACT_TYPES` and `validate.py` regexes:
+Phase 1's new migration 0033 adds:
+- `catalog_parts.internal_part_number VARCHAR(32)` + partial unique index
+- `catalog_parts.wpn_pending_sync BOOLEAN NOT NULL DEFAULT FALSE` + filtered index
+- `catalog_wpn_fallback_sequences` table + 21 seeded codes
 
-| Pattern id          | Format                                | Example                  | Sequence range |
-|---------------------|---------------------------------------|--------------------------|----------------|
-| `cad_part`          | `WS-<SYS>-P<NNNN>-<REV>`              | `WS-ST-P1014-A`          | 1000–9999 (subranges: 1000-8999 detail, 9000-9799 library, 9800-9899 coupon, 9900-9999 hot-fix) |
-| `cad_assembly`      | `WS-<SYS>-A<NNNN>-<REV>`              | `WS-AV-A0150-B`          | 0100–0999 |
-| `vehicle_assembly`  | `WS-<PRJ>-VH-A<NNNN>-<REV>`           | `WS-DRT-VH-A0001-A`      | 0001–0099 |
-| `cad_drawing`       | `WS-<SYS>-D<NNNN>-<REV>`              | `WS-AV-D0107-B`          | matches parent |
-| `vehicle_drawing`   | `WS-<PRJ>-VH-D<NNNN>-<REV>`           | `WS-DRT-VH-D0001-A`      | matches parent |
-| `cfd_run`           | `<vehCN>-<CFG>-<METHOD>-<COND>-G<n>-r<n>` | `DRT-B1M0-Crucif-FUN3D-M2.5-A05.0-B00.0-H010km-G2-r0` | — |
-| `wt_test`           | `WT-<vehCN>-<facility>-T<n>-R<n>-P<n>` | `WT-DRT-B1M0-AEDC9-T217-R045-P012` | — |
-| `fea_model`         | `<parentId>-FEA-<disc>-<seq>-<rev>`   | `WS-ST-P1014-FEA-STR-001-A` | — |
-| `motor`             | `WS-MOT-<CLASS>-<SUB>-<seq>-<rev>`    | `WS-MOT-CG-RCS-002-A`    | — |
-| `document`          | `WS-<PRJ>-DOC-<TYPE>-<seq>-<rev>`     | `WS-DRT-DOC-TRP-0001-A`  | — |
-| `release_tag`       | `<vehCN>-<cfg>-<art>-vX.Y.Z`          | `DRT-B1M0-Crucif-aero-v0.4.1` | — |
+## 4. McMaster part state
 
-Sub-cases for `load_case`, `hil_config`, `test_campaign`, `test_point`,
-`log_file`, `harness` also exist but are out of scope for STEP-file
-WPN assignment.
-
-Detail parts and sub-assemblies have **no project segment** (the 2026
-restructure). Vehicle-level artifacts (assemblies, drawings) keep a
-3-letter project code (`DRT`, `CTL`, …).
-
-REV letters (ASME Y14.35): `A B C D E F G H J K L M N P R T U V W Y`
-— skips `I O Q S X Z`.
-
-System codes (17, 2 letters): `VH AE AS AV BT CC CG EE FC GN GS OR PR ST TH TS WH`.
-
-Project codes are dynamic (built-in + `add_project`-runtime). Built-in
-ones include `DRT`, `CTL`, more in `data.PROJECTS`.
-
-### 1.5 HAROLD's data model
-
-- **Static reference data** only — `SYSTEMS`, `PROJECTS`, `ARTICLE_CLASSES`,
-  `CAD_CLASSES`, `REV_LETTERS`, `ARTIFACT_TYPES`, `DISCIPLINES`,
-  `REFERENCE_FRAMES`, `SYMBOLS`, `ABBREVIATIONS`, `RESERVED_PREFIXES`,
-  `SUBSCRIPTS`, `VEHICLE_PROJECT_RULES`. All hard-coded in
-  `wardstone_harold/data.py`.
-- **One runtime mutation surface**: `add_project` / `delete_project`
-  write to a JSON extras store (see `extras.py`). This is the only state
-  HAROLD persists. No WPN issuance is tracked.
-- **No SQL, no SQLite, no in-memory issued-WPN map.** Confirmed by
-  reading every module (`__init__.py`, `data.py`, `extras.py`,
-  `frames.py`, `search.py`, `validate.py`, `wrench_integration.py`).
-
-### 1.6 HAROLD's existing collision-avoidance
-
-**None.** `validate_name` does not consult anything to know whether a
-WPN is already in use. The `_wardstone-harold-search` tool transforms
-NL → pattern (e.g. "drawing for WS-AV-A0107-B" → "WS-AV-D0107-B"), it
-does not allocate sequences.
-
-This is the central design pivot: ASTRA must own the issuance counter.
-HAROLD answers "is this name valid?" only.
-
-### 1.7 Reachability from inside ASTRA's backend container
-
-Confirmed via:
 ```
-docker compose exec backend python -c \
-  "import urllib.request; r=urllib.request.urlopen('http://host.docker.internal:8030/health', timeout=5); print(r.status, r.read().decode())"
-→ 200 {"status":"ok","tools":64,"sdk_version":"1.0.0"}
+catalog_parts:
+  id           | 1
+  part_number  | 92196A196
+  name         | 92196A196_18-8 Stainless Steel Socket Head Screw
+  part_class   | fastener_screw
+  part_subtype | socket_head_cap_screw
 ```
 
-`host.docker.internal:8030` resolves cleanly. WRENCH listens on
-`0.0.0.0:8030` per the wrench `docker-compose.yml` port mapping; the
-ASTRA backend container sees it via Docker Desktop's host-gateway DNS.
+The lexicon broadening (commit `65e4cb3`) landed `socket head screw`
+on the existing `socket_head_cap_screw` entry plus four plain-fallback
+tokens (`screw`, `bolt`, `nut`, `washer`). This row was reclassified
+in-place from `mechanical_other` to `fastener_screw` at the same
+commit.
 
-### 1.8 Main vs wrench copy
+For the Phase 5 smoke this part is the natural fixture: it's already
+in the catalog as a fastener, so AD-6's class→system mapping routes
+it to `FH` (Fastener Hardware). Phase 5 should NOT backfill its
+`internal_part_number` automatically (gotcha #9 in the prompt) —
+Mason decides whether to retroactively assign WPNs.
 
-| Path | Role | Edited directly? |
-|---|---|---|
-| `C:\Tools\harold\wardstone-harold\` | Source of truth. Plugin source. | yes |
-| `C:\opt\wrench\tools-dev\wardstone-harold\` | Runtime copy (robocopy /MIR destination). | **no** — wiped on each `deploy.ps1` |
-| `C:\Tools\harold\web-workspace\apps\web\src\workspaces\wardstone-harold\` | Workspace stub (Next.js) source. | yes |
-| `C:\Tools\harold\web-workspace\apps\web\src\app\(fullscreen)\wardstone-harold\` | Full-page app source. | yes |
+## 5. Prior HAROLD work in ASTRA — file-by-file audit
 
-Deploy command (sync + rebuild + smoke-test): `pwsh C:\Tools\harold\deploy.ps1`.
+Every file targets the V1 WRENCH-plugin shape from the speculative
+HAROLD-INTEGRATION-001 era. Bytes (committed at `33f4f9b`,
+`03895f7`):
 
----
+| File | Lines | Targets | Salvage? |
+|---|---:|---|---|
+| `backend/app/services/harold/__init__.py`        |  34 | exports | rewrite |
+| `backend/app/services/harold/errors.py`          |  15 | `HaroldUnavailableError`, `HaroldInvalidResponseError` | **keep** (extend) |
+| `backend/app/services/harold/client.py`          | 150 | WRENCH `POST /api/tools/{slug}/runs` envelope; hardcoded slugs for `_wardstone-harold-data` and `_wardstone-harold-search` | **rewrite** |
+| `backend/app/services/harold/service.py`         | 145 | `heartbeat`, `list_system_codes` (via WRENCH data tool), `suggest_wpn_from_text` (NL search) | **rewrite** |
+| `backend/app/routers/harold.py`                  | 138 | `/heartbeat`, `/system-codes`, `/suggest-wpn` (NL-based) | **rewrite** |
+| `backend/app/schemas/harold.py`                  |  83 | V1 search-output shape; `HaroldUnavailable` discriminated-union pattern is reusable | **rewrite** (keep pattern) |
+| `frontend/src/lib/harold-api.ts`                 |  31 | three calls to wrong endpoints | **rewrite** |
+| `frontend/src/lib/harold-types.ts`               |  67 | `WPN_PATTERN = /^WS-[A-Z]{2}-P\d{4}-[A-Z]$/` (V1 4-digit, full A-Z rev) — **wrong on both axes** | **rewrite** |
+| **TOTAL** | **663** | | |
 
-## 2. What's already shipped on the ASTRA side
+### What's specifically wrong
 
-From the older HAROLD-001 prompt's phase-0..3 commits:
+1. **Client envelope.** `client._post_run(slug, inputs)` POSTs
+   `{"inputs": inputs}` to `/api/tools/{slug}/runs` and expects a V1
+   run envelope back (`{runId, slug, inputs, output, success, ...}`).
+   V2 exposes that shape only on its **compat surface**
+   (`/api/tools/*`), which mirrors but doesn't match the native
+   `/api/v1/*` REST endpoints we want to use. Talking to the compat
+   surface would work but is the long way around.
+2. **`suggest_wpn_from_text` model is wrong.** It treats HAROLD's
+   "search" as an allocator ("give me an NL-described WPN") whereas
+   the integration needs a per-system allocator
+   (`GET /api/v1/wpn/suggest?system_code=FH` → returns
+   `WS-FH-P000001-A` next available). The NL search even
+   exists in V2's compat surface but returns `success=false`
+   because Ollama isn't bundled.
+3. **`/api/v1/harold/suggest-wpn`** signature takes free-text
+   `query`, not `part_class`. The new design takes a class → maps to
+   a system code → asks HAROLD for the next available WPN.
+4. **Missing endpoints.** No `/validate`, no `/validate-filename`,
+   no `/parts/{id}/reconcile`. All three are needed.
+5. **`harold-types.ts` WPN regex** is V1's 4-digit form
+   (`\d{4}`) with full `[A-Z]` rev (includes the ASME-forbidden
+   `I/O/Q/S/X/Z`). V2's regex is `\d{6}` with the 20-letter ASME
+   set. Lock #12 in the new prompt is explicit:
+   `^WS-[A-Z]{2}-P[0-9]{6}-[ABCDEFGHJKLMNPRTUVWY]$`.
+6. **`HAROLD_BASE_URL` defaults to `:8030`** in `config.py:93`.
+   That's WRENCH's port; V2 lives at `:8031`. Phase 2 must flip the
+   default.
 
-- **Migration `0032_harold_seam.py`** — adds `systems.system_code_2letter VARCHAR(2)`.
-  This is on the **`systems`** (SYSARCH) table, NOT on `catalog_parts`.
-  It lets a project's system row reference a HAROLD code (e.g. project
-  system "Avionics" → `AV`). The new prompt's Phase 1 is still needed
-  to add `catalog_parts.internal_part_number` + `wpn_pending_sync`.
-- **`backend/app/config.py`** — three settings:
-  - `HAROLD_INTEGRATION_ENABLED: bool = False` (new prompt wants `True`).
-  - `HAROLD_BASE_URL: str = "http://host.docker.internal:8030"` ✓.
-  - `HAROLD_TIMEOUT_SECONDS: float = 3.0` ✓.
-- **`backend/app/services/harold/`** — `client.py`, `errors.py`,
-  `service.py`. Wraps `httpx.AsyncClient`, opens per-call (gotcha #2),
-  catches only specific httpx exceptions (gotcha #9). Errors:
-  `HaroldUnavailableError`, `HaroldInvalidResponseError`.
-  Service functions today: `heartbeat()`, `list_system_codes()`,
-  `suggest_wpn_from_text(query, allow_llm_refine)`.
-  **Missing for the new prompt**: `validate_wpn`, `notify_wpn_issued`,
-  `fallback.allocate_wpn`, `filename_validator.*`.
-- **`backend/app/routers/harold.py`** — `/api/v1/harold/heartbeat`,
-  `/system-codes`, `/suggest-wpn`. All under JWT auth.
-  **Missing**: `/validate-wpn`, `/validate-filename`.
-- **`backend/app/routers/catalog.py`** — `/api/v1/catalog/designators?system=AV&skip=0&limit=200`,
-  unauthenticated (per AD-8). **Pivot needed**: filter currently runs
-  against `catalog_parts.part_number` (the manufacturer MPN, e.g.
-  `92196A196`), which is wrong for HAROLD collision-avoidance. After
-  Phase 1 adds `internal_part_number`, the filter should target that
-  column instead.
-- **`frontend/src/lib/harold-api.ts` + `harold-types.ts`** — typed
-  client and types for the three existing endpoints.
+### What's salvageable
 
-The lexicon fix that shipped this morning (commit `65e4cb3`) is
-independent and stays.
+- **`errors.py`** — `HaroldUnavailableError` and
+  `HaroldInvalidResponseError` are reusable. Phase 2 extends with
+  `HaroldDuplicateError` and `HaroldValidationError`.
+- **The discriminated-union pattern** in `schemas/harold.py`
+  (`HaroldUnavailable` vs `*Available` with `harold_available: bool`
+  discriminator) survives the rewrite — it's the right shape for
+  an optional dependency where the frontend wants
+  always-200-with-structured-payload semantics.
+- **Logging style** + **httpx exception-specificity** (catch
+  `TimeoutException`, `ConnectError`, `HTTPError` separately) is
+  carry-over-able verbatim into the new client.
 
----
+### Reconciliation path recommendation
 
-## 3. Revised decision register (AD-1 … AD-9 + new)
+**Path A — delete and rebuild fresh against V2.**
 
-| # | Original | Revised against reality | Action |
+| | Path A (recommend) | Path B (salvage) | Path C (parallel clients) |
 |---|---|---|---|
-| **AD-1** | Feature flag default `true`. | Currently `False` in code. | **Need Mason's call.** Recommendation: flip to `True` once Phase 4 frontend lands so a half-shipped backend doesn't render WPN UI against nothing. |
-| **AD-2** | `host.docker.internal:8030`. | Confirmed reachable. | ✓ keep. |
-| **AD-3** | 3 s timeout. | Currently 3 s. | ✓ keep. NB: `_wardstone-harold-search` has a 30 s server-side timeout; if we ever call it, we'll need a path-specific override. |
-| **AD-4** | WPN = `WS-<XX>-P<NNNN>-<REV>`, XX is class code. | XX is a **2-letter SYSTEM code** (17 values). Sequence `NNNN` is 1000–9999 with subranges. REV from a 20-letter alphabet (ASME Y14.35). | **Update prompt's running example** from `WS-FS-P0042-A` to `WS-ST-P1014-A`. McMaster fasteners → `ST`. |
-| **AD-5** | HAROLD is authoritative WPN issuer; ASTRA falls back. | HAROLD does NOT issue WPNs. It validates format only. | **Revised:** ASTRA owns issuance via `catalog_wpn_fallback_sequences` (which becomes the **primary** allocator, not the fallback — rename). HAROLD is consulted to validate the resulting WPN before commit. `wpn_pending_sync` flag still useful as a "HAROLD was unreachable at validate-time; we issued anyway" marker. |
-| **AD-6** | `/catalog/designators` (no auth, LAN-only). | Exists. Filters on `part_number` (MPN); needs pivot to `internal_part_number` after Phase 1. | Update Phase 3 to switch the column once the new column exists. Keep `?system=AV` query name. |
-| **AD-7** | All HAROLD calls server-side. | ✓ already structured this way. | keep. |
-| **AD-8** | Filetype-agnostic filename validation, STEP first. | Sound. STEP filename → MPN-style or WPN-style detection lives in a new `filename_validator.py`. | keep. |
-| **AD-9** | Migration adds `internal_part_number`, `wpn_pending_sync`, fallback sequence table. | Not yet in migration head (0032 added a different column). Phase 1 still needed. | keep — but consider naming the table `catalog_wpn_sequences` (primary allocator, per AD-5 revision) rather than `*_fallback_*`. |
+| Cleanliness | High | Mid (drift risk) | Low (two clients) |
+| Code volume change | -663 / +900 | -200 / +700 | -0 / +900 |
+| Mental load (Phase 2 author) | Low | High | High |
+| Drift risk | None | Real | Significant |
+| Reviewer load (Mason) | Smaller diffs | Bigger, harder-to-read diffs | Hardest to review |
 
-### New decisions to discuss
+Path A wins on every axis. The prior code was speculative and never
+exercised end-to-end (the previous Phase 0 acknowledged this); there
+are no callers depending on its existing surface; the rewrite is a
+mechanical port of patterns into the new endpoint shape. Phase 2's
+new files mirror the prior file layout 1:1, just with V2-correct
+contents.
 
-| # | Proposed | Rationale |
+## 6. Four prior ASTRA fixes — confirmed shipped
+
+| Fix | Commit | Verified |
 |---|---|---|
-| **AD-10** | Class-to-system mapping lives on ASTRA side as a static dict (initially): `{fastener_screw, fastener_bolt, nut, washer, bearing, bracket, spring, structural_member → ST; processor, sensor, compute_module → AV; …}`. | HAROLD has no `part_class` concept. We translate at upload time and embed the chosen system code in `proposed_wpn`. User can override. |
-| **AD-11** | Sequence allocation strategy: per-system, monotonically increasing, with a `SELECT … FOR UPDATE` lock on `catalog_wpn_sequences[system_code]` inside a transaction. Initial start at `1000`. Skip ranges 9000+ for v1 (library/coupon/hotfix categories require manual flags). | Avoids concurrent-upload races. Library/coupon/hotfix is a follow-on. |
-| **AD-12** | `notify_wpn_issued` is **a no-op** in v1. HAROLD does not store issued WPNs. Audit emit stays ASTRA-side. | Phase 5 "Option C" — smallest viable change. Reconsider if Mason wants HAROLD to grow a SQLite ledger so other tools can query it. |
-| **AD-13** | The `extract_wpn_candidate(filename)` regex matches HAROLD's actual patterns (cad_part, cad_assembly, vehicle_assembly, vehicle_drawing, cad_drawing) — not a single-format regex. Calls HAROLD's `validate-name` for the final ruling. | HAROLD owns the rules; ASTRA's regex is just a pre-filter for "looks like a Wardstone name at all". |
-| **AD-14** | HAROLD's `add_project` runtime mutation is **not used** from ASTRA. Project codes for vehicle artifacts come from HAROLD's static `PROJECTS` list. | Adding projects is an out-of-band admin action via HAROLD's UI. ASTRA doesn't need write access. |
+| Lexicon broadening (`screw`/`bolt`/`nut`/`washer` fallbacks; "Socket Head Screw" → `fastener_screw`/`socket_head_cap_screw`) | `65e4cb3` | grep shows the four fallback rows in `backend/catalog_seed/part_type_lexicon.json`; McMaster row 1 is correctly classified. |
+| `formatApiError` helper for safe Pydantic-array error rendering | `acada97` | `frontend/src/lib/errors.ts` exists; `export function formatApiError` declared. |
+| STEP upload `Content-Type: multipart/form-data` override (axios was inheriting the JSON default) | `acada97` | `frontend/src/lib/catalog-api.ts:uploadStep` passes the header explicitly. |
+| CORS + CSP for LAN deployment | inherited (CORSMiddleware in `main.py`; CSP middleware in `app/middleware/security_headers.py` includes `connect-src 'self' ws: wss: http://localhost:*` in dev mode) | grep confirms middleware present; `BACKEND_CORS_ORIGINS` env var lists LAN hosts. |
 
----
+None block the integration.
 
-## 4. Sequence diagram — upload → approve → WPN assignment
+## 7. Revised decision register (AD-1 … AD-12)
+
+Mason's locked register from the prompt's "Decisions — locked"
+section is consistent with reality post-V2. No adjustments needed.
+Three settings live in `backend/app/config.py` already; Phase 2
+updates `HAROLD_BASE_URL` from `:8030` to `:8031` to match AD-2.
+
+| # | Lock | Status |
+|---|---|---|
+| AD-1  | `HAROLD_INTEGRATION_ENABLED` default `false` | ✓ already `False` in config.py |
+| AD-2  | `host.docker.internal:8031` | ⚠ Phase 2 must update — current default is `:8030` |
+| AD-3  | 3-second timeout | ✓ already 3.0 in config.py |
+| AD-4  | Server-side calls only | ✓ enforced by router structure |
+| AD-5  | ASTRA = system of record; HAROLD = ledger | ✓ matches V2 design |
+| AD-6  | Class → system: fasteners FH, mechanical MH, electrical EH, sealing SH | ✓ — implementation in Phase 2 `class_to_system.py` |
+| AD-7  | Mapping is a Python dict constant | ✓ |
+| AD-8  | Add `internal_part_number`, `wpn_pending_sync`, `catalog_wpn_fallback_sequences` | ✓ Phase 1 migration 0033 |
+| AD-9  | `/catalog/designators` → filter on `internal_part_number` | ✓ Phase 3 |
+| AD-10 | `/catalog/designators` unauthenticated for v1 | ✓ matches today's posture |
+| AD-11 | Three approval branches | ✓ Phase 3 |
+| AD-12 | Frontend WPN regex `^WS-[A-Z]{2}-P[0-9]{6}-[ABCDEFGHJKLMNPRTUVWY]$` | ⚠ current frontend regex is V1; Phase 4 updates |
+
+## 8. Revised phase plan
+
+The prompt's six phases are correct against current state. Below is
+the order with reconciled file lists.
+
+### Phase 1 — migration
 
 ```
-User           ASTRA frontend          ASTRA backend                      HAROLD
- │                  │                        │                                │
- │ pick STEP file   │                        │                                │
- │─────────────────▶│                        │                                │
- │                  │ POST /catalog/upload-step (multipart)                   │
- │                  │───────────────────────▶│                                │
- │                  │                        │ step_parser.parse_step_file()  │
- │                  │                        │  → parsed.part_class, name,    │
- │                  │                        │    mfr part_number             │
- │                  │                        │                                │
- │                  │                        │ filename_validator.extract_…   │
- │                  │                        │  → looks_like_wpn? class_hint? │
- │                  │                        │                                │
- │                  │                        │ map part_class → system_code   │
- │                  │                        │  (AD-10, ASTRA-side dict)      │
- │                  │                        │                                │
- │                  │                        │ wpn_sequences.peek(system)     │
- │                  │                        │  → next candidate WS-ST-P1014  │
- │                  │                        │                                │
- │                  │                        │ POST /api/tools/_wardstone-    │
- │                  │                        │   harold-validate/runs         │
- │                  │                        │   {name: "WS-ST-P1014-A"}      │
- │                  │                        │───────────────────────────────▶│
- │                  │                        │                                │ pure regex + tables
- │                  │                        │◀───────────────────────────────│ {is_valid, issues[]}
- │                  │                        │                                │
- │                  │                        │ pending_imports.create(        │
- │                  │                        │   extracted_data + proposed_wpn│
- │                  │                        │   + wpn_source="harold")       │
- │                  │                        │                                │
- │                  │◀────── 201 {pending_import_id}                         │
- │                  │                        │                                │
- │ review page      │ GET /pending-imports/{id}                              │
- │─────────────────▶│───────────────────────▶│                                │
- │                  │                        │                                │
- │                  │◀── extracted_data + proposed_wpn + warnings            │
- │                  │ render WPN section (green / amber / red)                │
- │                  │                        │                                │
- │ edit WPN?        │ POST /harold/validate-wpn {wpn} (debounced on blur)    │
- │                  │───────────────────────▶│ HAROLD validate run            │
- │                  │                        │───────────────────────────────▶│
- │                  │                        │◀───────────────────────────────│
- │                  │◀── valid / errors / dup hint                            │
- │                  │                        │                                │
- │ click approve    │ POST /pending-imports/{id}/approve                     │
- │─────────────────▶│───────────────────────▶│                                │
- │                  │                        │ final validate (idempotent)    │
- │                  │                        │───────────────────────────────▶│
- │                  │                        │◀───────────────────────────────│
- │                  │                        │                                │
- │                  │                        │ wpn_sequences.claim(sys, rev)  │
- │                  │                        │  → row-locked increment        │
- │                  │                        │                                │
- │                  │                        │ duplicate check on             │
- │                  │                        │  catalog_parts.internal_part_  │
- │                  │                        │  number (UNIQUE constraint)    │
- │                  │                        │                                │
- │                  │                        │ catalog_parts.insert(          │
- │                  │                        │   internal_part_number=wpn,    │
- │                  │                        │   wpn_pending_sync=False)      │
- │                  │                        │                                │
- │                  │                        │ audit catalog.part.wpn_assigned│
- │                  │                        │                                │
- │                  │◀── 201 {catalog_part}                                   │
- │                  │ navigate to /catalog/parts/{id}                         │
+backend/alembic/versions/0033_harold_wpn_columns.py  (NEW)
+backend/app/models/catalog.py                        (extend CatalogPart)
 ```
 
-Degraded path (HAROLD unreachable):
-- Upload: skip validate call, proposed WPN gets `wpn_source="local"`,
-  `wpn_validation_notes=["HAROLD unavailable at upload — local format check only"]`.
-- Approve: skip final validate call, set `wpn_pending_sync=True`.
-  Manual "Sync with HAROLD" button on the part page re-validates later.
+Adds `internal_part_number`, `wpn_pending_sync`,
+`catalog_wpn_fallback_sequences` (21 seeded). Verify
+`alembic_version → 0033`, `\d catalog_parts` shows the two new
+columns, fallback sequences table populated.
 
-Concurrency: `wpn_sequences.claim()` opens a transaction and does
-`SELECT next_index FROM catalog_wpn_sequences WHERE system_code=:sys
-FOR UPDATE`, increments, commits inside the same tx as the
-`catalog_parts.insert`. Two parallel uploads on the same system can't
-race; one waits.
+Commit: `phase-1(harold-int): WPN columns + fallback sequences migration`.
 
----
+### Phase 2 — V2 client + service + filename validator + fallback (Path A)
 
-## 5. Blocking concerns / questions for Mason
+Delete (one commit step):
+```
+backend/app/services/harold/__init__.py
+backend/app/services/harold/client.py
+backend/app/services/harold/service.py
+backend/app/routers/harold.py
+backend/app/schemas/harold.py
+frontend/src/lib/harold-api.ts
+frontend/src/lib/harold-types.ts
+```
 
-These need an answer before Phase 1 starts:
+`errors.py` is the only file kept verbatim from the prior tree
+(extended with two new exception classes).
 
-1. **AD-1 default — `true` or stay `false`?** If `true`, the first
-   deploy after Phase 1 enables the integration before Phase 4 frontend
-   lands; the upload flow still works but with no WPN UI. If `false`,
-   we ship Phase 1-3 dark and flip the switch at Phase 4.
-2. **AD-5 pivot OK?** HAROLD really doesn't issue WPNs. Confirming this
-   means: ASTRA is the source of truth for issued WPN numbers, the
-   `wpn_sequences` table is the primary (not fallback) allocator, and
-   HAROLD is consulted only to validate format. If you wanted HAROLD
-   to grow a SQLite ledger of issued numbers (so other Wardstone tools
-   could ask HAROLD "is `WS-ST-P1014-A` taken?"), that's a real
-   feature add on the HAROLD side and we should plan it explicitly.
-3. **AD-10 class→system mapping** — proposed initial dict:
+Write fresh:
+```
+backend/app/services/harold/__init__.py            (re-exports)
+backend/app/services/harold/errors.py              (extend: add HaroldDuplicate / HaroldValidation)
+backend/app/services/harold/client.py              (HaroldClient with V2 REST methods)
+backend/app/services/harold/class_to_system.py     (AD-6 mapping dict)
+backend/app/services/harold/filename_validator.py  (filetype-agnostic seam)
+backend/app/services/harold/fallback.py            (local allocator over catalog_wpn_fallback_sequences)
+backend/app/services/harold/service.py             (high-level: suggest_wpn_for_part / validate_filename_wpn / issue_wpn_for_catalog_part / reconcile_pending_sync)
+backend/app/schemas/harold.py                      (V2-correct shapes; keep the *Available / Unavailable union pattern)
+backend/app/config.py                              (HAROLD_BASE_URL default → :8031)
+```
 
-   | ASTRA part_class | HAROLD system code |
-   |---|---|
-   | fastener_screw, fastener_bolt, nut, washer | ST |
-   | bracket, bearing, spring, structural_member, housing, enclosure | ST |
-   | seal_o_ring | ST |
-   | processor, sensor, compute_module, interface_card, radio, antenna | AV |
-   | power_supply, power_distribution | EE |
-   | actuator, connector_only, harness | WH |
-   | display | AV |
-   | other / mechanical_other | ST |
+Tests (respx-mocked HAROLD V2):
+```
+backend/tests/test_harold_client.py
+backend/tests/test_class_to_system.py
+backend/tests/test_filename_validator.py
+backend/tests/test_fallback_allocator.py
+backend/tests/test_harold_service.py
+```
 
-   Object if any of these feel wrong. Defaults are easy to change in
-   one file later; getting the initial dict right saves manual
-   overrides at upload time.
+Verify pytest green.
 
-4. **Sequence start point.** Initial `next_index=1000` per system?
-   Or pick higher numbers per system to leave gaps for known-existing
-   parts you may import later? (1014 in the example was inherited
-   from HAROLD's own example value — it's not currently in ASTRA.)
+Commit: `phase-2(harold-int): HAROLD V2 client + service + fallback + filename validator`.
 
-5. **Migration numbering.** Current head is `0032_harold_seam.py`.
-   New Phase 1 migration would be `0033_catalog_wpn.py`. OK?
+### Phase 3 — ASTRA endpoints
 
-6. **HAROLD-side changes — yes/no?** Phase 5 in the prompt asks for
-   cross-repo work. Under AD-5/AD-12 (Option C), Phase 5 becomes a
-   **no-op on HAROLD**: ASTRA does all the lifting, HAROLD only
-   validates. We'd document the "no HAROLD-side change" decision in
-   `C:\Tools\harold\docs\ASTRA_INTEGRATION.md` (new file in the HAROLD
-   repo) and stop there. Confirm this is acceptable; if you want a
-   ledger in HAROLD, that's a substantial expansion.
+```
+backend/app/routers/catalog.py     (fix /designators column; wire upload + approval to HAROLD)
+backend/app/routers/harold.py      (NEW: /heartbeat, /system-codes proxy, /suggest, /validate, /validate-filename, /parts/{id}/reconcile)
+backend/app/services/audit_service (if not already there: catalog.part.wpn_assigned, .wpn_reconciled events)
+```
 
-7. **The /catalog/designators column pivot.** Currently the endpoint
-   exposes the manufacturer `part_number` column. HAROLD doesn't
-   actually consume `/catalog/designators` (it has no client for it),
-   so we can change the column underneath without breaking anyone.
-   Confirm the pivot to `internal_part_number` in Phase 3 is OK.
+Test:
+```
+backend/tests/test_harold_endpoints.py     (each /harold/* endpoint, HAROLD-up vs down)
+backend/tests/test_upload_approval_flow.py (three approval branches, audit emission, designators filter)
+```
 
-8. **WPN at upload-time vs approval-time.** The prompt phrases it as
-   "approval issues the WPN". Should the **proposed** WPN at upload
-   also be persisted (so two simultaneous uploads see different
-   numbers), or should the sequence only advance at approval? My
-   recommendation: only advance at approval, peek at upload. Two
-   uploads might see the same proposed number; whichever approves
-   first claims it; the second gets re-proposed at approval. This is
-   simpler and matches HAROLD's "rev letters are aspirational until
-   release" philosophy.
-
----
-
-## 6. Revised phase plan
-
-Subject to your answers above. The numbering matches the prompt for
-diff-ability, but several phases shrink under AD-5/AD-12.
-
-### Phase 1 — migration (largely unchanged from prompt)
-
-Write `backend/alembic/versions/0033_catalog_wpn.py`:
-- `catalog_parts.internal_part_number VARCHAR(32) NULL` + unique partial index.
-- `catalog_parts.wpn_pending_sync BOOLEAN NOT NULL DEFAULT FALSE` + filtered index.
-- `catalog_wpn_sequences (system_code VARCHAR(2) PK, next_index INT NOT NULL DEFAULT 1000, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`.
-
-Naming change from prompt: `catalog_wpn_fallback_sequences` → `catalog_wpn_sequences` (primary, not fallback, per AD-5).
-
-### Phase 2 — service layer (extension, not rewrite)
-
-Files to **add** under `backend/app/services/harold/`:
-- `validate.py` — `async def validate_wpn(wpn: str) -> WpnValidationResult`.
-  Calls `_wardstone-harold-validate` via existing client.
-- `filename_validator.py` — `extract_wpn_candidate(filename)`,
-  `looks_like_wardstone_wpn(filename)`, `derive_class_hint(filename, parsed)`,
-  `FilenameValidationResult` Pydantic model. **Filetype-agnostic** (AD-8).
-- `sequences.py` — `async def peek_next_wpn(system_code, db) -> str`,
-  `async def claim_wpn(system_code, db) -> str`. SQLAlchemy `with_for_update()`.
-- `class_to_system.py` — the AD-10 mapping, single source.
-
-Files to **extend**:
-- `service.py` — add `notify_wpn_issued(wpn, part_id, db)` as an audit
-  emit (per AD-12 it's a no-op WRT HAROLD, but emits the audit event
-  ASTRA-side).
-- `errors.py` — add `HaroldValidationError`, `HaroldDuplicateError`.
-
-Files **untouched**: `client.py` (already wraps the runs endpoint correctly).
-
-New schemas in `backend/app/schemas/harold.py`:
-- `WpnValidationResult` (per the prompt's spec).
-- `WpnSuggestion` extension to include `system_code` + `wpn_source`
-  (`'harold'`, `'local'`, `'fallback'`).
-
-`respx`-mocked tests cover happy path, 404, 500, timeout, unknown
-system, McMaster-style names, Wardstone-style names, fallback path.
-
-### Phase 3 — endpoints
-
-**Outbound** (`backend/app/routers/harold.py` extension):
-- `POST /harold/validate-wpn`        — proxy to validate tool.
-- `POST /harold/validate-filename`   — runs `extract_wpn_candidate` +
-  optional `validate_wpn` call. Returns `FilenameValidationResult`.
-
-**Inbound** (`backend/app/routers/catalog.py` modification):
-- `GET /catalog/designators` — pivot filter column from `part_number`
-  to `internal_part_number`. Same `?system=AV` API. Same `limit=200`.
-  Same no-auth (AD-6, AD-8).
-
-**Upload + approval hooks** (`backend/app/routers/catalog.py`):
-- `POST /catalog/upload-step` — after parsing, peek a proposed WPN,
-  call `validate_wpn` if HAROLD is up, persist `proposed_wpn` +
-  `wpn_source` + `wpn_validation_notes` into pending_import.
-- `_approve_pending_import` — final validate, claim WPN, set on
-  `CatalogPart.internal_part_number`, audit emit, handle duplicate
-  (422) and HAROLD-down (proceed with `wpn_pending_sync=True`).
+Commit: `phase-3(harold-int): /api/v1/harold/* + designators fix + upload-approval wiring`.
 
 ### Phase 4 — frontend
 
-Drop-in replacement for `frontend/src/app/catalog/pending-imports/[id]/page.tsx`:
-- WPN section with green/amber/red chip and editable monospace input.
-- On-blur live validate via `POST /api/v1/harold/validate-wpn`.
-- Approve button gated on WPN being valid (or user-acknowledged fallback).
+```
+frontend/src/lib/harold-types.ts   (V2 shapes; WPN_PATTERN = ^WS-[A-Z]{2}-P[0-9]{6}-[ABCDEFGHJKLMNPRTUVWY]$)
+frontend/src/lib/harold-api.ts     (heartbeat / suggest / validate / reconcile)
+frontend/src/lib/catalog-types.ts  (extend CatalogPart with internal_part_number, wpn_pending_sync)
+frontend/src/app/catalog/pending-imports/[id]/page.tsx  (WPN section above extracted-data form)
+frontend/src/app/catalog/page.tsx                       (promote internal WPN to primary identifier)
+frontend/src/app/catalog/parts/[id]/page.tsx            ("Sync with HAROLD" button when wpn_pending_sync)
+```
 
-Drop-in replacement for `frontend/src/app/catalog/page.tsx`:
-- Parts tab cards/rows show `internal_part_number` primary,
-  manufacturer `part_number` secondary. Amber dot if `wpn_pending_sync`.
+Verify `npx tsc --noEmit` clean; `npm run build` green.
 
-`frontend/src/lib/harold-api.ts` extension: `validateWpn`,
-`validateFilename`.
+Commit: `phase-4(harold-int): frontend WPN section + catalog list + reconcile UI`.
 
-TypeScript clean, `npm run build` green.
+### Phase 5 — end-to-end smoke + reconciliation
 
-### Phase 5 — HAROLD-side (**no-op under AD-12**)
+Flip `HAROLD_INTEGRATION_ENABLED=true`, restart backend, run the
+prompt's 13-step smoke matrix against the McMaster fixture. Document
+each step's result.
 
-Create `C:\Tools\harold\docs\ASTRA_INTEGRATION.md` documenting:
-- HAROLD has no WPN issuance responsibility.
-- ASTRA queries HAROLD's `_wardstone-harold-validate` tool.
-- If a future revision wants HAROLD to track issued WPNs, the change is:
-  (1) add a `db.py` with a SQLite store under wrench's data dir,
-  (2) add `_wardstone-harold-claim-wpn` and `_wardstone-harold-list-issued` tools,
-  (3) restart via `pwsh deploy.ps1`.
-- Tests on the HAROLD side: none new in this round.
+Commit: `phase-5(harold-int): end-to-end smoke validated` (state-only).
 
-Commit in `C:\Tools\harold`: `feat(astra-integration): document
-read-only validator role`.
+### Phase 6 — final tests + completion notes
 
-### Phase 6 — end-to-end testing
+```
+docs/PHASE_HAROLD_INTEGRATION_NOTES.md  (NEW)
+```
 
-Per the prompt's manual smoke matrix, adjusted for the AD-5 reality:
-no "HAROLD-side WPN registry" step; instead, after each ASTRA approval,
-verify ASTRA's `internal_part_number` is set and the sequence row in
-`catalog_wpn_sequences` advanced. Verify HAROLD's validate-name
-response continues to return `is_valid=true` for those numbers.
+Final `pytest -v`, `tsc --noEmit`, `npm run build` all green. Notes
+capture per-phase commits, smoke results, open follow-ups.
 
-The "HAROLD down" leg: `pwsh -Command "docker stop wrench-api-1"` (or
-the wrench-side equivalent — discover the actual container name in
-Phase 6 prep). Upload + approve, observe `wpn_pending_sync=True`,
-restart, click manual sync.
-
-### Phase 7 — tests + completion notes
-
-Standard test consolidation and `docs/PHASE_HAROLD_INTEGRATION_NOTES.md`.
+Commit: `phase-6(harold-int): tests + completion notes`.
 
 ---
 
-## 7. Risks and gotchas
+## 9. Risks / gotchas surfaced during audit
 
-1. **A WRENCH-API restart wipes the wrench copy.** `deploy.ps1` uses
-   `robocopy /MIR`, which **deletes** files in the destination not
-   present in the source. If anyone edits `C:\opt\wrench\tools-dev\wardstone-harold`
-   directly, the next deploy nukes those edits. The HAROLD README is
-   explicit but worth re-stating in the cross-repo notes.
-2. **HAROLD's `_wardstone-harold-search` is Ollama-backed and 30 s
-   timeout.** We are NOT going to use it on the upload path — only the
-   10 s `validate` tool. Phase 2 must make the per-call timeout
-   path-specific so a future use of `search` doesn't block the upload.
-3. **HAROLD's input schema for validate is `{name: str}`** with
-   1 ≤ len ≤ 300. Tracking this so the ASTRA proxy enforces the same
-   bounds and returns the right 422 before the HAROLD call.
-4. **The `runs` API is single-shot.** No streaming, no long-poll. Fine
-   for our use case.
-5. **WRENCH may renumber slugs.** Treat slugs as configuration — the
-   `TOOL_HAROLD_*` constants in `client.py` are the seam.
-6. **HAROLD's revision rules are dense.** The valid REV set excludes
-   `I O Q S X Z`. Sequence subranges are tight. The "X1, X2, …
-   pre-release rev" rule means our v1 WPN allocator only issues
-   `A`-suffix names; X-pre-release is out of scope for v1 STEP uploads.
-7. **Pattern matching order matters.** `validate_name` tries
-   `vehicle_*` before `cad_part` so a vehicle-prefix name doesn't get
-   parsed as a part. Our ASTRA-side `extract_wpn_candidate` regex must
-   follow the same precedence.
-8. **The 2026 nomenclature restructure dropped project codes from
-   parts.** Anything Mason has in older filenames carrying a project
-   code (`WS-DRT-ST-P1014-A`) will fail HAROLD's validator and need
-   manual remap.
-9. **An older `docs/CLAUDE_CODE_PROMPT_HAROLD-001.md`** is still in
-   the repo. The current prompt explicitly supersedes it; the older
-   one's AD-9 mismatches reality (it assumed HAROLD endpoints
-   `_wardstone-harold-search/validate/data` paths that work but aren't
-   used the way it described). Recommend deleting it post-merge or
-   marking it `SUPERSEDED-BY-HAROLD-INTEGRATION-001.md`.
-10. **CSP & CORS.** All HAROLD calls are server-side per AD-7; no CSP
-    work needed in Phase 4.
+1. **Pre-existing `docs/HAROLD_INTEGRATION_DESIGN.md`** is the Phase 0
+   report from the older HAROLD-INTEGRATION-001 prompt (the one whose
+   architecture we're now replacing). This commit overwrites that
+   file with the new V2-reconciled content. The pre-V2 file's value
+   was largely captured in the prompt's "Pre-flight read" section.
+2. **`HAROLD_BASE_URL` change is a config edit that affects all
+   developers.** Phase 2 updates the default; anyone with a
+   `.env` overriding to `:8030` needs to drop the override. Document
+   in the Phase 2 commit message.
+3. **The McMaster part (id=1)** stays unmodified through Phase 1;
+   `internal_part_number` defaults NULL on the new column. Phase 5's
+   smoke uploads a SECOND McMaster STEP to exercise the full flow,
+   leaving the original row as a pre-integration artifact. Don't
+   backfill (per prompt gotcha #9).
+4. **Fallback allocator race.** Two concurrent uploads during a
+   HAROLD outage both reserve fallback WPNs. The `SELECT FOR UPDATE`
+   in `fallback.allocate_fallback_wpn` (Phase 2) prevents
+   same-WPN collisions. Reconcile-time collisions with HAROLD's own
+   issued numbers are handled in `service.reconcile_pending_sync`:
+   first try `issue_specific` (use the fallback WPN as-is); on 409,
+   fall through to `issue` (allocate a fresh HAROLD WPN, update
+   `internal_part_number`, audit-emit a `wpn_changed_during_reconcile`
+   event).
+5. **Audit event proliferation.** Prompt §Common gotcha #11 lists
+   four event names: `catalog.part.wpn_assigned`,
+   `catalog.part.wpn_reconciled`, `catalog.part.wpn_pending_sync`,
+   `harold.unavailable`. Phase 3 emits them all. Existing
+   `app.services.audit_service.record_event` is reused (no new
+   service code).
+6. **`/api/v1/catalog/designators` is currently unauthenticated** and
+   `CatalogDesignatorsResponse` schema returns
+   `{designators: list[str], total, system_filter}` — a flat list of
+   manufacturer MPNs. Phase 3 changes both the shape and the column:
+   new response is
+   `{designators: [{wpn, part_id, part_class, system_code, created_at}, ...], total, filter}`.
+   This is a **breaking change** for any caller that consumes the
+   current shape. Confirmed via grep that **no caller exists yet**
+   (the endpoint was added speculatively in commit `03895f7` and the
+   only consumer was meant to be HAROLD, which doesn't poll ASTRA).
+   Safe to break.
+7. **Migration 0033 numbering.** Current head is 0032. Phase 1's
+   migration goes 0033. If any other phase is in flight that
+   intends migration 0033 also, surface and renumber.
+8. **`reconcile_pending_sync` audit on partial failure.** Prompt
+   §Common gotcha #7: wrap the reconcile in a transaction so a
+   partial success (HAROLD accepts `issue_specific`, audit emit
+   fails) rolls back. Phase 2's service function must take the
+   transaction boundary explicitly.
 
----
+## 10. Questions for Mason
 
-## 8. Files saved during Phase 0
+None blocking — all twelve AD-* decisions are clear and self-consistent
+with the V2 surface captured in `docs/HAROLD_V2_OPENAPI.json`. A few
+soft prompts:
 
-- `docs/HAROLD_INTEGRATION_DESIGN.md` (this file).
-- `docs/harold_openapi.json` — captured live from `GET http://localhost:8030/openapi.json`.
-- Older artifacts (from earlier session, untouched):
-  - `docs/HAROLD_INVESTIGATION.md`
-  - `docs/CLAUDE_CODE_PROMPT_HAROLD-001.md`
-  - `.harold_openapi.json` (orphan from prior run; consider deletion)
-  - `C:UsersWardStone…harold_openapi.json` (one-character-encoded-as-string
-    path-collision artifact in the repo root; **deletion-safe**, not
-    referenced by anything).
+1. **Path A vs B vs C** for the prior HAROLD-code reconciliation:
+   I'm recommending A (delete, rebuild). Sign off or override.
+2. **Phase 5 smoke fixture:** the prompt suggests "rename the
+   fixture or grab another McMaster bolt". Have a candidate file
+   ready, or should I pick another McMaster part number for the
+   smoke? Picking one is fine if you don't have a preference.
+3. **`/api/v1/catalog/designators` breaking change** (point 9.6
+   above). Implicit-OK per prompt scope. Flag it loudly here in
+   case there's a non-obvious consumer.
+4. **`docs/HAROLD_INTEGRATION_DESIGN.md` was previously written by
+   the HAROLD-INTEGRATION-001 Phase 0** — this report overwrites it.
+   If you wanted to keep the original for diff purposes, say so
+   before this Phase 0 commit and I'll save it to
+   `docs/HAROLD_INTEGRATION_DESIGN_V1.md` first.
 
----
+## 11. Files saved during Phase 0
 
-## 9. What I did NOT do (per the stop instruction)
+```
+docs/HAROLD_INTEGRATION_DESIGN.md   (this file — overwrites prior)
+docs/HAROLD_V2_OPENAPI.json         (NEW — 19.6 KB)
+```
+
+No code touched. No migration created. No HAROLD V2 modifications.
+ASTRA frontend and backend unchanged from `HEAD`.
+
+## 12. What I did NOT do (per the stop instruction)
 
 - No Phase 1 migration written.
-- No client/service/router extensions.
-- No frontend changes.
-- No HAROLD-side commits.
-- No code edits to anything under `backend/app/` or `frontend/`.
-- No deletion of orphan files in the repo root.
+- No deletion of prior HAROLD code.
+- No HAROLD V2 modifications.
+- No code edits to `backend/`, `frontend/`, or `C:\Tools\harold`.
 - No flip of `HAROLD_INTEGRATION_ENABLED`.
 
-**Waiting for your go-ahead on the questions in §5 before proceeding.**
+**Waiting for your go-ahead before proceeding to Phase 1.**
