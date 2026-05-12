@@ -21,6 +21,7 @@ import {
 import clsx from 'clsx';
 
 import { catalogAPI } from '@/lib/catalog-api';
+import { formatApiError } from '@/lib/errors';
 import {
   type Supplier,
   type CatalogPart,
@@ -59,7 +60,7 @@ function SuppliersTab() {
     setLoading(true);
     catalogAPI.listSuppliers({ q: search || undefined, limit: 200 })
       .then((r) => setItems(r.data))
-      .catch((e) => setError(e?.response?.data?.detail || 'Failed to load suppliers'))
+      .catch((e) => setError(formatApiError(e, 'Failed to load suppliers')))
       .finally(() => setLoading(false));
   }, [search]);
 
@@ -196,7 +197,7 @@ function PartsTab() {
       limit: 200,
     })
       .then((r) => setItems(r.data))
-      .catch((e) => setError(e?.response?.data?.detail || 'Failed to load catalog parts'))
+      .catch((e) => setError(formatApiError(e, 'Failed to load catalog parts')))
       .finally(() => setLoading(false));
   }, [search, partClass, lifecycle]);
 
@@ -220,9 +221,7 @@ function PartsTab() {
       const r = await catalogAPI.uploadStep(f);
       router.push(`/catalog/pending-imports/${r.data.pending_import_id}`);
     } catch (err) {
-      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-        || (err instanceof Error ? err.message : 'Upload failed');
-      setError(detail);
+      setError(formatApiError(err, 'Upload failed'));
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -381,7 +380,7 @@ function PendingImportsTab() {
     setLoading(true);
     catalogAPI.listPendingImports({ limit: 200 })
       .then((r) => setItems(r.data))
-      .catch((e) => setError(e?.response?.data?.detail || 'Failed to load pending imports'))
+      .catch((e) => setError(formatApiError(e, 'Failed to load pending imports')))
       .finally(() => setLoading(false));
   }, []);
 

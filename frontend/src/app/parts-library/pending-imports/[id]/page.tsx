@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { partsLibraryAPI } from '@/lib/parts-api';
+import { formatApiError } from '@/lib/errors';
 import type { ConfidenceLevel, PendingPartsImportResponse } from '@/lib/parts-types';
 import { PART_TYPE_LABELS } from '@/lib/parts-types';
 
@@ -39,7 +40,7 @@ export default function PendingImportDetailPage() {
         setEdited(initial);
         setError(null);
       })
-      .catch((err) => setError(err?.response?.data?.detail || 'Failed to load'))
+      .catch((err) => setError(formatApiError(err, 'Failed to load')))
       .finally(() => setLoading(false));
   }, [importId]);
 
@@ -85,12 +86,7 @@ export default function PendingImportDetailPage() {
       const res = await partsLibraryAPI.approveImport(imp.id, overrides);
       router.push(`/parts-library/${res.data.id}`);
     } catch (err: unknown) {
-      const ax = err as { response?: { data?: { detail?: { detail?: string } | string } } };
-      const detail = ax?.response?.data?.detail;
-      const message = typeof detail === 'string'
-        ? detail
-        : (detail as { detail?: string })?.detail || 'Approval failed';
-      setError(message);
+      setError(formatApiError(err, 'Approval failed'));
     } finally {
       setSubmitting(false);
     }
@@ -103,8 +99,7 @@ export default function PendingImportDetailPage() {
       await partsLibraryAPI.rejectImport(imp.id, rejectReason);
       router.push('/parts-library/pending-imports');
     } catch (err: unknown) {
-      const ax = err as { response?: { data?: { detail?: string } } };
-      setError(ax?.response?.data?.detail || 'Reject failed');
+      setError(formatApiError(err, 'Reject failed'));
     } finally {
       setSubmitting(false);
     }

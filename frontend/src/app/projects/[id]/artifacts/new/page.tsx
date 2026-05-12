@@ -10,6 +10,7 @@ import { useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { ArrowLeft, Save, Loader2 } from 'lucide-react';
 import { artifactsAPI } from '@/lib/api';
+import { formatApiError } from '@/lib/errors';
 import { ARTIFACT_TYPE_LABELS } from '@/lib/types';
 
 // Phase 0 Fix 0b Part 3 — recover unsaved drafts on session timeout.
@@ -86,7 +87,7 @@ export default function NewArtifactPage() {
           // The artifact was created — surface the upload error but don't lose the row.
           setError(
             'Artifact created but file upload failed: ' +
-              (e?.response?.data?.detail || 'unknown error') +
+              formatApiError(e, 'unknown error') +
               ". Open the artifact to retry the upload.",
           );
           router.push(`/projects/${projectId}/artifacts/${created.data.id}`);
@@ -98,7 +99,7 @@ export default function NewArtifactPage() {
       autosave.clearDraft();
       router.push(`/projects/${projectId}/artifacts/${created.data.id}`);
     } catch (e: any) {
-      setError(e?.response?.data?.detail || 'Failed to create artifact');
+      setError(formatApiError(e, 'Failed to create artifact'));
       setSaving(false);
     }
   };

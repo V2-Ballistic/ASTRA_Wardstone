@@ -33,6 +33,7 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { interfaceAPI } from '@/lib/interface-api';
+import { formatApiError } from '@/lib/errors';
 import type { SystemDetail, UnitSummary, Connection, WireHarness, UnitType } from '@/lib/interface-types';
 
 // ══════════════════════════════════════
@@ -268,7 +269,7 @@ function AddUnitModal({ projectId, systemId, onClose, onCreated }: {
       onCreated();
       onClose();
     } catch (e: any) {
-      setError(e?.response?.data?.detail || 'Failed to create unit');
+      setError(formatApiError(e, 'Failed to create unit'));
     }
     setSaving(false);
   };
@@ -647,7 +648,7 @@ export default function SystemDetailPage() {
       setMsg('System updated');
       fetchSystem();
     } catch (e: any) {
-      setMsg(e?.response?.data?.detail || 'Save failed');
+      setMsg(formatApiError(e, 'Save failed'));
     }
     setSavingEdit(false);
     setTimeout(() => setMsg(''), 3000);
@@ -659,7 +660,7 @@ export default function SystemDetailPage() {
       await interfaceAPI.deleteSystem(systemId, true);
       router.push(`${p}/system-architecture?tab=systems`);
     } catch (e: any) {
-      setMsg(e?.response?.data?.detail || 'Delete failed');
+      setMsg(formatApiError(e, 'Delete failed'));
       setShowDeleteSystem(false);
       setTimeout(() => setMsg(''), 4000);
     }
@@ -673,7 +674,7 @@ export default function SystemDetailPage() {
       setDeleteUnitTarget(null);
       fetchSystem();
     } catch (e: any) {
-      setMsg(e?.response?.data?.detail || 'Delete failed');
+      setMsg(formatApiError(e, 'Delete failed'));
       setDeleteUnitTarget(null);
       setTimeout(() => setMsg(''), 4000);
     }

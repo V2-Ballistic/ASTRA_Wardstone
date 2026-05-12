@@ -16,6 +16,7 @@ import {
 import clsx from 'clsx';
 
 import { interfaceAPI } from '@/lib/interface-api';
+import { formatApiError } from '@/lib/errors';
 import type {
   System, UnitStatus, UnitSummary, UnitType,
 } from '@/lib/interface-types';
@@ -71,7 +72,7 @@ export default function UnitsListTab({ projectId }: Props) {
     interfaceAPI.listUnits(projectId, params)
       .then((r) => setUnits(r.data))
       .catch((e) => {
-        const detail = e?.response?.data?.detail || e?.message || 'Failed to load units';
+        const detail = formatApiError(e, 'Failed to load units');
         setError(typeof detail === 'string' ? detail : JSON.stringify(detail));
       })
       .finally(() => setLoading(false));

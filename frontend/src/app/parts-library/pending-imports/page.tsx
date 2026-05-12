@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { partsLibraryAPI } from '@/lib/parts-api';
+import { formatApiError } from '@/lib/errors';
 import type { PendingPartsImportResponse } from '@/lib/parts-types';
 
 export default function PendingImportsListPage() {
@@ -18,7 +19,7 @@ export default function PendingImportsListPage() {
         setError(null);
       })
       .catch((err) => {
-        setError(err?.response?.data?.detail || 'Failed to load pending imports');
+        setError(formatApiError(err, 'Failed to load pending imports'));
       })
       .finally(() => setLoading(false));
   }, []);

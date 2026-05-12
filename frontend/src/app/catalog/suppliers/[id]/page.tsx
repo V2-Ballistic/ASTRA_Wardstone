@@ -25,6 +25,7 @@ import {
 import clsx from 'clsx';
 
 import { catalogAPI } from '@/lib/catalog-api';
+import { formatApiError } from '@/lib/errors';
 import {
   type Supplier,
   type SupplierDocument,
@@ -76,8 +77,7 @@ function UploadDocumentModal({ supplierId, onClose, onUploaded }: {
       onUploaded(r.data);
       onClose();
     } catch (e: unknown) {
-      const err = e as { response?: { data?: { detail?: string } } };
-      setError(err?.response?.data?.detail || 'Failed to upload document');
+      setError(formatApiError(e, 'Failed to upload document'));
       setSubmitting(false);
     }
   };
@@ -195,7 +195,7 @@ export default function SupplierDetailPage() {
         setSupplier(sRes.data);
         setParts(pRes.data);
       })
-      .catch((e) => setError(e?.response?.data?.detail || 'Failed to load supplier'))
+      .catch((e) => setError(formatApiError(e, 'Failed to load supplier')))
       .finally(() => setLoading(false));
   }, [supplierId]);
 
@@ -215,8 +215,7 @@ export default function SupplierDetailPage() {
       await catalogAPI.deleteSupplier(supplierId);
       router.push('/catalog');
     } catch (e: unknown) {
-      const err = e as { response?: { data?: { detail?: string } } };
-      setError(err?.response?.data?.detail || 'Failed to delete supplier');
+      setError(formatApiError(e, 'Failed to delete supplier'));
     }
   };
 
@@ -228,8 +227,7 @@ export default function SupplierDetailPage() {
       await catalogAPI.deleteDocument(docId);
       setDocuments((d) => d.filter((x) => x.id !== docId));
     } catch (e: unknown) {
-      const err = e as { response?: { data?: { detail?: string } } };
-      setError(err?.response?.data?.detail || 'Failed to delete document');
+      setError(formatApiError(e, 'Failed to delete document'));
     }
   };
 
@@ -245,8 +243,7 @@ export default function SupplierDetailPage() {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
     } catch (e: unknown) {
-      const err = e as { response?: { data?: { detail?: string } } };
-      setError(err?.response?.data?.detail || 'Failed to download document');
+      setError(formatApiError(e, 'Failed to download document'));
     }
   };
 

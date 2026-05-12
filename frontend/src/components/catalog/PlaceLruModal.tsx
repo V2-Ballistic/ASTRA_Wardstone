@@ -31,6 +31,7 @@ import clsx from 'clsx';
 
 import { catalogAPI } from '@/lib/catalog-api';
 import { interfaceAPI } from '@/lib/interface-api';
+import { formatApiError } from '@/lib/errors';
 import type {
   CatalogPart,
   Supplier,
@@ -189,7 +190,7 @@ function CatalogTab({
       }).then((r) => {
         setParts(r.data);
       }).catch((e) => {
-        setError(e?.response?.data?.detail || 'Failed to load catalog parts');
+        setError(formatApiError(e, 'Failed to load catalog parts'));
       }).finally(() => setLoading(false));
     }, 250);
     return () => clearTimeout(handle);
@@ -217,15 +218,14 @@ function CatalogTab({
       });
       onPlaced(r.data);
     } catch (e: unknown) {
-      const err = e as { response?: { status?: number; data?: { detail?: string } } };
-      const status = err?.response?.status;
+      const status = (e as { response?: { status?: number } })?.response?.status;
       let msg: string;
       if (status === 403) {
         msg = 'You are not a member of this project. Ask the project manager to add you before placing parts.';
       } else if (status === 409) {
-        msg = err?.response?.data?.detail || 'Conflict — duplicate unit_id_tag in this project, or restricted-part placement requires admin_force.';
+        msg = formatApiError(e, 'Conflict — duplicate unit_id_tag in this project, or restricted-part placement requires admin_force.');
       } else {
-        msg = err?.response?.data?.detail || 'Failed to place catalog part';
+        msg = formatApiError(e, 'Failed to place catalog part');
       }
       setError(msg);
     } finally {
@@ -614,15 +614,14 @@ function BrandNewTab({
       });
       onPlaced(placed.data);
     } catch (e: unknown) {
-      const err = e as { response?: { status?: number; data?: { detail?: string } } };
-      const status = err?.response?.status;
+      const status = (e as { response?: { status?: number } })?.response?.status;
       let msg: string;
       if (status === 403) {
         msg = 'You are not a member of this project. Ask the project manager to add you.';
       } else if (status === 409) {
-        msg = err?.response?.data?.detail || 'Conflict — supplier name or part_number+revision already exists.';
+        msg = formatApiError(e, 'Conflict — supplier name or part_number+revision already exists.');
       } else {
-        msg = err?.response?.data?.detail || 'Failed to create and place the new catalog part';
+        msg = formatApiError(e, 'Failed to create and place the new catalog part');
       }
       setError(msg);
     } finally {
@@ -990,9 +989,9 @@ function UploadIcdTab({
       await catalogAPI.triggerExtraction(newId);
       setStage('extracting');
     } catch (e) {
-      const ax = e as { response?: { data?: { detail?: string }; status?: number } };
-      const msg = ax?.response?.data?.detail || 'Upload failed';
-      const dup = ax?.response?.status === 409 ? ' (this document was already uploaded for this supplier — see Pending Imports)' : '';
+      const status = (e as { response?: { status?: number } })?.response?.status;
+      const msg = formatApiError(e, 'Upload failed');
+      const dup = status === 409 ? ' (this document was already uploaded for this supplier — see Pending Imports)' : '';
       setError(msg + dup);
       setStage('idle');
     }
@@ -1182,7 +1181,7 @@ export default function PlaceLruModal({
     if (!open) return;
     interfaceAPI.listSystems(projectId, 'flat')
       .then((r) => setSystems(r.data))
-      .catch((e) => setError(e?.response?.data?.detail || 'Failed to load project systems'));
+      .catch((e) => setError(formatApiError(e, 'Failed to load project systems')));
     return () => { setError(''); };
   }, [open, projectId]);
 

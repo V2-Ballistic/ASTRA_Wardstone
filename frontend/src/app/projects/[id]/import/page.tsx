@@ -17,6 +17,7 @@ import {
 import clsx from 'clsx';
 import { projectsAPI } from '@/lib/api';
 import api from '@/lib/api';
+import { formatApiError } from '@/lib/errors';
 
 // ── Types ──
 
@@ -114,8 +115,7 @@ export default function ImportPage() {
       setRows(res.data.rows);
       setStep('preview');
     } catch (e: any) {
-      const detail = e.response?.data?.detail;
-      setError(typeof detail === 'string' ? detail : 'Failed to parse file');
+      setError(formatApiError(e, 'Failed to parse file'));
     }
     setUploading(false);
   }, [projectId]);
@@ -156,8 +156,7 @@ export default function ImportPage() {
       setResult(res.data);
       setStep('done');
     } catch (e: any) {
-      const detail = e.response?.data?.detail;
-      setError(typeof detail === 'string' ? detail : 'Import failed');
+      setError(formatApiError(e, 'Import failed'));
       setStep('preview');
     }
   };

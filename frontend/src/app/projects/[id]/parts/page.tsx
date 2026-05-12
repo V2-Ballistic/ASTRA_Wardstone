@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 
 import { projectsAPI } from '@/lib/api';
+import { formatApiError } from '@/lib/errors';
 import { interfaceAPI } from '@/lib/interface-api';
 import { projectPartsBomAPI } from '@/lib/projparts-api';
 import type {
@@ -91,8 +92,7 @@ export default function ProjectBomPage() {
         setStats(st.data);
       })
       .catch((err) => {
-        const detail = err?.response?.data?.detail;
-        setError(typeof detail === 'string' ? detail : 'Failed to load BOM');
+        setError(formatApiError(err, 'Failed to load BOM'));
       })
       .finally(() => setLoading(false));
   }, [projectId, statusFilter, classFilter, debouncedSearch]);
@@ -116,12 +116,7 @@ export default function ProjectBomPage() {
       await projectPartsBomAPI.remove(projectId, row.id);
       reload();
     } catch (err: unknown) {
-      const ax = err as { response?: { data?: { detail?: { detail?: string } | string } } };
-      const detail = ax?.response?.data?.detail;
-      const msg = typeof detail === 'string'
-        ? detail
-        : (detail as { detail?: string })?.detail || 'Remove failed';
-      alert(msg);
+      alert(formatApiError(err, 'Remove failed'));
     }
   };
 
@@ -495,11 +490,7 @@ function AddBomItemModal({ projectId, onClose, onCreated }: {
       await projectPartsBomAPI.create(projectId, payload);
       onCreated();
     } catch (e: unknown) {
-      const ax = e as { response?: { data?: { detail?: { detail?: string } | string } } };
-      const detail = ax?.response?.data?.detail;
-      setErr(typeof detail === 'string'
-        ? detail
-        : (detail as { detail?: string })?.detail || 'Add failed');
+      setErr(formatApiError(e, 'Add failed'));
     } finally {
       setSubmitting(false);
     }
@@ -686,11 +677,7 @@ function EditBomItemDrawer({ projectId, row, onClose, onSaved }: {
       await projectPartsBomAPI.update(projectId, row.id, payload);
       onSaved();
     } catch (e: unknown) {
-      const ax = e as { response?: { data?: { detail?: { detail?: string } | string } } };
-      const detail = ax?.response?.data?.detail;
-      setErr(typeof detail === 'string'
-        ? detail
-        : (detail as { detail?: string })?.detail || 'Save failed');
+      setErr(formatApiError(e, 'Save failed'));
     } finally {
       setSubmitting(false);
     }

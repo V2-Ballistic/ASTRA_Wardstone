@@ -29,6 +29,7 @@ import { ChevronsUpDown, Cpu, Loader2, Package, Search, Trash2, X } from 'lucide
 import clsx from 'clsx';
 
 import { catalogAPI } from '@/lib/catalog-api';
+import { formatApiError } from '@/lib/errors';
 import {
   type CatalogPart,
   type LifecycleStatus,
@@ -142,9 +143,7 @@ export default function CatalogPartPicker({
       });
       setResults(ranked.slice(0, MAX_RESULTS));
     } catch (e: unknown) {
-      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-        || (e instanceof Error ? e.message : 'Search failed');
-      setError(detail);
+      setError(formatApiError(e, 'Search failed'));
     } finally {
       setLoading(false);
     }

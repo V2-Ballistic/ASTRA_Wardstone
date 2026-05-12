@@ -12,6 +12,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Loader2, X } from 'lucide-react';
 
 import { interfaceAPI } from '@/lib/interface-api';
+import { formatApiError } from '@/lib/errors';
 import type {
   System,
   SystemStatus,
@@ -114,9 +115,7 @@ export default function AddSystemModal({
       onCreated(r.data);
       onClose();
     } catch (e: unknown) {
-      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-        || (e instanceof Error ? e.message : 'Create failed');
-      setError(typeof detail === 'string' ? detail : JSON.stringify(detail));
+      setError(formatApiError(e, 'Create failed'));
     } finally {
       setSubmitting(false);
     }

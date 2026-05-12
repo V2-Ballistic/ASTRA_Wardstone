@@ -15,6 +15,7 @@ import { Lock, Unlock, Loader2, Link2 } from 'lucide-react';
 import clsx from 'clsx';
 
 import { reqSyncAPI } from '@/lib/req-sync-api';
+import { formatApiError } from '@/lib/errors';
 import type {
   RequirementSourceLink,
   SourceEntityType,
@@ -73,7 +74,7 @@ export default function RequirementSyncPanel({
       setReason('');
       onChange?.();
     } catch (e: any) {
-      setError(e?.response?.data?.detail || 'Lock failed');
+      setError(formatApiError(e, 'Lock failed'));
     } finally {
       setBusy(false);
     }
@@ -86,7 +87,7 @@ export default function RequirementSyncPanel({
       await reqSyncAPI.unlockRequirement(requirementId);
       onChange?.();
     } catch (e: any) {
-      setError(e?.response?.data?.detail || 'Unlock failed');
+      setError(formatApiError(e, 'Unlock failed'));
     } finally {
       setBusy(false);
     }

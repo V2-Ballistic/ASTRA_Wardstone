@@ -46,6 +46,7 @@ const REQ_TYPE_OPTIONS: Array<{ value: RequirementType; label: string }> = [
 
 // F-084: runtime require() shims replaced with normal typed imports.
 import { aiAPI } from '@/lib/ai-api';
+import { formatApiError } from '@/lib/errors';
 import { aiWriterAPI } from '@/lib/ai-writer-api';
 // Phase 5 — sync lock + source links panel.
 import RequirementSyncPanel from '@/components/req-sync/RequirementSyncPanel';
@@ -542,7 +543,7 @@ export default function RequirementDetailPage() {
       setComments(cr.data.comments || []);
       setChildren(rr.data.children || []);
     } catch (e: any) {
-      setError(e.response?.data?.detail || 'Failed to load');
+      setError(formatApiError(e, 'Failed to load'));
     }
     setLoading(false);
   }, [reqId]);
@@ -556,7 +557,7 @@ export default function RequirementDetailPage() {
       setTimeout(() => setSaveMsg(''), 2000);
       await fetchData();
     } catch (e: any) {
-      setError(e.response?.data?.detail || 'Save failed');
+      setError(formatApiError(e, 'Save failed'));
     }
   };
 
@@ -582,7 +583,7 @@ export default function RequirementDetailPage() {
       await requirementsAPI.delete(reqId);
       router.push(`/projects/${projectId}/requirements`);
     } catch (e: any) {
-      setError(e.response?.data?.detail || 'Delete failed');
+      setError(formatApiError(e, 'Delete failed'));
     }
   };
 
@@ -591,7 +592,7 @@ export default function RequirementDetailPage() {
       const res = await requirementsAPI.clone(reqId);
       router.push(`/projects/${projectId}/requirements/${res.data.id}`);
     } catch (e: any) {
-      setError(e.response?.data?.detail || 'Clone failed');
+      setError(formatApiError(e, 'Clone failed'));
     }
   };
 

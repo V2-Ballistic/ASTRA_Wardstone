@@ -25,6 +25,7 @@ import {
 import clsx from 'clsx';
 
 import { catalogAPI } from '@/lib/catalog-api';
+import { formatApiError } from '@/lib/errors';
 import {
   type CatalogPartDetail,
   type CatalogPartUsage,
@@ -121,7 +122,7 @@ export default function CatalogPartDetailPage() {
           setParent(null);
         }
       })
-      .catch((e) => setError(e?.response?.data?.detail || 'Failed to load catalog part'))
+      .catch((e) => setError(formatApiError(e, 'Failed to load catalog part')))
       .finally(() => setLoading(false));
   }, [partId]);
 
@@ -142,8 +143,7 @@ export default function CatalogPartDetailPage() {
       await catalogAPI.deletePart(partId);
       router.push('/catalog');
     } catch (e: unknown) {
-      const err = e as { response?: { data?: { detail?: string } } };
-      setError(err?.response?.data?.detail || 'Failed to delete catalog part');
+      setError(formatApiError(e, 'Failed to delete catalog part'));
     }
   };
 

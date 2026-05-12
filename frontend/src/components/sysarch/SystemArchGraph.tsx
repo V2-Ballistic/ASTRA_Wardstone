@@ -46,6 +46,7 @@ import {
 } from 'lucide-react';
 
 import { sysarchAPI } from '@/lib/sysarch-api';
+import { formatApiError } from '@/lib/errors';
 import type {
   SystemArchGraphEdge,
   SystemArchGraphNode,
@@ -338,7 +339,7 @@ export default function SystemArchGraph({ projectId, onAddSystem }: SystemArchGr
       .then((r) => { if (!cancelled) setGraph(r.data); })
       .catch((e) => {
         if (cancelled) return;
-        const detail = e?.response?.data?.detail || e?.message || 'Failed to load graph';
+        const detail = formatApiError(e, 'Failed to load graph');
         setError(typeof detail === 'string' ? detail : JSON.stringify(detail));
       })
       .finally(() => { if (!cancelled) setLoading(false); });

@@ -16,9 +16,11 @@ import { useState, useEffect, useMemo } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
   ChevronLeft, Cpu, Loader2, Plus, AlertTriangle, Globe,
+  Sparkles, CheckCircle2,
 } from 'lucide-react';
 
 import { catalogAPI } from '@/lib/catalog-api';
+import { formatApiError } from '@/lib/errors';
 import {
   type Supplier,
   type PartClass,
@@ -28,6 +30,11 @@ import {
   LRU_CLASS_LABELS,
   LIFECYCLE_COLORS,
 } from '@/lib/catalog-types';
+import { haroldAPI } from '@/lib/harold-api';
+import type {
+  HaroldSystemCode, WpnSuggestion,
+} from '@/lib/harold-types';
+import { looksLikeHaroldWpn } from '@/lib/harold-types';
 
 const PART_CLASSES: PartClass[] = [
   'processor', 'sensor', 'power_supply', 'radio', 'antenna', 'actuator',
@@ -90,7 +97,7 @@ export default function NewCatalogPartPage() {
   useEffect(() => {
     catalogAPI.listSuppliers({ limit: 200 })
       .then((r) => setSuppliers(r.data))
-      .catch((e) => setError(e?.response?.data?.detail || 'Failed to load suppliers'));
+      .catch((e) => setError(formatApiError(e, 'Failed to load suppliers')));
   }, []);
 
   const canSave = supplierId !== null && partNumber.trim().length > 0 && name.trim().length > 0;
@@ -142,8 +149,7 @@ export default function NewCatalogPartPage() {
       });
       router.push(`/catalog/parts/${r.data.id}`);
     } catch (e: unknown) {
-      const err = e as { response?: { data?: { detail?: string } } };
-      setError(err?.response?.data?.detail || 'Failed to create catalog part');
+      setError(formatApiError(e, 'Failed to create catalog part'));
       setSaving(false);
     }
   };

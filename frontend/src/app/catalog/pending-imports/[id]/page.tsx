@@ -19,6 +19,7 @@ import {
 import clsx from 'clsx';
 
 import { catalogAPI } from '@/lib/catalog-api';
+import { formatApiError } from '@/lib/errors';
 import type {
   PendingCatalogImport,
   Supplier,
@@ -109,9 +110,7 @@ export default function PendingImportReviewPage() {
         // Non-fatal — banner falls back to the IDs.
       }
     } catch (e) {
-      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-        || (e instanceof Error ? e.message : 'Failed to load pending import');
-      setError(detail);
+      setError(formatApiError(e, 'Failed to load pending import'));
     } finally {
       setLoading(false);
     }
@@ -175,9 +174,7 @@ export default function PendingImportReviewPage() {
       });
       await refresh();
     } catch (e) {
-      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-        || (e instanceof Error ? e.message : 'Save failed');
-      setError(detail);
+      setError(formatApiError(e, 'Save failed'));
     } finally {
       setBusy(null);
     }
@@ -198,9 +195,7 @@ export default function PendingImportReviewPage() {
       const r = await catalogAPI.approvePendingImport(pendingImport.id);
       router.push(`/catalog/parts/${r.data.id}`);
     } catch (e) {
-      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-        || (e instanceof Error ? e.message : 'Approve failed');
-      setError(detail);
+      setError(formatApiError(e, 'Approve failed'));
       setBusy(null);
     }
   };
@@ -213,9 +208,7 @@ export default function PendingImportReviewPage() {
       await catalogAPI.rejectPendingImport(pendingImport.id, rejectReason || undefined);
       router.push('/catalog?tab=pending');
     } catch (e) {
-      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-        || (e instanceof Error ? e.message : 'Reject failed');
-      setError(detail);
+      setError(formatApiError(e, 'Reject failed'));
       setBusy(null);
     }
   };

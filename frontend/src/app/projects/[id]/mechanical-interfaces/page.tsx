@@ -33,6 +33,7 @@ import {
 import clsx from 'clsx';
 
 import { mechanicalJointsAPI, partsLibraryAPI, projectPartsAPI } from '@/lib/parts-api';
+import { formatApiError } from '@/lib/errors';
 import type {
   JointStatus, JointType, LibraryPartSummary, LockingFeature,
   MechanicalJointCreate, MechanicalJointResponse, ProjectPartResponse,
@@ -578,9 +579,7 @@ function AddJointModal({
       onCreated();
       onClose();
     } catch (e: unknown) {
-      const detail = (e as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail
-        ?? (e instanceof Error ? e.message : 'Create failed');
-      setError(typeof detail === 'string' ? detail : JSON.stringify(detail));
+      setError(formatApiError(e, 'Create failed'));
     } finally {
       setSubmitting(false);
     }
@@ -946,9 +945,7 @@ export default function MechanicalInterfacesPage() {
         setProjectParts(p.data);
       })
       .catch((e: unknown) => {
-        const detail = (e as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail
-          ?? (e instanceof Error ? e.message : 'Failed to load mechanical joints');
-        setError(typeof detail === 'string' ? detail : JSON.stringify(detail));
+        setError(formatApiError(e, 'Failed to load mechanical joints'));
       })
       .finally(() => setLoading(false));
   }, [projectId]);
@@ -1022,9 +1019,7 @@ export default function MechanicalInterfacesPage() {
       await mechanicalJointsAPI.approve(projectId, joint.joint_id);
       reload();
     } catch (e: unknown) {
-      const detail = (e as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail
-        ?? (e instanceof Error ? e.message : 'Approve failed');
-      window.alert(typeof detail === 'string' ? detail : JSON.stringify(detail));
+      window.alert(formatApiError(e, 'Approve failed'));
     }
   };
 
@@ -1038,9 +1033,7 @@ export default function MechanicalInterfacesPage() {
       await mechanicalJointsAPI.delete(projectId, joint.joint_id, isActive);
       reload();
     } catch (e: unknown) {
-      const detail = (e as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail
-        ?? (e instanceof Error ? e.message : 'Delete failed');
-      window.alert(typeof detail === 'string' ? detail : JSON.stringify(detail));
+      window.alert(formatApiError(e, 'Delete failed'));
     }
   };
 

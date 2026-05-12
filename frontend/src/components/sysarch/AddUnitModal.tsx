@@ -15,6 +15,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Loader2, X } from 'lucide-react';
 
 import { interfaceAPI } from '@/lib/interface-api';
+import { formatApiError } from '@/lib/errors';
 import type { System, UnitStatus, UnitType } from '@/lib/interface-types';
 import type { CatalogPart, PartClass } from '@/lib/catalog-types';
 import { useFormAutosave } from '@/lib/autosave';
@@ -187,9 +188,7 @@ export default function AddUnitModal({
       onCreated(r.data as { id: number });
       onClose();
     } catch (e: unknown) {
-      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-        || (e instanceof Error ? e.message : 'Create failed');
-      setError(typeof detail === 'string' ? detail : JSON.stringify(detail));
+      setError(formatApiError(e, 'Create failed'));
     } finally {
       setSubmitting(false);
     }

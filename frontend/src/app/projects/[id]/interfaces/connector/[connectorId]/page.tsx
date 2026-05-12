@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { interfaceAPI } from '@/lib/interface-api';
+import { formatApiError } from '@/lib/errors';
 import type { ConnectorWithPins, Pin } from '@/lib/interface-types';
 import { SIGNAL_TYPE_COLORS, labelize } from '@/lib/interface-types';
 
@@ -311,7 +312,7 @@ function AddPinsForm({ connectorId, existingPins, availableUnits, ownUnitId, onS
         }))
       );
       onSaved();
-    } catch (e: any) { setError(e?.response?.data?.detail || 'Failed to add pins'); }
+    } catch (e: any) { setError(formatApiError(e, 'Failed to add pins')); }
     setSaving(false);
   };
 
@@ -603,7 +604,7 @@ export default function ConnectorDetailPage() {
       setEditing(false); setEditFields({});
       flash('Connector updated');
       fetchConnector();
-    } catch (e: any) { flash(e?.response?.data?.detail || 'Save failed'); }
+    } catch (e: any) { flash(formatApiError(e, 'Save failed')); }
     setSavingEdit(false);
   };
 
@@ -704,7 +705,7 @@ export default function ConnectorDetailPage() {
         flash('Pins auto-generated');
       }
       fetchConnector();
-    } catch (e: any) { flash(e?.response?.data?.detail || 'Auto-generate failed'); }
+    } catch (e: any) { flash(formatApiError(e, 'Auto-generate failed')); }
     setAutoGenLoading(false);
   };
 
@@ -713,7 +714,7 @@ export default function ConnectorDetailPage() {
       await interfaceAPI.deletePin(pinId);
       setDeleteConfirmPin(null);
       fetchConnector();
-    } catch (e: any) { flash(e?.response?.data?.detail || 'Delete failed'); }
+    } catch (e: any) { flash(formatApiError(e, 'Delete failed')); }
   };
 
   // ══════════════════════════════════════
@@ -752,7 +753,7 @@ export default function ConnectorDetailPage() {
       setInternalDraft((d) => { const n = { ...d }; delete n[pin.id]; return n; });
       fetchConnector();
     } catch (e: any) {
-      flash(e?.response?.data?.detail || 'Failed to save internal signal name');
+      flash(formatApiError(e, 'Failed to save internal signal name'));
     }
   };
 
@@ -771,7 +772,7 @@ export default function ConnectorDetailPage() {
       setSelectedPinIds(new Set());
       fetchConnector();
     } catch (e: any) {
-      flash(e?.response?.data?.detail || 'Bulk copy failed');
+      flash(formatApiError(e, 'Bulk copy failed'));
     } finally {
       setBulkBusy(false);
     }
@@ -796,7 +797,7 @@ export default function ConnectorDetailPage() {
       setShowRenameModal(false);
       fetchConnector();
     } catch (e: any) {
-      flash(e?.response?.data?.detail || 'Bulk rename failed');
+      flash(formatApiError(e, 'Bulk rename failed'));
     } finally {
       setBulkBusy(false);
     }
@@ -874,12 +875,7 @@ export default function ConnectorDetailPage() {
       flash('Pin updated');
     } catch (e: any) {
       // Surface the error inline in the edit form rather than as a toast
-      const detail = e?.response?.data?.detail;
-      setPinEditError(
-        typeof detail === 'string' ? detail :
-        Array.isArray(detail) ? detail.map((d: any) => d.msg || JSON.stringify(d)).join('; ') :
-        e?.message || 'Update failed'
-      );
+      setPinEditError(formatApiError(e, 'Update failed'));
     }
     setSavingPin(false);
   };
@@ -891,7 +887,7 @@ export default function ConnectorDetailPage() {
       if (unitId) router.push(`${p}/interfaces/unit/${unitId}`);
       else router.push(`${p}/interfaces`);
     } catch (e: any) {
-      flash(e?.response?.data?.detail || 'Delete failed');
+      flash(formatApiError(e, 'Delete failed'));
       setShowDeleteConn(false);
     }
   };

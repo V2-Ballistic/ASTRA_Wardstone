@@ -1,6 +1,7 @@
 'use client';
 import { useCallback, useRef, useState } from 'react';
 import { partsLibraryAPI } from '@/lib/parts-api';
+import { formatApiError } from '@/lib/errors';
 
 interface StepUploadModalProps {
   open: boolean;
@@ -74,12 +75,7 @@ export function StepUploadModal({
         onSuccess(data.pending_import_id);
       }
     } catch (err: unknown) {
-      const ax = err as { response?: { data?: { detail?: { detail?: string } | string } } };
-      const detail = ax?.response?.data?.detail;
-      const message = typeof detail === 'string'
-        ? detail
-        : (detail as { detail?: string })?.detail || 'Upload failed.';
-      setError(message);
+      setError(formatApiError(err, 'Upload failed.'));
     } finally {
       setUploading(false);
     }

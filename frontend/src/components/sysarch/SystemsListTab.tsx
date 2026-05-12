@@ -16,6 +16,7 @@ import {
 import clsx from 'clsx';
 
 import { interfaceAPI } from '@/lib/interface-api';
+import { formatApiError } from '@/lib/errors';
 import type {
   System, SystemStatus, SystemType,
 } from '@/lib/interface-types';
@@ -48,7 +49,7 @@ export default function SystemsListTab({ projectId }: Props) {
     interfaceAPI.listSystems(projectId, 'flat')
       .then((r) => setSystems(r.data))
       .catch((e) => {
-        const detail = e?.response?.data?.detail || e?.message || 'Failed to load systems';
+        const detail = formatApiError(e, 'Failed to load systems');
         setError(typeof detail === 'string' ? detail : JSON.stringify(detail));
       })
       .finally(() => setLoading(false));

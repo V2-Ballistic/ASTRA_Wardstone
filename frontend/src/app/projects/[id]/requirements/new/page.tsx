@@ -28,6 +28,7 @@ import { requirementsAPI, projectsAPI, artifactsAPI } from '@/lib/api';
 
 // F-084: runtime require() shims replaced with normal typed imports.
 import { aiAPI } from '@/lib/ai-api';
+import { formatApiError } from '@/lib/errors';
 import { aiWriterAPI } from '@/lib/ai-writer-api';
 
 // Phase 0 Fix 0b Part 3 — autosave unsaved drafts so a session timeout
@@ -276,7 +277,7 @@ export default function NewRequirementPage() {
       autosave.clearDraft();
       router.push(`${p}/requirements`);
     } catch (err: any) {
-      setError(err.response?.data?.detail || 'Failed to create requirement');
+      setError(formatApiError(err, 'Failed to create requirement'));
     }
     setSaving(false);
   };

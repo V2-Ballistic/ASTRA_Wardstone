@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { aiAPI, type TraceSuggestion } from '@/lib/ai-api';
 import { traceabilityAPI } from '@/lib/api';
+import { formatApiError } from '@/lib/errors';
 
 interface TraceSuggestionsPanelProps {
   requirementId: number;
@@ -96,7 +97,7 @@ export default function TraceSuggestionsPanel({
 
       onLinkCreated?.();
     } catch (err: any) {
-      setError(err.response?.data?.detail || 'Failed to create link');
+      setError(formatApiError(err, 'Failed to create link'));
     } finally {
       setCreating(null);
     }

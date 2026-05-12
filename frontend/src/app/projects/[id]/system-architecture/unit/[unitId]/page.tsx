@@ -34,6 +34,7 @@ import CatalogPartPicker from '@/components/catalog/CatalogPartPicker';
 import type { CatalogPart, PartClass } from '@/lib/catalog-types';
 import clsx from 'clsx';
 import { interfaceAPI } from '@/lib/interface-api';
+import { formatApiError } from '@/lib/errors';
 import type {
   UnitDetail, ConnectorWithPins, Pin, BusWithMessages, MessageSummary,
   UnitEnvironmentalSpec, SystemDetail as SystemDetailType,
@@ -372,7 +373,7 @@ export default function UnitDetailPage() {
       setEditingOverview(false);
       flash('Unit updated');
       fetchUnit();
-    } catch (e: any) { flash(e?.response?.data?.detail || 'Save failed'); }
+    } catch (e: any) { flash(formatApiError(e, 'Save failed')); }
     setSavingOverview(false);
   };
 
@@ -393,8 +394,7 @@ export default function UnitDetailPage() {
       flash(`Linked to catalog part ${cp.part_number}`);
       fetchUnit();
     } catch (e: any) {
-      const detail = e?.response?.data?.detail || e?.message || 'Link failed';
-      setLinkError(typeof detail === 'string' ? detail : JSON.stringify(detail));
+      setLinkError(formatApiError(e, 'Link failed'));
     } finally {
       setLinkSaving(false);
     }
@@ -409,8 +409,7 @@ export default function UnitDetailPage() {
       flash('Unlinked from catalog');
       fetchUnit();
     } catch (e: any) {
-      const detail = e?.response?.data?.detail || e?.message || 'Unlink failed';
-      setLinkError(typeof detail === 'string' ? detail : JSON.stringify(detail));
+      setLinkError(formatApiError(e, 'Unlink failed'));
     } finally {
       setLinkSaving(false);
     }
@@ -470,7 +469,7 @@ export default function UnitDetailPage() {
       setConnForm({ designator: '', name: '', connector_type: 'mil_dtl_38999_series_iii' as ConnectorType, gender: 'female_socket' as ConnectorGender, total_contacts: 37 });
       flash('Connector created');
       fetchUnit();
-    } catch (e: any) { flash(e?.response?.data?.detail || 'Failed'); }
+    } catch (e: any) { flash(formatApiError(e, 'Failed')); }
     setSavingConn(false);
   };
 
@@ -480,7 +479,7 @@ export default function UnitDetailPage() {
       setDeleteConnId(null);
       flash('Connector deleted');
       fetchUnit();
-    } catch (e: any) { flash(e?.response?.data?.detail || 'Delete failed'); }
+    } catch (e: any) { flash(formatApiError(e, 'Delete failed')); }
   };
 
   const toggleConnExpand = (id: number) => {
@@ -499,7 +498,7 @@ export default function UnitDetailPage() {
       setBusForm({ name: '', bus_type: 'mil_std_1553b', protocol_version: '' });
       flash('Bus created');
       fetchUnit();
-    } catch (e: any) { flash(e?.response?.data?.detail || 'Failed'); }
+    } catch (e: any) { flash(formatApiError(e, 'Failed')); }
     setSavingBus(false);
   };
 

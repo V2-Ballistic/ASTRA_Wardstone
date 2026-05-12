@@ -23,6 +23,7 @@ import {
 import clsx from 'clsx';
 
 import { interfaceAPI } from '@/lib/interface-api';
+import { formatApiError } from '@/lib/errors';
 import type {
   UnitSummary, AutoWireResult, CbHarnessMetadata,
   CbStartResponse,
@@ -166,9 +167,7 @@ export default function ConnectionBuilder({
       const suggest = await interfaceAPI.cbAutoSuggest(start.data.interface_id);
       setAutoResult(suggest.data);
     } catch (e: any) {
-      setAutoError(
-        e?.response?.data?.detail ?? e?.message ?? 'Failed to auto-suggest wires.'
-      );
+      setAutoError(formatApiError(e, 'Failed to auto-suggest wires.'));
     } finally {
       setAutoLoading(false);
     }
@@ -212,9 +211,7 @@ export default function ConnectionBuilder({
       });
       onCommitted?.(resp.data.harness_id, draftInterface.interface_id);
     } catch (e: any) {
-      setCommitError(
-        e?.response?.data?.detail ?? e?.message ?? 'Commit failed.'
-      );
+      setCommitError(formatApiError(e, 'Commit failed.'));
     } finally {
       setCommitting(false);
     }

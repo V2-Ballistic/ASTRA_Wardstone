@@ -24,6 +24,7 @@ import {
   BarChart3,
 } from 'lucide-react';
 import api from '@/lib/api';
+import { formatApiError } from '@/lib/errors';
 
 /* ══════════════════════════════════════
    Types
@@ -162,7 +163,7 @@ export default function QualityPanel({
       });
       setResult(res.data);
     } catch (e: any) {
-      setError(e.response?.data?.detail || 'AI analysis failed');
+      setError(formatApiError(e, 'AI analysis failed'));
     }
     setLoading(false);
   }, [statement, title, rationale]);
@@ -373,7 +374,7 @@ export function BatchAnalysisPanel({ projectId }: BatchPanelProps) {
       });
       setResult(res.data);
     } catch (e: any) {
-      setError(e.response?.data?.detail || 'Batch analysis failed');
+      setError(formatApiError(e, 'Batch analysis failed'));
     }
     setLoading(false);
   };

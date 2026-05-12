@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { partsLibraryAPI } from '@/lib/parts-api';
+import { formatApiError } from '@/lib/errors';
 import type { LibraryPartResponse } from '@/lib/parts-types';
 import {
   PART_STATUS_COLORS, PART_TYPE_COLORS, PART_TYPE_LABELS,
@@ -55,7 +56,7 @@ export default function PartDetailPage() {
         setError(null);
       })
       .catch((err) => {
-        setError(err?.response?.data?.detail || 'Failed to load part');
+        setError(formatApiError(err, 'Failed to load part'));
       })
       .finally(() => setLoading(false));
   }, [partId]);

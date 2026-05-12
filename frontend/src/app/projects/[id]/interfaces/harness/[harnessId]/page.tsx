@@ -33,6 +33,7 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { interfaceAPI, downloadBlob } from '@/lib/interface-api';
+import { formatApiError } from '@/lib/errors';
 import type {
   WireHarnessDetail, Wire, InterfaceRequirementLink,
   AutoGrowPair,
@@ -1297,7 +1298,7 @@ export default function HarnessDetailPage() {
       await applyT568BWireColors();
       fetchHarness();
     } catch (e: any) {
-      flash(e?.response?.data?.detail || 'Auto-wire failed');
+      flash(formatApiError(e, 'Auto-wire failed'));
     }
     setAutoWiring(false);
   };
@@ -1314,18 +1315,10 @@ export default function HarnessDetailPage() {
       setGenReqResult(res.data);
       fetchHarness(); // refresh req links
     } catch (e: any) {
-      // Surface a more useful message. Network Error has no e.response, so
-      // falling back to 'Generation failed' drops the real info on the floor.
-      let errMsg =
-        e?.response?.data?.detail ||
-        (e?.message === 'Network Error'
-          ? 'Network error — the request never reached the backend. Check that astra-backend-1 is running (docker compose ps), and check DevTools → Network for the status code.'
-          : e?.message) ||
-        'Generation failed';
-      if (typeof errMsg !== 'string') {
-        try { errMsg = JSON.stringify(errMsg); } catch { errMsg = 'Generation failed (unparseable error)'; }
-      }
-      setGenReqResult({ requirements_generated: 0, error: errMsg });
+      const fallback = e?.message === 'Network Error'
+        ? 'Network error — the request never reached the backend. Check that astra-backend-1 is running (docker compose ps), and check DevTools → Network for the status code.'
+        : 'Generation failed';
+      setGenReqResult({ requirements_generated: 0, error: formatApiError(e, fallback) });
     }
     setGeneratingReqs(false);
   };
@@ -1428,7 +1421,7 @@ export default function HarnessDetailPage() {
       flash('Endpoint deleted.');
       await fetchHarness();
     } catch (e: any) {
-      flash(e?.response?.data?.detail || 'Delete failed');
+      flash(formatApiError(e, 'Delete failed'));
     }
     setDeletingEndpoint(false);
   };
@@ -1864,12 +1857,7 @@ export default function HarnessDetailPage() {
               setEditingOverview(false);
               flash('Harness updated.');
             } catch (e: any) {
-              const detail = e?.response?.data?.detail;
-              setOverviewError(
-                typeof detail === 'string' ? detail :
-                Array.isArray(detail) ? detail.map((d: any) => d.msg || JSON.stringify(d)).join('; ') :
-                e?.message || 'Update failed'
-              );
+              setOverviewError(formatApiError(e, 'Update failed'));
             }
             setSavingOverview(false);
           }}

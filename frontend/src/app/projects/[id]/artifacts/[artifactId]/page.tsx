@@ -15,6 +15,7 @@ import {
   ArrowLeft, Edit, Save, Trash2, Download, Upload, FileText, X,
 } from 'lucide-react';
 import { artifactsAPI } from '@/lib/api';
+import { formatApiError } from '@/lib/errors';
 import {
   ArtifactType,
   ARTIFACT_TYPE_LABELS,
@@ -94,7 +95,7 @@ export default function ArtifactDetailPage() {
       setSourceDate(a.source_date ? a.source_date.split('T')[0] : '');
       setParticipantsText((a.participants || []).join(', '));
     } catch (e: any) {
-      setError(e?.response?.data?.detail || 'Failed to load artifact');
+      setError(formatApiError(e, 'Failed to load artifact'));
     } finally {
       setLoading(false);
     }
@@ -118,7 +119,7 @@ export default function ArtifactDetailPage() {
       setEditing(false);
       await load();
     } catch (e: any) {
-      setError(e?.response?.data?.detail || 'Save failed');
+      setError(formatApiError(e, 'Save failed'));
     } finally {
       setSaving(false);
     }
@@ -131,7 +132,7 @@ export default function ArtifactDetailPage() {
       await artifactsAPI.delete(projectId, artifactId);
       router.push(`/projects/${projectId}/artifacts`);
     } catch (e: any) {
-      setError(e?.response?.data?.detail || 'Delete failed');
+      setError(formatApiError(e, 'Delete failed'));
     }
   };
 
@@ -143,7 +144,7 @@ export default function ArtifactDetailPage() {
       await artifactsAPI.uploadFile(projectId, artifactId, f);
       await load();
     } catch (err: any) {
-      setError(err?.response?.data?.detail || 'Upload failed');
+      setError(formatApiError(err, 'Upload failed'));
     } finally {
       // Reset the file input so re-selecting the same file fires onChange.
       e.target.value = '';

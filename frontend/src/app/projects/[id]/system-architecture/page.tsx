@@ -18,6 +18,7 @@ import {
 import clsx from 'clsx';
 
 import { interfaceAPI } from '@/lib/interface-api';
+import { formatApiError } from '@/lib/errors';
 import type { System, UnitSummary } from '@/lib/interface-types';
 import SystemsListTab from '@/components/sysarch/SystemsListTab';
 import UnitsListTab from '@/components/sysarch/UnitsListTab';
@@ -108,8 +109,7 @@ export default function SystemArchitecturePage() {
         setUnits(unitRes.data);
       })
       .catch((e) => {
-        const detail = e?.response?.data?.detail || e?.message || 'Failed to load project data';
-        setError(typeof detail === 'string' ? detail : JSON.stringify(detail));
+        setError(formatApiError(e, 'Failed to load project data'));
       })
       .finally(() => setLoading(false));
   }, [projectId]);

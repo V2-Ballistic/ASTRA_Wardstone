@@ -223,14 +223,19 @@ export const catalogAPI = {
    *   - supplier auto-create on first vendor sighting
    *   - returns the new pending_import_id for the review page
    *
-   * Note: do NOT set Content-Type explicitly — Axios infers
-   * multipart/form-data with the right boundary when you pass a
-   * FormData. Setting it manually breaks the boundary in some setups
-   * (CAT-002 common gotcha §14).
+   * Note: the shared axios instance sets a default
+   * `Content-Type: application/json`. Axios only auto-fills the
+   * multipart boundary when *no* Content-Type is in effect; with the
+   * JSON default in place, FormData would be serialised as JSON and
+   * the backend would 422 with `body.file required`. We pass
+   * `multipart/form-data` here so axios replaces it with the correctly
+   * bounded form-data header.
    */
   uploadStep: (file: File) => {
     const form = new FormData();
     form.append('file', file);
-    return api.post<StepUploadResponse>(`${BASE}/upload-step`, form);
+    return api.post<StepUploadResponse>(`${BASE}/upload-step`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
   },
 };

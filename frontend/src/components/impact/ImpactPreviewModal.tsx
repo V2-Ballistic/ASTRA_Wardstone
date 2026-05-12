@@ -18,6 +18,7 @@ import {
   AlertOctagon, CheckCircle, Edit3,
 } from 'lucide-react';
 import { impactAPI, type WhatIfPreview } from '@/lib/impact-api';
+import { formatApiError } from '@/lib/errors';
 
 interface ImpactPreviewModalProps {
   isOpen: boolean;
@@ -58,7 +59,7 @@ export default function ImpactPreviewModal({
       const res = await impactAPI.whatIf(requirementId, action);
       setPreview(res.data);
     } catch (err: any) {
-      setError(err.response?.data?.detail || 'Failed to analyze impact');
+      setError(formatApiError(err, 'Failed to analyze impact'));
     } finally {
       setLoading(false);
     }
