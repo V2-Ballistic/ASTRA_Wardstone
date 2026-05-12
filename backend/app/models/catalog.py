@@ -382,6 +382,22 @@ class CatalogPart(Base):
     cad_preview_path    = Column(Text, nullable=True)
     cad_authoring_tool  = Column(String(64), nullable=True)
     native_units        = Column(String(16), nullable=True)
+
+    # ════════════════════════════════════════════════════════════
+    # TDD-HAROLD-INT-002 Phase 1: WPN integration columns.
+    # `internal_part_number` is the Wardstone Part Number assigned by
+    # HAROLD V2 on approval (e.g. "WS-FH-P000042-A"). NULL means
+    # no WPN issued yet — legitimate state for parts uploaded before
+    # integration enabled, or while HAROLD is unreachable and the
+    # pending import hasn't been approved. The partial unique index
+    # in migration 0033 enforces uniqueness only for non-NULL values.
+    # `wpn_pending_sync` flags rows that got a fallback (local-allocator)
+    # WPN because HAROLD was down at approval time; cleared on manual
+    # "Sync with HAROLD" or future reconciliation worker.
+    # ════════════════════════════════════════════════════════════
+    internal_part_number = Column(String(32), nullable=True, index=True)
+    wpn_pending_sync     = Column(Boolean, nullable=False, default=False)
+
     deleted_at          = Column(DateTime(timezone=True), nullable=True, index=True)
 
     created_at          = Column(DateTime(timezone=True), server_default=func.now())
