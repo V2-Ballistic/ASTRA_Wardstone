@@ -423,6 +423,33 @@ class CatalogPart(Base):
 
 
 # ══════════════════════════════════════════════════════════════
+#  4.3b WpnFallbackSequence (TDD-HAROLD-INT-002 Phase 2)
+# ══════════════════════════════════════════════════════════════
+#
+#  Per-system local counter used by the fallback allocator when
+#  HAROLD V2 is unreachable. Migration 0033 creates the table and
+#  seeds all 21 codes at next_index=1. ORM coverage here so
+#  Base.metadata.create_all picks the table up in SQLite test
+#  environments — production still runs through the Alembic
+#  migration.
+
+class WpnFallbackSequence(Base):
+    __tablename__ = "catalog_wpn_fallback_sequences"
+
+    system_code = Column(String(2), primary_key=True)
+    next_index  = Column(Integer, nullable=False, default=1)
+    updated_at  = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover — debug only
+        return f"<WpnFallbackSequence {self.system_code} next={self.next_index}>"
+
+
+# ══════════════════════════════════════════════════════════════
 #  4.4 CatalogConnector
 # ══════════════════════════════════════════════════════════════
 

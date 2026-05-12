@@ -90,7 +90,11 @@ class Settings(BaseSettings):
     # container, `localhost` is the container's own loopback — use
     # `host.docker.internal` on Windows/Mac Docker Desktop.
     HAROLD_INTEGRATION_ENABLED: bool = False
-    HAROLD_BASE_URL: str = "http://host.docker.internal:8030"
+    # TDD-HAROLD-INT-002 Phase 2: bumped from :8030 (the WRENCH api,
+    # which was the speculative pre-V2 assumption) to :8031 (the
+    # standalone HAROLD V2 service that ships the native /api/v1/*
+    # surface this integration targets).
+    HAROLD_BASE_URL: str = "http://host.docker.internal:8031"
     HAROLD_TIMEOUT_SECONDS: float = 3.0
 
     # ── Derived helpers ──

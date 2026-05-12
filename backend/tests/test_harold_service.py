@@ -1,15 +1,11 @@
-"""ASTRA-TDD-HAROLD-001 Phase 2 — service-layer tests.
+"""ASTRA-TDD-HAROLD-INT-002 Phase 2 — service-layer tests.
 
-Uses `respx` to mock the WRENCH `/api/tools/{slug}/runs` and `/health`
-endpoints. Tests verify:
-  1. suggest_wpn_from_text() parses the real HAROLD-Search output shape.
-  2. The feature flag short-circuits to HaroldUnavailableError when off.
-  3. Timeouts surface as HaroldUnavailableError (NOT a generic Exception).
-  4. list_system_codes() upper-cases codes and skips malformed rows.
-  5. heartbeat() returns a structured "unavailable" payload instead of
-     raising when HAROLD is down.
+Combines respx-mocked HAROLD calls with the SQLite test DB so the
+three approval branches in ``issue_wpn_for_catalog_part`` and the
+reconcile flow are exercised end-to-end.
+
+Replaces the prior HAROLD-001 test file of the same name.
 """
-
 from __future__ import annotations
 
 import httpx
@@ -17,183 +13,468 @@ import pytest
 import respx
 
 from app.config import settings
+from app.models.catalog import (
+    CatalogPart,
+    PartClass,
+    Supplier,
+    WpnFallbackSequence,
+    LifecycleStatus,
+    LRUClass,
+)
 from app.services.harold import (
+    HaroldDuplicateError,
     HaroldUnavailableError,
     heartbeat,
+    issue_wpn_for_catalog_part,
     list_system_codes,
-    suggest_wpn_from_text,
+    reconcile_pending_sync,
+    suggest_wpn_for_part,
+    validate_filename_wpn,
+    validate_wpn,
 )
+from app.services.harold.fallback import ALLOWED_SYSTEM_CODES
+
+
+_BASE = "http://host.docker.internal:8031"
+
+
+@pytest.fixture(autouse=True)
+def _pin_base_url(monkeypatch):
+    monkeypatch.setattr(settings, "HAROLD_BASE_URL", _BASE)
+    monkeypatch.setattr(settings, "HAROLD_TIMEOUT_SECONDS", 1.0)
 
 
 @pytest.fixture
 def harold_on(monkeypatch):
     monkeypatch.setattr(settings, "HAROLD_INTEGRATION_ENABLED", True)
-    monkeypatch.setattr(settings, "HAROLD_BASE_URL", "http://harold.test")
-    monkeypatch.setattr(settings, "HAROLD_TIMEOUT_SECONDS", 1.0)
 
 
 @pytest.fixture
 def harold_off(monkeypatch):
     monkeypatch.setattr(settings, "HAROLD_INTEGRATION_ENABLED", False)
-    monkeypatch.setattr(settings, "HAROLD_BASE_URL", "http://harold.test")
 
 
-# ─────────────────────────────────────────────────────────────────
-#  suggest_wpn_from_text
-# ─────────────────────────────────────────────────────────────────
+@pytest.fixture
+def seeded(db_session):
+    """Seed fallback-sequence table with all 21 codes."""
+    for code in sorted(ALLOWED_SYSTEM_CODES):
+        db_session.add(WpnFallbackSequence(system_code=code, next_index=1))
+    db_session.commit()
+    return db_session
+
+
+@pytest.fixture
+def supplier(db_session, test_user):
+    s = Supplier(name="McMaster-Carr", created_by_id=test_user.id)
+    db_session.add(s)
+    db_session.commit()
+    db_session.refresh(s)
+    return s
+
+
+def _make_part(db_session, supplier, test_user, **overrides) -> CatalogPart:
+    defaults = dict(
+        supplier_id=supplier.id,
+        part_number="92196A196",
+        name="Test fastener part",
+        part_class=PartClass.FASTENER_SCREW,
+        lru_classification=LRUClass.LRU,
+        lifecycle_status=LifecycleStatus.ACTIVE,
+        created_by_id=test_user.id,
+    )
+    defaults.update(overrides)
+    part = CatalogPart(**defaults)
+    db_session.add(part)
+    db_session.commit()
+    db_session.refresh(part)
+    return part
+
+
+# ── heartbeat ─────────────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
-async def test_suggest_wpn_parses_real_harold_search_shape(harold_on):
-    """Reflects an actual response captured during Phase-0 investigation."""
-    real_output = {
-        "suggestion":       "WS-AV-P1000-A",
-        "pattern_id":       "cad_part",
-        "pattern_label":    "CAD part",
-        "confidence":       0.57,
-        "reasoning":        "CAD part pattern: WS-AV-P1000-A.",
-        "extracted_fields": {"SYS": "AV", "NNNN": "1000", "REV": "A"},
-        "glossary_matches": [],
-        "candidates":       [{"pattern_id": "cad_assembly", "label": "CAD assembly", "score": 0.99}],
-        "notes":            ["No project code provided"],
-        "llm_used":         "ollama:llama3.2",
-    }
-    with respx.mock(base_url="http://harold.test") as mock:
-        mock.post("/api/tools/_wardstone-harold-search/runs").mock(
-            return_value=httpx.Response(200, json={
-                "runId": "x", "slug": "_wardstone-harold-search",
-                "inputs": {"query": "avionics processor"},
-                "output": real_output, "success": True, "elapsed_ms": 1234,
-                "error": None, "created_at": "2026-05-11T20:00:00",
-            }),
+async def test_heartbeat_flag_off_short_circuits(harold_off):
+    r = await heartbeat()
+    assert r["enabled"] is False
+    assert r["reachable"] is False
+    assert "disabled" in r["reason"].lower()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_heartbeat_flag_on_reachable(harold_on):
+    respx.get(f"{_BASE}/health").mock(
+        return_value=httpx.Response(200, json={
+            "status": "healthy", "version": "2.0.0", "db": "ok",
+        }),
+    )
+    r = await heartbeat()
+    assert r["enabled"] is True
+    assert r["reachable"] is True
+    assert r["version"] == "2.0.0"
+    assert r["response_time_ms"] is not None
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_heartbeat_flag_on_harold_down(harold_on):
+    respx.get(f"{_BASE}/health").mock(
+        side_effect=httpx.ConnectError("no route"),
+    )
+    r = await heartbeat()
+    assert r["enabled"] is True
+    assert r["reachable"] is False
+    assert "unreachable" in r["reason"].lower()
+
+
+# ── suggest_wpn_for_part ──────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_suggest_flag_off_uses_fallback(harold_off, seeded):
+    r = await suggest_wpn_for_part(seeded, "fastener_screw")
+    assert r["source"] == "fallback"
+    assert r["system_code"] == "FH"
+    assert r["suggested_wpn"] == "WS-FH-P000001-A"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_suggest_flag_on_routes_to_harold(harold_on, seeded):
+    respx.get(f"{_BASE}/api/v1/wpn/suggest").mock(
+        return_value=httpx.Response(200, json={
+            "suggested_wpn":  "WS-FH-P000007-A",
+            "system_code":    "FH",
+            "next_index":     7,
+            "existing_count": 6,
+        }),
+    )
+    r = await suggest_wpn_for_part(seeded, "fastener_screw")
+    assert r["source"] == "harold"
+    assert r["suggested_wpn"] == "WS-FH-P000007-A"
+    assert r["existing_count"] == 6
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_suggest_harold_down_falls_back(harold_on, seeded):
+    respx.get(f"{_BASE}/api/v1/wpn/suggest").mock(
+        side_effect=httpx.ConnectError("no route"),
+    )
+    r = await suggest_wpn_for_part(seeded, "bracket")
+    assert r["source"] == "fallback"
+    assert r["system_code"] == "MH"
+    assert "unavailable" in r["reason"].lower()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_suggest_unmapped_class_routes_to_mh(harold_on, seeded):
+    respx.get(f"{_BASE}/api/v1/wpn/suggest").mock(
+        return_value=httpx.Response(200, json={
+            "suggested_wpn": "WS-MH-P000001-A",
+            "system_code":    "MH",
+            "next_index":     1,
+            "existing_count": 0,
+        }),
+    )
+    r = await suggest_wpn_for_part(seeded, "not_a_class")
+    assert r["source"] == "harold"
+    assert r["system_code"] == "MH"
+
+
+# ── validate_wpn (direct passthrough) ──────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_validate_flag_off_raises(harold_off):
+    with pytest.raises(HaroldUnavailableError):
+        await validate_wpn("WS-FH-P000001-A")
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_validate_passthrough(harold_on):
+    respx.post(f"{_BASE}/api/v1/wpn/validate").mock(
+        return_value=httpx.Response(200, json={
+            "wpn": "WS-FH-P000001-A",
+            "is_valid_format": True,
+            "is_issued": False,
+            "errors": [], "warnings": [],
+            "parsed": {"sys": "FH", "num": 1, "rev": "A"},
+        }),
+    )
+    r = await validate_wpn("WS-FH-P000001-A")
+    assert r["is_valid_format"] is True
+    assert r["is_issued"] is False
+
+
+# ── validate_filename_wpn ─────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_validate_filename_no_wpn_in_filename(harold_off):
+    r = await validate_filename_wpn("92196A196_Screw.STEP")
+    assert r["is_wardstone_format"] is False
+    assert r["extracted_wpn"] is None
+    assert r["wpn_validation"] is None
+
+
+@pytest.mark.asyncio
+async def test_validate_filename_wpn_present_flag_off(harold_off):
+    """Filename has a WPN but flag is off → skip the HAROLD call."""
+    r = await validate_filename_wpn("WS-FH-P000001-A.STEP")
+    assert r["is_wardstone_format"] is True
+    assert r["extracted_wpn"] == "WS-FH-P000001-A"
+    assert r["wpn_validation"] is None  # flag-off: HAROLD not called
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_validate_filename_wpn_present_flag_on(harold_on):
+    respx.post(f"{_BASE}/api/v1/wpn/validate").mock(
+        return_value=httpx.Response(200, json={
+            "wpn": "WS-FH-P000001-A",
+            "is_valid_format": True,
+            "is_issued": True,
+            "errors": [], "warnings": [],
+            "parsed": {"sys": "FH", "num": 1, "rev": "A"},
+        }),
+    )
+    r = await validate_filename_wpn("WS-FH-P000001-A.STEP")
+    assert r["is_wardstone_format"] is True
+    assert r["wpn_validation"]["is_issued"] is True
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_validate_filename_harold_down_returns_partial(harold_on):
+    respx.post(f"{_BASE}/api/v1/wpn/validate").mock(
+        side_effect=httpx.ConnectError("nope"),
+    )
+    r = await validate_filename_wpn("WS-FH-P000001-A.STEP")
+    assert r["is_wardstone_format"] is True
+    assert r["extracted_wpn"] == "WS-FH-P000001-A"
+    assert r["wpn_validation"] is None  # HAROLD down — partial result
+
+
+# ── issue_wpn_for_catalog_part (3 branches per AD-11) ─────────────
+
+
+@pytest.mark.asyncio
+async def test_issue_branch1_caller_supplied_flag_off_marks_pending(
+    harold_off, db_session, supplier, test_user, seeded,
+):
+    """Flag off but caller supplied a WPN: apply locally, flag pending."""
+    part = _make_part(db_session, supplier, test_user)
+    wpn, source, pending = await issue_wpn_for_catalog_part(
+        seeded, part, supplied_wpn="WS-FH-P000050-A",
+    )
+    assert wpn == "WS-FH-P000050-A"
+    assert source == "fallback"
+    assert pending is True
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_issue_branch1_caller_supplied_harold_up(
+    harold_on, db_session, supplier, test_user, seeded,
+):
+    respx.post(f"{_BASE}/api/v1/wpn/issue-specific").mock(
+        return_value=httpx.Response(201, json={
+            "id": 1, "wpn": "WS-FH-P000050-A", "system_code": "FH",
+            "status": "active", "part_number_int": 50, "revision": "A",
+        }),
+    )
+    part = _make_part(db_session, supplier, test_user)
+    wpn, source, pending = await issue_wpn_for_catalog_part(
+        seeded, part, supplied_wpn="WS-FH-P000050-A",
+    )
+    assert wpn == "WS-FH-P000050-A"
+    assert source == "harold-specific"
+    assert pending is False
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_issue_branch1_caller_supplied_duplicate_propagates(
+    harold_on, db_session, supplier, test_user, seeded,
+):
+    """HAROLD 409 must propagate as HaroldDuplicateError so the router
+    can map it to HTTP 409."""
+    respx.post(f"{_BASE}/api/v1/wpn/issue-specific").mock(
+        return_value=httpx.Response(409, text="already issued"),
+    )
+    part = _make_part(db_session, supplier, test_user)
+    with pytest.raises(HaroldDuplicateError):
+        await issue_wpn_for_catalog_part(
+            seeded, part, supplied_wpn="WS-FH-P000050-A",
         )
-        result = await suggest_wpn_from_text("avionics processor")
-
-    assert result.suggestion    == "WS-AV-P1000-A"
-    assert result.pattern_id    == "cad_part"
-    assert result.confidence    == pytest.approx(0.57)
-    assert result.extracted_fields["SYS"] == "AV"
-    assert result.llm_used      == "ollama:llama3.2"
-    assert len(result.candidates) == 1
 
 
 @pytest.mark.asyncio
-async def test_suggest_raises_when_flag_off(harold_off):
-    with pytest.raises(HaroldUnavailableError, match="disabled"):
-        await suggest_wpn_from_text("anything")
+@respx.mock
+async def test_issue_branch2_auto_allocate_harold_up(
+    harold_on, db_session, supplier, test_user, seeded,
+):
+    respx.post(f"{_BASE}/api/v1/wpn/issue").mock(
+        return_value=httpx.Response(201, json={
+            "id": 1, "wpn": "WS-FH-P000001-A", "system_code": "FH",
+            "status": "active", "part_number_int": 1, "revision": "A",
+        }),
+    )
+    part = _make_part(db_session, supplier, test_user)
+    wpn, source, pending = await issue_wpn_for_catalog_part(seeded, part)
+    assert wpn == "WS-FH-P000001-A"
+    assert source == "harold-auto"
+    assert pending is False
 
 
 @pytest.mark.asyncio
-async def test_suggest_raises_on_timeout(harold_on):
-    """Per AD-2 — short timeout, graceful degradation."""
-    with respx.mock(base_url="http://harold.test") as mock:
-        mock.post("/api/tools/_wardstone-harold-search/runs").mock(
-            side_effect=httpx.TimeoutException("simulated"),
-        )
-        with pytest.raises(HaroldUnavailableError, match="unreachable"):
-            await suggest_wpn_from_text("query")
+@respx.mock
+async def test_issue_branch3_auto_allocate_harold_down(
+    harold_on, db_session, supplier, test_user, seeded,
+):
+    respx.post(f"{_BASE}/api/v1/wpn/issue").mock(
+        side_effect=httpx.ConnectError("nope"),
+    )
+    part = _make_part(db_session, supplier, test_user)
+    wpn, source, pending = await issue_wpn_for_catalog_part(seeded, part)
+    assert wpn == "WS-FH-P000001-A"  # fallback for part_class fastener_screw → FH
+    assert source == "fallback"
+    assert pending is True
 
 
 @pytest.mark.asyncio
-async def test_suggest_raises_on_connect_error(harold_on):
-    with respx.mock(base_url="http://harold.test") as mock:
-        mock.post("/api/tools/_wardstone-harold-search/runs").mock(
-            side_effect=httpx.ConnectError("ECONNREFUSED"),
-        )
-        with pytest.raises(HaroldUnavailableError, match="unreachable"):
-            await suggest_wpn_from_text("query")
+async def test_issue_flag_off_auto_uses_fallback(
+    harold_off, db_session, supplier, test_user, seeded,
+):
+    part = _make_part(db_session, supplier, test_user,
+                       part_class=PartClass.NUT)
+    wpn, source, pending = await issue_wpn_for_catalog_part(seeded, part)
+    assert wpn == "WS-FH-P000001-A"  # nut → FH
+    assert source == "fallback"
+    assert pending is True
+
+
+# ── reconcile_pending_sync ────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_suggest_raises_on_harold_500(harold_on):
-    """WRENCH returning a 500 is graceful-degradation territory, not
-    an ASTRA bug — surfaces as Unavailable (gotcha #12)."""
-    with respx.mock(base_url="http://harold.test") as mock:
-        mock.post("/api/tools/_wardstone-harold-search/runs").mock(
-            return_value=httpx.Response(500, text="upstream error"),
-        )
-        with pytest.raises(HaroldUnavailableError, match="HTTP 500"):
-            await suggest_wpn_from_text("query")
-
-
-# ─────────────────────────────────────────────────────────────────
-#  list_system_codes
-# ─────────────────────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_list_system_codes_normalizes_uppercase(harold_on):
-    """Real HAROLD returns codes uppercase; if a fixture / future
-    upstream change downgraded them, we want the service to fix that
-    rather than propagate."""
-    real_payload = {
-        "section": "systems",
-        "payload": {
-            "systems": [
-                {"code": "av", "name": "Avionics - Hardware", "description": "Flight computers."},
-                {"code": "ST", "name": "Structures",         "description": "Primary structure."},
-                {"name": "Garbage row, no code"},
-                "not-a-dict",
-            ],
-        },
-    }
-    with respx.mock(base_url="http://harold.test") as mock:
-        mock.post("/api/tools/_wardstone-harold-data/runs").mock(
-            return_value=httpx.Response(200, json={
-                "runId": "x", "slug": "_wardstone-harold-data",
-                "inputs": {"section": "systems"},
-                "output": real_payload, "success": True, "elapsed_ms": 0,
-                "error": None, "created_at": "2026-05-11T20:00:00",
-            }),
-        )
-        codes = await list_system_codes()
-
-    assert [c.code for c in codes] == ["AV", "ST"]
-    assert codes[0].name == "Avionics - Hardware"
+async def test_reconcile_flag_off_noop(
+    harold_off, db_session, supplier, test_user, seeded,
+):
+    part = _make_part(
+        db_session, supplier, test_user,
+        internal_part_number="WS-FH-P000001-A",
+        wpn_pending_sync=True,
+    )
+    r = await reconcile_pending_sync(seeded, part)
+    assert r["reconciled"] is False
+    assert "disabled" in r["reason"].lower()
 
 
 @pytest.mark.asyncio
-async def test_list_system_codes_raises_when_disabled(harold_off):
+async def test_reconcile_not_pending_noop(
+    harold_on, db_session, supplier, test_user, seeded,
+):
+    part = _make_part(
+        db_session, supplier, test_user,
+        internal_part_number="WS-FH-P000001-A",
+        wpn_pending_sync=False,
+    )
+    r = await reconcile_pending_sync(seeded, part)
+    assert r["reconciled"] is False
+    assert r["via"] == "noop"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_reconcile_happy_path(
+    harold_on, db_session, supplier, test_user, seeded,
+):
+    respx.post(f"{_BASE}/api/v1/wpn/issue-specific").mock(
+        return_value=httpx.Response(201, json={
+            "id": 1, "wpn": "WS-FH-P000005-A", "system_code": "FH",
+            "status": "active", "part_number_int": 5, "revision": "A",
+        }),
+    )
+    part = _make_part(
+        db_session, supplier, test_user,
+        internal_part_number="WS-FH-P000005-A",
+        wpn_pending_sync=True,
+    )
+    r = await reconcile_pending_sync(seeded, part)
+    assert r["reconciled"] is True
+    assert r["via"] == "issue_specific"
+    assert part.wpn_pending_sync is False
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_reconcile_collision_falls_through_to_new_wpn(
+    harold_on, db_session, supplier, test_user, seeded,
+):
+    """409 from issue_specific → call issue → new WPN, flag cleared."""
+    respx.post(f"{_BASE}/api/v1/wpn/issue-specific").mock(
+        return_value=httpx.Response(409, text="already issued"),
+    )
+    respx.post(f"{_BASE}/api/v1/wpn/issue").mock(
+        return_value=httpx.Response(201, json={
+            "id": 99, "wpn": "WS-FH-P000099-A", "system_code": "FH",
+            "status": "active", "part_number_int": 99, "revision": "A",
+        }),
+    )
+    part = _make_part(
+        db_session, supplier, test_user,
+        internal_part_number="WS-FH-P000005-A",
+        wpn_pending_sync=True,
+    )
+    r = await reconcile_pending_sync(seeded, part)
+    assert r["reconciled"] is True
+    assert r["via"] == "issue"
+    assert r["wpn"] == "WS-FH-P000099-A"
+    assert part.internal_part_number == "WS-FH-P000099-A"
+    assert part.wpn_pending_sync is False
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_reconcile_harold_down_returns_unreconciled(
+    harold_on, db_session, supplier, test_user, seeded,
+):
+    respx.post(f"{_BASE}/api/v1/wpn/issue-specific").mock(
+        side_effect=httpx.ConnectError("nope"),
+    )
+    part = _make_part(
+        db_session, supplier, test_user,
+        internal_part_number="WS-FH-P000005-A",
+        wpn_pending_sync=True,
+    )
+    r = await reconcile_pending_sync(seeded, part)
+    assert r["reconciled"] is False
+    assert part.wpn_pending_sync is True  # flag preserved
+
+
+# ── list_system_codes ─────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_list_system_codes_flag_off_raises(harold_off):
     with pytest.raises(HaroldUnavailableError):
         await list_system_codes()
 
 
-# ─────────────────────────────────────────────────────────────────
-#  heartbeat
-# ─────────────────────────────────────────────────────────────────
-
 @pytest.mark.asyncio
-async def test_heartbeat_returns_unreachable_when_disabled(harold_off):
-    """Must never raise — the heartbeat is the *signal* that drives
-    the UI's hide-or-show logic."""
-    result = await heartbeat()
-    assert result.enabled   is False
-    assert result.reachable is False
-    assert result.reason    and "disabled" in result.reason
-
-
-@pytest.mark.asyncio
-async def test_heartbeat_returns_reachable_when_healthy(harold_on):
-    with respx.mock(base_url="http://harold.test") as mock:
-        mock.get("/health").mock(return_value=httpx.Response(200, json={"status": "ok"}))
-        mock.get("/api/tools/").mock(return_value=httpx.Response(200, json=[
-            {"slug": "wardstone-harold",       "name": "HAROLD",      "category": "Utility",
-             "version": "0.1.0", "description": "HAROLD", "icon": "book-open"},
-            {"slug": "_wardstone-harold-data", "name": "HAROLD-Data", "category": "Utility",
-             "version": "0.1.0", "description": "", "icon": None},
-        ]))
-        result = await heartbeat()
-
-    assert result.enabled   is True
-    assert result.reachable is True
-    assert result.version   == "0.1.0"
-    assert result.response_time_ms is not None and result.response_time_ms >= 0
-
-
-@pytest.mark.asyncio
-async def test_heartbeat_returns_unreachable_on_connect_error(harold_on):
-    with respx.mock(base_url="http://harold.test") as mock:
-        mock.get("/health").mock(side_effect=httpx.ConnectError("ECONNREFUSED"))
-        result = await heartbeat()
-
-    assert result.enabled   is True
-    assert result.reachable is False
-    assert result.reason    and "unreachable" in result.reason.lower()
+@respx.mock
+async def test_list_system_codes_passthrough(harold_on):
+    respx.get(f"{_BASE}/api/v1/system-codes").mock(
+        return_value=httpx.Response(200, json={
+            "total": 21,
+            "codes": [{"code": "FH", "category": "library-category",
+                       "name": "Fastener Hardware", "description": "..."}],
+        }),
+    )
+    r = await list_system_codes()
+    assert r["total"] == 21
