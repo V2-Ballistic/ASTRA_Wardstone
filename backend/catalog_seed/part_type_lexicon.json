@@ -1,6 +1,6 @@
 [
-  {"tokens": ["socket head cap screw", "shcs"],            "part_class": "fastener_screw",    "part_subtype": "socket_head_cap_screw"},
-  {"tokens": ["button head cap screw", "bhcs"],            "part_class": "fastener_screw",    "part_subtype": "button_head_cap_screw"},
+  {"tokens": ["socket head cap screw", "socket head screw", "shcs"], "part_class": "fastener_screw", "part_subtype": "socket_head_cap_screw"},
+  {"tokens": ["button head cap screw", "button head screw", "bhcs"], "part_class": "fastener_screw", "part_subtype": "button_head_cap_screw"},
   {"tokens": ["flat head cap screw", "fhcs", "flat head screw"], "part_class": "fastener_screw", "part_subtype": "flat_head_cap_screw"},
   {"tokens": ["pan head screw"],                           "part_class": "fastener_screw",    "part_subtype": "pan_head_screw"},
   {"tokens": ["machine screw"],                            "part_class": "fastener_screw",    "part_subtype": "machine_screw"},
@@ -9,7 +9,7 @@
   {"tokens": ["self tapping screw", "self-tapping screw"], "part_class": "fastener_screw",    "part_subtype": "self_tapping_screw"},
   {"tokens": ["thread forming screw", "thread-forming screw"], "part_class": "fastener_screw","part_subtype": "thread_forming_screw"},
 
-  {"tokens": ["hex bolt", "hex cap screw"],                "part_class": "fastener_bolt",     "part_subtype": "hex_bolt"},
+  {"tokens": ["hex bolt", "hex cap screw", "hex head screw"], "part_class": "fastener_bolt",   "part_subtype": "hex_bolt"},
   {"tokens": ["carriage bolt"],                            "part_class": "fastener_bolt",     "part_subtype": "carriage_bolt"},
   {"tokens": ["eye bolt"],                                 "part_class": "fastener_bolt",     "part_subtype": "eye_bolt"},
 
@@ -35,5 +35,10 @@
   {"tokens": ["bearing"],                                  "part_class": "bearing"},
   {"tokens": ["spring"],                                   "part_class": "spring"},
 
-  {"tokens": ["frame member", "longeron", "stringer", "rib", "bulkhead"], "part_class": "structural_member"}
+  {"tokens": ["frame member", "longeron", "stringer", "rib", "bulkhead"], "part_class": "structural_member"},
+
+  {"tokens": ["screw"],                                    "part_class": "fastener_screw"},
+  {"tokens": ["bolt"],                                     "part_class": "fastener_bolt"},
+  {"tokens": ["nut"],                                      "part_class": "nut"},
+  {"tokens": ["washer"],                                   "part_class": "washer"}
 ]
