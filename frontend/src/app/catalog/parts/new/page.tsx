@@ -12,11 +12,10 @@
  * Phase 3 — ASTRA-TDD-INTF-002.
  */
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
   ChevronLeft, Cpu, Loader2, Plus, AlertTriangle, Globe,
-  Sparkles, CheckCircle2,
 } from 'lucide-react';
 
 import { catalogAPI } from '@/lib/catalog-api';
@@ -30,11 +29,6 @@ import {
   LRU_CLASS_LABELS,
   LIFECYCLE_COLORS,
 } from '@/lib/catalog-types';
-import { haroldAPI } from '@/lib/harold-api';
-import type {
-  HaroldSystemCode, WpnSuggestion,
-} from '@/lib/harold-types';
-import { looksLikeHaroldWpn } from '@/lib/harold-types';
 
 const PART_CLASSES: PartClass[] = [
   'processor', 'sensor', 'power_supply', 'radio', 'antenna', 'actuator',

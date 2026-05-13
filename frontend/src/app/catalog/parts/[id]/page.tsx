@@ -20,11 +20,12 @@ import { useParams, useRouter } from 'next/navigation';
 import {
   ChevronLeft, ChevronRight, ChevronDown, Cpu, Loader2, AlertTriangle,
   Trash2, Plug, Building2, MapPin, GitBranch, Clock, Zap, Thermometer,
-  ShieldCheck, Hash,
+  ShieldCheck, Hash, RefreshCw, CheckCircle2,
 } from 'lucide-react';
 import clsx from 'clsx';
 
 import { catalogAPI } from '@/lib/catalog-api';
+import { haroldAPI } from '@/lib/harold-api';
 import { formatApiError } from '@/lib/errors';
 import {
   type CatalogPartDetail,
@@ -81,6 +82,10 @@ export default function CatalogPartDetailPage() {
   const [error, setError] = useState('');
   const [expandedConn, setExpandedConn] = useState<Set<number>>(new Set());
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // ── Phase 4: manual HAROLD reconcile state ──
+  const [syncing, setSyncing] = useState(false);
+  const [syncMessage, setSyncMessage] = useState<string | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
   const canDelete = user?.role === 'admin';
 
@@ -147,6 +152,38 @@ export default function CatalogPartDetailPage() {
     }
   };
 
+  // Manual "Sync with HAROLD" — visible only when wpn_pending_sync is true.
+  // Calls POST /harold/parts/{id}/reconcile and refetches the part on
+  // success so the freshly cleared flag (and any reissued WPN) lands.
+  const handleReconcile = async () => {
+    setSyncing(true);
+    setSyncMessage(null);
+    setSyncError(null);
+    try {
+      const r = await haroldAPI.reconcile(partId);
+      if (r.data.harold_available) {
+        const result = r.data.data;
+        if (result.reconciled) {
+          const reissued = result.prior_wpn && result.prior_wpn !== result.wpn;
+          setSyncMessage(
+            reissued
+              ? `Reissued: ${result.prior_wpn} → ${result.wpn}`
+              : `Synced with HAROLD as ${result.wpn}`,
+          );
+        } else {
+          setSyncMessage(result.message || 'Nothing to reconcile');
+        }
+        refresh();
+      } else {
+        setSyncError(r.data.reason || 'HAROLD unavailable');
+      }
+    } catch (e) {
+      setSyncError(formatApiError(e, 'Sync failed'));
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   if (loading && !part) {
     return (
       <div className="flex min-h-[60vh] items-center justify-center">
@@ -187,10 +224,30 @@ export default function CatalogPartDetailPage() {
               {part.supplier_name || `supplier ${part.supplier_id}`}
             </button>
           </div>
-          <h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-100">
-            {part.part_number}
-            {part.revision && <span className="ml-2 text-sm font-normal text-slate-500">rev {part.revision}</span>}
+          <h1 className="mt-1 flex flex-wrap items-baseline gap-2 text-2xl font-bold tracking-tight text-slate-100">
+            {part.internal_part_number ? (
+              <>
+                <span className="font-mono tracking-wider">{part.internal_part_number}</span>
+                {part.wpn_pending_sync && (
+                  <span
+                    title="Fallback WPN — pending HAROLD reconciliation"
+                    className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-amber-300"
+                  >
+                    <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber-400" aria-hidden="true" />
+                    Pending Sync
+                  </span>
+                )}
+              </>
+            ) : (
+              <span>{part.part_number}</span>
+            )}
+            {part.revision && <span className="text-sm font-normal text-slate-500">rev {part.revision}</span>}
           </h1>
+          {part.internal_part_number && (
+            <p className="mt-0.5 text-[11px] text-slate-500">
+              Mfr P/N <span className="font-mono text-slate-300">{part.part_number}</span>
+            </p>
+          )}
           <p className="text-sm text-slate-300">{part.name}</p>
           <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
             <span className="rounded-full px-2 py-0.5 font-semibold" style={{ background: lc.bg, color: lc.text }}>{lc.label}</span>
@@ -202,6 +259,20 @@ export default function CatalogPartDetailPage() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {part.wpn_pending_sync && (
+            <button
+              type="button"
+              onClick={handleReconcile}
+              disabled={syncing}
+              title="Re-register this fallback-issued WPN with HAROLD"
+              className="flex items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-300 hover:bg-amber-500/20 disabled:opacity-50"
+            >
+              {syncing
+                ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                : <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />}
+              {syncing ? 'Syncing…' : 'Sync with HAROLD'}
+            </button>
+          )}
           {canDelete && (
             <button type="button" onClick={() => setConfirmDelete(true)}
               className="flex items-center gap-1 rounded-lg border border-red-500/30 px-3 py-1.5 text-xs text-red-400 hover:bg-red-500/10">
@@ -210,6 +281,17 @@ export default function CatalogPartDetailPage() {
           )}
         </div>
       </div>
+
+      {syncMessage && (
+        <div role="status" className="mb-3 flex items-center gap-2 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">
+          <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" /> {syncMessage}
+        </div>
+      )}
+      {syncError && (
+        <div role="alert" className="mb-3 flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+          <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" /> Sync skipped: {syncError}
+        </div>
+      )}
 
       {error && (
         <div role="alert" className="mb-3 rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-400 flex items-center gap-2">

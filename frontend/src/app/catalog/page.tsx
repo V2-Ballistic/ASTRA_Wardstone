@@ -318,7 +318,7 @@ function PartsTab() {
           <table className="w-full text-xs">
             <thead className="bg-astra-surface-alt text-slate-400">
               <tr>
-                <th className="px-3 py-2 text-left font-semibold">Part Number</th>
+                <th className="px-3 py-2 text-left font-semibold">WPN / Mfr P/N</th>
                 <th className="px-3 py-2 text-left font-semibold">Name</th>
                 <th className="px-3 py-2 text-left font-semibold">Supplier</th>
                 <th className="px-3 py-2 text-left font-semibold">Class</th>
@@ -330,18 +330,35 @@ function PartsTab() {
             <tbody>
               {items.map((p) => {
                 const lc = LIFECYCLE_COLORS[p.lifecycle_status];
+                const wpn = p.internal_part_number;
                 return (
                   <tr
                     key={p.id}
                     className="border-t border-astra-border hover:bg-astra-surface-alt cursor-pointer"
                     onClick={() => router.push(`/catalog/parts/${p.id}`)}
                   >
-                    <td className="px-3 py-2 font-bold text-slate-200">
+                    <td className="px-3 py-2 text-slate-200">
                       <div className="flex items-center gap-2">
-                        <Cpu className="h-3.5 w-3.5 text-blue-400" aria-hidden="true" />
-                        {p.part_number}
+                        <Cpu className="h-3.5 w-3.5 text-blue-400 flex-shrink-0" aria-hidden="true" />
+                        {wpn ? (
+                          <span className="font-mono font-bold tracking-wider text-slate-100">{wpn}</span>
+                        ) : (
+                          <span className="font-bold text-slate-200">{p.part_number}</span>
+                        )}
+                        {p.wpn_pending_sync && (
+                          // Amber dot — fallback WPN that hasn't reconciled with HAROLD yet.
+                          <span
+                            title="WPN minted by fallback allocator; awaiting HAROLD sync"
+                            aria-label="Pending HAROLD sync"
+                            className="inline-block h-1.5 w-1.5 flex-shrink-0 rounded-full bg-amber-400"
+                          />
+                        )}
                       </div>
-                      {p.revision && <div className="text-[10px] text-slate-500 ml-5">rev {p.revision}</div>}
+                      <div className="ml-5 text-[10px] text-slate-500">
+                        {wpn ? <span className="font-mono">{p.part_number}</span> : null}
+                        {wpn && p.revision ? ' · ' : ''}
+                        {p.revision ? `rev ${p.revision}` : ''}
+                      </div>
                     </td>
                     <td className="px-3 py-2 text-slate-300">{p.name}</td>
                     <td className="px-3 py-2 text-slate-400">{p.supplier_name || '—'}</td>

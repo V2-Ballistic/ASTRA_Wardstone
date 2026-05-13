@@ -296,6 +296,12 @@ export interface CatalogPart {
   // ── TDD-CAT-002 (chip-render only — full CAD on detail) ──
   part_subtype?: string | null;
   material_class?: string | null;
+  // ── TDD-HAROLD-INT-002 — Wardstone Part Number ──
+  /** Issued (or fallback-allocated) WPN. Primary identifier when present. */
+  internal_part_number?: string | null;
+  /** True when the WPN was minted by the local fallback allocator and
+   *  has not yet been reconciled with HAROLD's authoritative ledger. */
+  wpn_pending_sync?: boolean;
 }
 
 /**

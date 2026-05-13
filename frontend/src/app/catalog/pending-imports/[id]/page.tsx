@@ -14,12 +14,18 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
   ArrowLeft, CheckCircle2, ChevronDown, Download, Loader2, ShieldCheck,
-  XCircle,
+  XCircle, Hash, AlertTriangle,
 } from 'lucide-react';
 import clsx from 'clsx';
 
 import { catalogAPI } from '@/lib/catalog-api';
+import { haroldAPI } from '@/lib/harold-api';
 import { formatApiError } from '@/lib/errors';
+import {
+  WPN_PATTERN,
+  looksLikeWardstoneWpn,
+  type WpnValidationResult,
+} from '@/lib/harold-types';
 import type {
   PendingCatalogImport,
   Supplier,
@@ -85,6 +91,15 @@ export default function PendingImportReviewPage() {
   const [rejectReason, setRejectReason] = useState('');
   const [warningsOpen, setWarningsOpen] = useState(false);
 
+  // ── WPN section state ──
+  // ``wpnInput`` is what the operator typed (drives extracted_data.user_supplied_wpn).
+  // Empty = "let the backend auto-allocate" (AD-11 fall-through path).
+  // ``wpnValidation`` is the most recent /harold/validate result.
+  const [wpnInput, setWpnInput] = useState('');
+  const [wpnValidating, setWpnValidating] = useState(false);
+  const [wpnValidation, setWpnValidation] = useState<WpnValidationResult | null>(null);
+  const [wpnValidationError, setWpnValidationError] = useState<string | null>(null);
+
   // ── Loaders ──
   const refresh = useCallback(async () => {
     if (!Number.isFinite(id) || id <= 0) {
@@ -98,6 +113,11 @@ export default function PendingImportReviewPage() {
       const r = await catalogAPI.getPendingImport(id);
       setPendingImport(r.data);
       setEdits({});
+      const ext = (r.data.extracted_data as Record<string, unknown>) || {};
+      const seedWpn = (ext.user_supplied_wpn ?? '') as string;
+      setWpnInput(typeof seedWpn === 'string' ? seedWpn : '');
+      setWpnValidation(null);
+      setWpnValidationError(null);
       // Best-effort fetch of related supplier + source document
       try {
         const [supRes, docRes] = await Promise.all([
@@ -156,12 +176,71 @@ export default function PendingImportReviewPage() {
     primary.add('cad_translator');   // less-useful sibling of cad_authoring_tool
     primary.add('product_name');     // duplicates `name` for STEP imports
     primary.add('step_entity_id');   // internal
+    // HAROLD WPN metadata is surfaced in its own dedicated section.
+    primary.add('proposed_wpn');
+    primary.add('wpn_source');
+    primary.add('wpn_system_code');
+    primary.add('wpn_suggestion_reason');
+    primary.add('filename_wpn');
+    primary.add('user_supplied_wpn');
     return Object.keys(merged).filter((k) => !primary.has(k));
   }, [merged]);
+
+  // ── WPN derived facts (from upload-time HAROLD suggest/filename calls) ──
+  const proposedWpn   = typeof merged.proposed_wpn          === 'string' ? merged.proposed_wpn          : null;
+  const wpnSource     = typeof merged.wpn_source            === 'string' ? merged.wpn_source            : null;
+  const wpnSystemCode = typeof merged.wpn_system_code       === 'string' ? merged.wpn_system_code       : null;
+  const wpnReason     = typeof merged.wpn_suggestion_reason === 'string' ? merged.wpn_suggestion_reason : null;
+  const filenameWpn   = typeof merged.filename_wpn          === 'string' ? merged.filename_wpn          : null;
 
   // ── Actions ──
   const setField = (key: string, raw: string) => {
     setEdits((prev) => ({ ...prev, [key]: raw === '' ? null : raw }));
+  };
+
+  // Whenever the operator types in the WPN box, mirror the value into
+  // ``edits.user_supplied_wpn`` so it persists alongside the rest of
+  // the merged extracted_data on save/approve. Empty string → null
+  // (AD-11 auto-allocate path).
+  const onWpnInputChange = (raw: string) => {
+    const upper = raw.toUpperCase();
+    setWpnInput(upper);
+    setEdits((prev) => ({
+      ...prev,
+      user_supplied_wpn: upper.trim() === '' ? null : upper.trim(),
+    }));
+    // Clear stale validation; user must blur to re-run.
+    if (wpnValidation || wpnValidationError) {
+      setWpnValidation(null);
+      setWpnValidationError(null);
+    }
+  };
+
+  // On blur — if the input looks like a Wardstone WPN, ask HAROLD.
+  // Empty input is intentionally NOT validated (auto-allocate path).
+  const onWpnBlur = async () => {
+    const v = wpnInput.trim();
+    if (!v) {
+      setWpnValidation(null);
+      setWpnValidationError(null);
+      return;
+    }
+    setWpnValidating(true);
+    setWpnValidationError(null);
+    try {
+      const r = await haroldAPI.validate(v);
+      if (r.data.harold_available) {
+        setWpnValidation(r.data.data);
+      } else {
+        setWpnValidation(null);
+        setWpnValidationError(r.data.reason || 'HAROLD unavailable');
+      }
+    } catch (e) {
+      setWpnValidation(null);
+      setWpnValidationError(formatApiError(e, 'WPN validation failed'));
+    } finally {
+      setWpnValidating(false);
+    }
   };
 
   const onSave = async () => {
@@ -320,6 +399,124 @@ export default function PendingImportReviewPage() {
           {error}
         </div>
       )}
+
+      {/* ── HAROLD WPN section (TDD-HAROLD-INT-002 Phase 4) ──
+            Surfaces the proposed WPN minted at upload time and lets the
+            operator override it. Empty input → backend auto-allocates
+            on approve (AD-11 fall-through). A typed value drives the
+            issue-specific path. */}
+      <div className="mb-4 rounded-xl border border-astra-border bg-astra-surface p-5">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="flex items-center gap-2 text-sm font-bold text-slate-100">
+            <Hash className="h-3.5 w-3.5 text-blue-400" aria-hidden="true" />
+            Wardstone Part Number (WPN)
+          </h2>
+          <div className="flex items-center gap-1.5">
+            {wpnSystemCode && (
+              <span className="rounded-full bg-slate-700/40 px-2 py-0.5 font-mono text-[10px] font-semibold text-slate-200">
+                {wpnSystemCode}
+              </span>
+            )}
+            {wpnSource && (
+              <span
+                className={clsx(
+                  'rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider',
+                  wpnSource === 'harold'      && 'bg-emerald-500/15 text-emerald-300',
+                  wpnSource === 'fallback'    && 'bg-amber-500/15  text-amber-300',
+                  wpnSource === 'unavailable' && 'bg-slate-500/15  text-slate-400',
+                )}
+              >
+                {wpnSource}
+              </span>
+            )}
+          </div>
+        </div>
+
+        {(proposedWpn || filenameWpn) && (
+          <p className="mb-2 text-[11px] text-slate-400">
+            {proposedWpn && (
+              <>Suggested:{' '}
+                <span className="font-mono text-slate-200">{proposedWpn}</span>
+                {wpnReason && <span className="text-slate-500"> · {wpnReason}</span>}
+              </>
+            )}
+            {filenameWpn && (
+              <>{proposedWpn ? ' · ' : ''}
+                Filename: <span className="font-mono text-slate-200">{filenameWpn}</span>
+              </>
+            )}
+          </p>
+        )}
+
+        <label htmlFor="pi-wpn" className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+          Override / commit WPN
+        </label>
+        <div className="flex items-center gap-2">
+          <input
+            id="pi-wpn"
+            type="text"
+            value={wpnInput}
+            onChange={(e) => onWpnInputChange(e.target.value)}
+            onBlur={onWpnBlur}
+            disabled={!isPending}
+            placeholder={proposedWpn || 'WS-XX-PNNNNNN-A'}
+            className="w-72 rounded-lg border border-astra-border bg-astra-bg px-3 py-2 font-mono text-sm tracking-wider text-slate-200 outline-none focus:border-blue-500/50 disabled:opacity-60"
+            spellCheck={false}
+            pattern={WPN_PATTERN.source}
+          />
+          {wpnValidating && <Loader2 className="h-3.5 w-3.5 animate-spin text-slate-400" aria-label="Validating" />}
+          {!wpnValidating && wpnInput.trim() !== '' && !looksLikeWardstoneWpn(wpnInput) && (
+            <span className="flex items-center gap-1 text-[11px] text-amber-300">
+              <AlertTriangle className="h-3 w-3" aria-hidden="true" /> Format check failed
+            </span>
+          )}
+        </div>
+
+        <p className="mt-1.5 text-[11px] text-slate-500">
+          Leave blank to auto-allocate on approve (HAROLD if reachable, fallback otherwise).
+          A typed value commits to the issue-specific path.
+        </p>
+
+        {wpnValidation && (
+          <div className="mt-3 rounded-lg border border-astra-border bg-astra-bg p-3 text-xs">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-mono text-slate-200">{wpnValidation.wpn}</span>
+              <span className={clsx(
+                'rounded-full px-2 py-0.5 text-[10px] font-semibold',
+                wpnValidation.is_valid_format
+                  ? 'bg-emerald-500/15 text-emerald-300'
+                  : 'bg-red-500/15 text-red-400',
+              )}>
+                {wpnValidation.is_valid_format ? 'format ok' : 'bad format'}
+              </span>
+              <span className={clsx(
+                'rounded-full px-2 py-0.5 text-[10px] font-semibold',
+                wpnValidation.is_issued
+                  ? 'bg-amber-500/15 text-amber-300'
+                  : 'bg-slate-500/15 text-slate-400',
+              )}>
+                {wpnValidation.is_issued ? 'already issued' : 'free'}
+              </span>
+            </div>
+            {wpnValidation.errors.length > 0 && (
+              <ul className="mt-2 list-disc space-y-0.5 pl-5 text-[11px] text-red-400">
+                {wpnValidation.errors.map((m, i) => <li key={i}>{m}</li>)}
+              </ul>
+            )}
+            {wpnValidation.warnings.length > 0 && (
+              <ul className="mt-2 list-disc space-y-0.5 pl-5 text-[11px] text-amber-300">
+                {wpnValidation.warnings.map((m, i) => <li key={i}>{m}</li>)}
+              </ul>
+            )}
+          </div>
+        )}
+
+        {wpnValidationError && (
+          <p className="mt-2 text-[11px] text-slate-400">
+            HAROLD validate skipped: <span className="text-slate-500">{wpnValidationError}</span>
+          </p>
+        )}
+      </div>
 
       {/* ── Extracted-data editor ── */}
       <div className="rounded-xl border border-astra-border bg-astra-surface p-5">
