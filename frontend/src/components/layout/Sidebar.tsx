@@ -61,8 +61,11 @@ const GLOBAL_NAV: NavItem[] = [
   { href: '/', label: 'Projects', icon: Home },
   // Phase 3 — INTF-002: global supplier catalog landing.
   { href: '/catalog', label: 'Catalog', icon: Package },
-  // ASTRA-SPEC-PARTS-001: global cross-project parts library landing.
-  { href: '/parts-library', label: 'Parts Library', icon: Boxes },
+  // CLEANUP-002 Phase 3: Parts Library entry removed from sidebar.
+  // The /parts-library/* routes 308-redirect to /catalog/* equivalents
+  // (next.config.js) so existing bookmarks survive. Underlying route
+  // tree under frontend/src/app/parts-library/ is left in place per
+  // AD-4 / out-of-scope rule #1; sunsetting it is a future TDD.
 ];
 
 function getProjectNav(projectId: number): NavGroup[] {
