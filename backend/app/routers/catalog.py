@@ -109,8 +109,12 @@ from app.schemas.catalog import (
     SupplierResponse,
     SupplierUpdate,
 )
-from app.schemas.harold import CatalogDesignatorsResponse  # TDD-HAROLD-001
+from app.schemas.harold import (
+    CatalogDesignatorEntry,
+    CatalogDesignatorsResponseV2,  # TDD-HAROLD-INT-002 Phase 3 (AD-9)
+)
 from app.schemas.interface import UnitResponse
+from app.config import settings
 from app.services.auth import get_current_user
 from app.services.catalog import placement as placement_svc
 
@@ -120,6 +124,22 @@ try:
 except ImportError:  # pragma: no cover - dev test fallback
     def _audit(*a, **kw):
         pass
+
+# Optional HAROLD V2 integration (TDD-HAROLD-INT-002 Phase 3).
+# Loaded lazily and gated on settings.HAROLD_INTEGRATION_ENABLED so
+# legacy paths keep working unmodified when the flag is off
+# (gotcha #12 — flag-off behaviour must be byte-identical to today).
+try:
+    from app.services.harold import (
+        HaroldDuplicateError,
+        issue_wpn_for_catalog_part as _harold_issue,
+        suggest_wpn_for_part as _harold_suggest,
+        validate_filename_wpn as _harold_validate_filename,
+    )
+    _HAROLD_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    _HAROLD_AVAILABLE = False
+    HaroldDuplicateError = Exception  # type: ignore[assignment,misc]
 
 # Optional RBAC
 try:
@@ -1250,7 +1270,7 @@ def _approve_pending_import(
     response_model=CatalogPartResponse,
     status_code=201,
 )
-def approve_pending_import(
+async def approve_pending_import(
     import_id: int,
     request: Request = None,
     db: Session = Depends(get_db),
@@ -1261,10 +1281,74 @@ def approve_pending_import(
     Atomic: any failure rolls every newly-created Supplier / CatalogPart /
     CatalogConnector / CatalogPin row back. Marks the source document
     APPROVED on success.
+
+    Phase 3 of HAROLD-INT-002: when the integration is enabled, also
+    assigns ``internal_part_number`` via HAROLD. Three branches per
+    AD-11:
+      1. ``user_supplied_wpn`` set in pending.extracted_data → call
+         issue_specific. 409 from HAROLD → reject the approval.
+      2. user didn't override + HAROLD up → issue (auto-allocate).
+      3. user didn't override + HAROLD down → fallback allocator,
+         set ``wpn_pending_sync=True``.
+
+    Flag-off: the new code path is skipped entirely; behaviour
+    identical to today.
     """
     _require_req_eng_plus(current_user)
+
+    # Pull the WPN metadata from extracted_data BEFORE `_approve_pending_import`
+    # runs — the IcdExtractionResultSchema inside that helper drops
+    # unknown keys, so reading these after would return nothing.
+    harold_meta: dict[str, object] = {}
+    if _HAROLD_AVAILABLE and settings.HAROLD_INTEGRATION_ENABLED:
+        peek = (
+            db.query(PendingCatalogImport)
+            .filter(PendingCatalogImport.id == import_id)
+            .first()
+        )
+        if peek is not None and isinstance(peek.extracted_data, dict):
+            ext = peek.extracted_data
+            # AD-11: only an explicit user_supplied_wpn drives
+            # issue-specific. proposed_wpn in extracted_data is just
+            # the UI hint and never implicitly becomes a commitment —
+            # auto-allocate happens when the user didn't override.
+            user_supplied = (ext.get("user_supplied_wpn") or "").strip() or None
+            harold_meta["final_wpn"] = user_supplied
+            harold_meta["had_user_override"] = bool(user_supplied)
+
     try:
         part = _approve_pending_import(db, import_id, current_user)
+
+        # HAROLD WPN assignment — feature-flagged. Must happen BEFORE
+        # the commit so a hard failure (e.g. caller-supplied duplicate)
+        # rolls back the whole approval.
+        wpn_audit_payload: dict[str, object] | None = None
+        if _HAROLD_AVAILABLE and settings.HAROLD_INTEGRATION_ENABLED:
+            try:
+                wpn, source, pending_sync = await _harold_issue(
+                    db, part,
+                    supplied_wpn=harold_meta.get("final_wpn"),  # type: ignore[arg-type]
+                )
+                part.internal_part_number = wpn
+                part.wpn_pending_sync = bool(pending_sync)
+                wpn_audit_payload = {
+                    "wpn":              wpn,
+                    "source":           source,
+                    "wpn_pending_sync": bool(pending_sync),
+                    "had_user_override": bool(harold_meta.get("had_user_override")),
+                }
+            except HaroldDuplicateError as exc:
+                db.rollback()
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"WPN {harold_meta.get('final_wpn')!r} is already "
+                        f"issued in HAROLD's ledger. Pick a different WPN "
+                        f"or clear the override to auto-allocate. "
+                        f"({exc!s})"
+                    ),
+                ) from exc
+
         db.commit()
     except HTTPException:
         db.rollback()
@@ -1284,6 +1368,12 @@ def approve_pending_import(
         },
         request=request,
     )
+    if wpn_audit_payload is not None:
+        _audit(
+            db, "catalog.part.wpn_assigned", "catalog_part", part.id, current_user.id,
+            wpn_audit_payload,
+            request=request,
+        )
 
     return _catalog_part_response(db, part)
 
@@ -1549,6 +1639,43 @@ async def upload_step_file(
         "country": supplier.country,
     }
 
+    # ── 4b. HAROLD integration: WPN suggestion + filename WPN check ──
+    # Flag-gated per AD-1; when off, the parsed.extracted dict stays
+    # exactly as today. The suggestion fields land in extracted_data
+    # so the pending-imports review page can render the proposed WPN
+    # without re-calling HAROLD on every page load.
+    if _HAROLD_AVAILABLE and settings.HAROLD_INTEGRATION_ENABLED:
+        part_class_value = parsed.extracted.get("part_class") or ""
+        try:
+            suggestion = await _harold_suggest(
+                db, part_class_value, hint=original_filename,
+            )
+            parsed.extracted["proposed_wpn"]          = suggestion.get("suggested_wpn")
+            parsed.extracted["wpn_source"]            = suggestion.get("source")
+            parsed.extracted["wpn_system_code"]       = suggestion.get("system_code")
+            if suggestion.get("reason"):
+                parsed.extracted["wpn_suggestion_reason"] = suggestion.get("reason")
+        except Exception as exc:  # noqa: BLE001 — best-effort during upload
+            logger.warning("HAROLD suggest failed during upload: %s", exc)
+            parsed.extracted["wpn_source"] = "unavailable"
+            parsed.extracted["wpn_suggestion_reason"] = str(exc)
+
+        # If the filename itself looks like a Wardstone WPN, validate
+        # it and surface a duplicate warning so the reviewer knows.
+        try:
+            fcheck = await _harold_validate_filename(original_filename)
+            if fcheck.get("is_wardstone_format"):
+                parsed.extracted["filename_wpn"] = fcheck.get("extracted_wpn")
+                wv = fcheck.get("wpn_validation") or {}
+                if wv.get("is_issued"):
+                    parsed.warnings.append(
+                        f"Filename WPN {fcheck['extracted_wpn']!r} is already "
+                        "issued in HAROLD's ledger. Use the suggested WPN or pick "
+                        "a different filename."
+                    )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("HAROLD validate-filename failed during upload: %s", exc)
+
     # ── 5. SupplierDocument ──
     extraction_log = {
         "warnings": parsed.warnings,
@@ -1635,51 +1762,74 @@ async def upload_step_file(
 #  TDD-HAROLD-001: outbound designator feed (HAROLD ← ASTRA)
 # ═════════════════════════════════════════════════════════════════
 
-@router.get("/designators", response_model=CatalogDesignatorsResponse)
+@router.get("/designators", response_model=CatalogDesignatorsResponseV2)
 def list_catalog_designators(
     system: Optional[str] = Query(
         None,
-        description="2-letter HAROLD system code, e.g. AV. Case-insensitive.",
+        description="2-letter HAROLD system code, e.g. FH. Case-insensitive.",
     ),
     skip: int = Query(0, ge=0),
     limit: int = Query(200, ge=1, le=200),
     db: Session = Depends(get_db),
-    # AD-8 + gotcha #8: this endpoint is consumed by HAROLD (a peer
-    # service running on the same host network), not a logged-in user.
-    # Leaving unauthenticated in v1 — the data exposed (part_number
-    # strings) is internal-network reference data. A shared-secret
-    # `X-Harold-Token` header is a Phase 2 follow-up if the deployment
-    # ever becomes internet-exposed.
+    # AD-10: unauthenticated in v1 — peer-service consumption on a
+    # trusted LAN. Future TDD adds a shared-token header.
 ):
-    """List part_numbers ASTRA has issued, for HAROLD collision-avoidance.
+    """List Wardstone Part Numbers (WPNs) ASTRA has issued.
 
-    When `system` is supplied, only returns part_numbers matching the
-    HAROLD CAD-part pattern `WS-<SYSTEM>-P%`. Otherwise returns every
-    non-soft-deleted catalog part_number, paginated.
+    Phase 3 of HAROLD-INT-002 pivots the source column from the
+    manufacturer ``part_number`` (MPN) to the assigned
+    ``internal_part_number`` (WPN) per AD-9. Only rows with a
+    non-NULL WPN are returned — pre-integration parts (e.g. the
+    McMaster row, ``internal_part_number IS NULL``) are excluded.
 
-    Returns: `{designators, total, system_filter}`.
+    When ``system`` is supplied, filters to WPNs matching
+    ``WS-<SYSTEM>-P%``. Returns structured rows so HAROLD's browse
+    surface can show part_class + part_id linkbacks without a second
+    query.
+
+    The response shape is the V2 form ``CatalogDesignatorsResponseV2``;
+    confirmed in Phase 0 that no caller was on the legacy flat-list
+    shape (the endpoint was added speculatively in the prior
+    HAROLD-001 phase-3 commit and never exercised).
     """
     query = (
-        db.query(CatalogPart.part_number)
-        .filter(CatalogPart.deleted_at.is_(None))
+        db.query(CatalogPart)
+        .filter(
+            CatalogPart.internal_part_number.isnot(None),
+            CatalogPart.deleted_at.is_(None),
+        )
     )
     sys_upper: Optional[str] = None
     if system:
         sys_upper = system.upper()
-        # Pattern: WS-<SYSTEM>-P<NNNN>-<REV>. Uppercase the input;
-        # catalog part_numbers in this repo are uppercase by convention
-        # (gotcha #5 — LIKE is case-sensitive).
-        query = query.filter(CatalogPart.part_number.like(f"WS-{sys_upper}-P%"))
+        query = query.filter(
+            CatalogPart.internal_part_number.like(f"WS-{sys_upper}-P%")
+        )
 
     total = query.count()
     rows = (
-        query.order_by(CatalogPart.part_number)
+        query.order_by(CatalogPart.internal_part_number)
         .offset(skip)
         .limit(limit)
         .all()
     )
-    return CatalogDesignatorsResponse(
-        designators=[r[0] for r in rows],
+
+    designators = []
+    for p in rows:
+        wpn = p.internal_part_number or ""
+        sys_code = None
+        if wpn.count("-") >= 3:
+            sys_code = wpn.split("-")[1]
+        designators.append(CatalogDesignatorEntry(
+            wpn=wpn,
+            part_id=p.id,
+            part_class=p.part_class.value if p.part_class else None,
+            system_code=sys_code,
+            created_at=p.created_at,
+        ))
+
+    return CatalogDesignatorsResponseV2(
+        designators=designators,
         total=int(total or 0),
         system_filter=sys_upper,
     )
