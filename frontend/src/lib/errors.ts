@@ -92,3 +92,30 @@ export function formatApiError(
   if (typeof err === 'string') return err;
   return fallback;
 }
+
+
+/**
+ * If the API returned a structured error detail — i.e. `detail` is an
+ * object carrying a string `code` field — return the detail object
+ * as-is. Lets callers render typed, actionable error UI (e.g. an
+ * "Open existing import" link) before falling back to
+ * `formatApiError` for unstructured errors.
+ *
+ * Returns `null` if the response isn't a structured error.
+ */
+export function parseStructuredApiError(
+  err: unknown,
+): { code: string; [k: string]: unknown } | null {
+  const detail = (err as {
+    response?: { data?: { detail?: unknown } };
+  })?.response?.data?.detail;
+  if (
+    detail
+    && typeof detail === 'object'
+    && !Array.isArray(detail)
+    && typeof (detail as { code?: unknown }).code === 'string'
+  ) {
+    return detail as { code: string; [k: string]: unknown };
+  }
+  return null;
+}

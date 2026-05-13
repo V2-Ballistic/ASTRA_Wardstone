@@ -21,7 +21,7 @@ import {
 import clsx from 'clsx';
 
 import { catalogAPI } from '@/lib/catalog-api';
-import { formatApiError } from '@/lib/errors';
+import { formatApiError, parseStructuredApiError } from '@/lib/errors';
 import {
   type Supplier,
   type CatalogPart,
@@ -221,6 +221,16 @@ function PartsTab() {
       const r = await catalogAPI.uploadStep(f);
       router.push(`/catalog/pending-imports/${r.data.pending_import_id}`);
     } catch (err) {
+      // CLEANUP-002 AD-3: when the dedup 409 carries an actionable
+      // pending-import URL, route the user straight there instead of
+      // surfacing the raw error. The first thing they'd do otherwise
+      // is read the message, find the ID, and navigate manually.
+      const structured = parseStructuredApiError(err);
+      const link = structured?.existing_pending_import_url;
+      if (structured?.code === 'step_already_uploaded' && typeof link === 'string') {
+        router.push(link);
+        return;
+      }
       setError(formatApiError(err, 'Upload failed'));
     } finally {
       setUploading(false);

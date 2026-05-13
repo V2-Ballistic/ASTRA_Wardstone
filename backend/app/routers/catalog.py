@@ -67,7 +67,7 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
@@ -1574,20 +1574,69 @@ async def upload_step_file(
         raise HTTPException(422, "uploaded file is empty")
     sha256 = hashlib.sha256(content).hexdigest()
 
-    # Global hash dedup — STEP geometry hash collisions across vendors
-    # are essentially impossible; if we've seen this hash already, the
-    # caller is re-uploading.
-    dup = (
+    # CLEANUP-002 Phase 2 (AD-2 revised per Phase 0): soft-delete-aware
+    # dedup. A supplier_document with this hash blocks re-upload only
+    # if it still has live downstream state — either a non-soft-deleted
+    # catalog_part, or a still-pending pending_import. Once both are
+    # gone (catalog_part soft-deleted; pending_import terminal or
+    # hard-deleted by Phase 4's cleanup flow), the supplier_document is
+    # effectively orphaned and re-uploading the same STEP succeeds.
+    # supplier_documents itself has no deleted_at column, so the
+    # liveness check joins through the dependent tables.
+    dup_row = (
         db.query(SupplierDocument.id, SupplierDocument.supplier_id)
+        .outerjoin(
+            CatalogPart, CatalogPart.source_document_id == SupplierDocument.id,
+        )
+        .outerjoin(
+            PendingCatalogImport,
+            PendingCatalogImport.source_document_id == SupplierDocument.id,
+        )
         .filter(SupplierDocument.sha256 == sha256)
+        .filter(
+            or_(
+                and_(
+                    CatalogPart.id.isnot(None),
+                    CatalogPart.deleted_at.is_(None),
+                ),
+                and_(
+                    PendingCatalogImport.id.isnot(None),
+                    PendingCatalogImport.status == PendingImportStatus.PENDING,
+                ),
+            )
+        )
         .first()
     )
-    if dup is not None:
+    if dup_row is not None:
+        existing_doc_id, _existing_supplier_id = dup_row
+        # AD-3: enrich the 409 body with actionable IDs + URL so the
+        # frontend can route the user to the existing pending import
+        # rather than show the opaque ID dump that prompted this TDD.
+        active_pi = (
+            db.query(PendingCatalogImport.id)
+            .filter(
+                PendingCatalogImport.source_document_id == existing_doc_id,
+                PendingCatalogImport.status == PendingImportStatus.PENDING,
+            )
+            .first()
+        )
+        active_pi_id = active_pi[0] if active_pi else None
         raise HTTPException(
-            409,
-            f"STEP file with sha256={sha256[:12]}… already uploaded "
-            f"(supplier_document_id={dup[0]}, supplier_id={dup[1]}). "
-            "Open the existing pending import instead.",
+            status_code=409,
+            detail={
+                "code": "step_already_uploaded",
+                "message": (
+                    f"This STEP file (sha256={sha256[:8]}…) is already "
+                    "uploaded and has live downstream state. Open the "
+                    "existing pending import instead."
+                ),
+                "existing_supplier_document_id": existing_doc_id,
+                "existing_pending_import_id": active_pi_id,
+                "existing_pending_import_url": (
+                    f"/catalog/pending-imports/{active_pi_id}"
+                    if active_pi_id else None
+                ),
+            },
         )
 
     # ── 2. save to disk + parse ──

@@ -254,6 +254,7 @@ def test_upload_dedup_rejects_duplicate_hash(
         filename="92196A196_18-8 Stainless Steel Socket Head Screw.STEP",
     )
     assert r1.status_code == 201, r1.text
+    first_pending_id = r1.json()["pending_import_id"]
 
     r2 = _upload_step(
         client, auth_headers,
@@ -261,7 +262,103 @@ def test_upload_dedup_rejects_duplicate_hash(
         filename="92196A196_18-8 Stainless Steel Socket Head Screw.STEP",
     )
     assert r2.status_code == 409, r2.text
-    assert "already uploaded" in r2.json()["detail"]
+
+    # CLEANUP-002 AD-3: structured 409 detail with actionable link to
+    # the existing pending import, not the opaque ID dump that
+    # prompted this TDD.
+    detail = r2.json()["detail"]
+    assert isinstance(detail, dict), detail
+    assert detail["code"] == "step_already_uploaded"
+    assert "already" in detail["message"]
+    assert detail["existing_supplier_document_id"]
+    assert detail["existing_pending_import_id"] == first_pending_id
+    assert detail["existing_pending_import_url"] == (
+        f"/catalog/pending-imports/{first_pending_id}"
+    )
+
+
+def test_upload_after_catalog_part_soft_deleted_succeeds(
+    client, auth_headers, db_session, test_user,
+):
+    """CLEANUP-002 AD-2: re-uploading a STEP whose only downstream
+    catalog_part has been soft-deleted should succeed (the
+    supplier_document is effectively orphaned)."""
+    _seed_wardstone(db_session, test_user)
+    r1 = _upload_step(
+        client, auth_headers,
+        content=MCMASTER_SHCS_STEP,
+        filename="92196A196_18-8 Stainless Steel Socket Head Screw.STEP",
+    )
+    assert r1.status_code == 201, r1.text
+    pending_id = r1.json()["pending_import_id"]
+
+    # Approve to produce a catalog_part
+    ar = client.post(
+        f"/api/v1/catalog/pending-imports/{pending_id}/approve",
+        headers=auth_headers,
+    )
+    assert ar.status_code == 201, ar.text
+    part_id = ar.json()["id"]
+
+    # Soft-delete the catalog_part directly in the DB. The DELETE
+    # endpoint that does this lives in Phase 4; for this test we
+    # exercise just the dedup-side fix.
+    from datetime import datetime, timezone
+    part = db_session.query(CatalogPart).filter(CatalogPart.id == part_id).first()
+    assert part is not None
+    part.deleted_at = datetime.now(timezone.utc)
+    db_session.commit()
+
+    # Re-upload the same STEP — should succeed since no live
+    # downstream state remains (catalog_part soft-deleted; the
+    # original pending_import is now APPROVED, not PENDING).
+    r2 = _upload_step(
+        client, auth_headers,
+        content=MCMASTER_SHCS_STEP,
+        filename="92196A196_18-8 Stainless Steel Socket Head Screw.STEP",
+    )
+    assert r2.status_code == 201, r2.text
+    new_pending_id = r2.json()["pending_import_id"]
+    assert new_pending_id != pending_id
+
+
+def test_upload_after_approval_blocks_without_pending_url(
+    client, auth_headers, db_session, test_user,
+):
+    """When the supplier_document has a live (non-soft-deleted)
+    catalog_part but the original pending_import is APPROVED (not
+    PENDING), re-upload still 409s — but with `existing_pending_import_id`
+    null since there's no active workflow to link to. The UI falls
+    back to a string error in that branch."""
+    _seed_wardstone(db_session, test_user)
+    r1 = _upload_step(
+        client, auth_headers,
+        content=MCMASTER_SHCS_STEP,
+        filename="92196A196_18-8 Stainless Steel Socket Head Screw.STEP",
+    )
+    assert r1.status_code == 201, r1.text
+    pending_id = r1.json()["pending_import_id"]
+
+    ar = client.post(
+        f"/api/v1/catalog/pending-imports/{pending_id}/approve",
+        headers=auth_headers,
+    )
+    assert ar.status_code == 201, ar.text
+
+    # Re-upload — catalog_part is live (not soft-deleted) → still blocked.
+    r2 = _upload_step(
+        client, auth_headers,
+        content=MCMASTER_SHCS_STEP,
+        filename="92196A196_18-8 Stainless Steel Socket Head Screw.STEP",
+    )
+    assert r2.status_code == 409, r2.text
+    detail = r2.json()["detail"]
+    assert isinstance(detail, dict), detail
+    assert detail["code"] == "step_already_uploaded"
+    assert detail["existing_supplier_document_id"]
+    # No PENDING pending_import remains — the original was approved.
+    assert detail["existing_pending_import_id"] is None
+    assert detail["existing_pending_import_url"] is None
 
 
 def test_upload_then_approve_creates_catalog_part(
