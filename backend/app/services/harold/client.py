@@ -1,11 +1,19 @@
-"""HAROLD V2 HTTP client.
+"""HAROLD HTTP client — now targeting WRENCH at :8030.
 
-Wraps V2's native REST surface at ``/api/v1/*``. One method per
-endpoint we call. Each method:
+HAROLD-IN-WRENCH-001 Phase 6: V2 standalone at :8031 is on its way
+out (Phase 7 decommission). HAROLD now lives inside the WRENCH
+chassis at :8030 as a plugin and exposes its REST surface under
+``/api/tools/wardstone-harold/*``. This client cut over from the
+old V2-native URLs (``/api/v1/<thing>``) to the new chassis-mounted
+URLs (``/api/tools/wardstone-harold/<thing>``). Request/response
+shapes are byte-for-byte identical — only the URL prefix changed.
 
-  1. Builds the URL from ``settings.HAROLD_BASE_URL``.
-  2. Uses ``httpx.AsyncClient`` opened per-call (low volume; not worth
-     the long-lived-client shutdown complexity).
+One method per endpoint we call. Each method:
+
+  1. Builds the URL from ``settings.HAROLD_BASE_URL`` (default now
+     ``http://host.docker.internal:8030``, WRENCH's api port).
+  2. Uses ``httpx.AsyncClient`` opened per-call (low volume; not
+     worth the long-lived-client shutdown complexity).
   3. Catches only the SPECIFIC httpx exceptions
      (``ConnectError``, ``TimeoutException``, ``HTTPError``) and
      re-raises as ``HaroldUnavailableError``. A bare ``Exception``
@@ -14,10 +22,6 @@ endpoint we call. Each method:
   4. Maps 4xx responses to domain-specific exceptions
      (``HaroldDuplicateError`` on 409, ``HaroldValidationError`` on 422).
   5. Returns the parsed JSON dict on success.
-
-V2's compat surface (``/api/tools/*``) is NOT used here — Phase 0
-discovery confirmed V2's native REST is what we want. The prior
-HAROLD-001 client targeted the WRENCH envelope and is gone.
 """
 from __future__ import annotations
 
@@ -120,7 +124,7 @@ async def list_system_codes() -> dict[str, Any]:
     21 codes (17 project-system + 4 library-category). The shape
     matches V2's ``SystemCodesResponse``.
     """
-    return await _request("GET", "/api/v1/system-codes")
+    return await _request("GET", "/api/tools/wardstone-harold/system-codes")
 
 
 # ── Suggest ─────────────────────────────────────────────────────────
@@ -141,7 +145,7 @@ async def suggest(
     # would return 422. Drop it on the wire but accept it in our
     # signature so callers in service.py don't have to special-case.
     _ = hint  # noqa: F841 - reserved for forward compatibility
-    return await _request("GET", "/api/v1/wpn/suggest", params=params)
+    return await _request("GET", "/api/tools/wardstone-harold/wpn/suggest", params=params)
 
 
 # ── Validate ────────────────────────────────────────────────────────
@@ -157,7 +161,7 @@ async def validate(wpn: str) -> dict[str, Any]:
     ``HaroldValidationError`` path triggers only on HTTP 422 (Pydantic
     rejected the request body itself).
     """
-    return await _request("POST", "/api/v1/wpn/validate", json={"wpn": wpn})
+    return await _request("POST", "/api/tools/wardstone-harold/wpn/validate", json={"wpn": wpn})
 
 
 # ── Issue ───────────────────────────────────────────────────────────
@@ -180,7 +184,7 @@ async def issue(
     if display_name is not None:     body["display_name"]     = display_name
     if description is not None:      body["description"]      = description
     if metadata is not None:         body["metadata"]         = metadata
-    return await _request("POST", "/api/v1/wpn/issue", json=body)
+    return await _request("POST", "/api/tools/wardstone-harold/wpn/issue", json=body)
 
 
 async def issue_specific(
@@ -201,7 +205,7 @@ async def issue_specific(
     if display_name is not None:     body["display_name"]     = display_name
     if description is not None:      body["description"]      = description
     if metadata is not None:         body["metadata"]         = metadata
-    return await _request("POST", "/api/v1/wpn/issue-specific", json=body)
+    return await _request("POST", "/api/tools/wardstone-harold/wpn/issue-specific", json=body)
 
 
 # ── Ledger lookup ───────────────────────────────────────────────────
@@ -211,4 +215,4 @@ async def get_ledger_entry(wpn: str) -> dict[str, Any]:
     """``GET /api/v1/ledger/{wpn}``. 404 propagates as
     ``HaroldInvalidResponseError`` — callers map to "not found" in
     their own domain language."""
-    return await _request("GET", f"/api/v1/ledger/{wpn}")
+    return await _request("GET", f"/api/tools/wardstone-harold/ledger/{wpn}")

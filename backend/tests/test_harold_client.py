@@ -20,7 +20,7 @@ from app.services.harold.errors import (
 )
 
 
-_BASE = "http://host.docker.internal:8031"
+_BASE = "http://host.docker.internal:8030"
 
 
 @pytest.fixture(autouse=True)
@@ -71,13 +71,13 @@ async def test_health_timeout_raises_unavailable():
         await harold_client.health()
 
 
-# ── /api/v1/system-codes ──────────────────────────────────────────
+# ── /api/tools/wardstone-harold/system-codes ──────────────────────────────────────────
 
 
 @pytest.mark.asyncio
 @respx.mock
 async def test_list_system_codes_happy_path():
-    respx.get(f"{_BASE}/api/v1/system-codes").mock(
+    respx.get(f"{_BASE}/api/tools/wardstone-harold/system-codes").mock(
         return_value=httpx.Response(200, json={
             "total": 21,
             "codes": [{"code": "FH", "category": "library-category",
@@ -89,13 +89,13 @@ async def test_list_system_codes_happy_path():
     assert body["codes"][0]["code"] == "FH"
 
 
-# ── /api/v1/wpn/suggest ───────────────────────────────────────────
+# ── /api/tools/wardstone-harold/wpn/suggest ───────────────────────────────────────────
 
 
 @pytest.mark.asyncio
 @respx.mock
 async def test_suggest_happy_path():
-    respx.get(f"{_BASE}/api/v1/wpn/suggest").mock(
+    respx.get(f"{_BASE}/api/tools/wardstone-harold/wpn/suggest").mock(
         return_value=httpx.Response(200, json={
             "suggested_wpn": "WS-FH-P000001-A",
             "system_code":    "FH",
@@ -113,7 +113,7 @@ async def test_suggest_passes_system_code_query_param():
     """Verify the URL the client emits — the route matcher catches
     the system_code param explicitly."""
     route = respx.get(
-        f"{_BASE}/api/v1/wpn/suggest",
+        f"{_BASE}/api/tools/wardstone-harold/wpn/suggest",
         params={"system_code": "MH"},
     ).mock(return_value=httpx.Response(200, json={
         "suggested_wpn": "WS-MH-P000003-A",
@@ -129,21 +129,21 @@ async def test_suggest_passes_system_code_query_param():
 @pytest.mark.asyncio
 @respx.mock
 async def test_suggest_422_validation_error():
-    respx.get(f"{_BASE}/api/v1/wpn/suggest").mock(
+    respx.get(f"{_BASE}/api/tools/wardstone-harold/wpn/suggest").mock(
         return_value=httpx.Response(422, text="invalid system code"),
     )
     with pytest.raises(HaroldValidationError):
         await harold_client.suggest("XX")
 
 
-# ── /api/v1/wpn/validate ──────────────────────────────────────────
+# ── /api/tools/wardstone-harold/wpn/validate ──────────────────────────────────────────
 
 
 @pytest.mark.asyncio
 @respx.mock
 async def test_validate_returns_body_even_when_is_valid_false():
     """is_valid_format=false is a normal result, not an exception."""
-    respx.post(f"{_BASE}/api/v1/wpn/validate").mock(
+    respx.post(f"{_BASE}/api/tools/wardstone-harold/wpn/validate").mock(
         return_value=httpx.Response(200, json={
             "wpn": "ws-fh-p000001-a",
             "is_valid_format": False,
@@ -161,20 +161,20 @@ async def test_validate_returns_body_even_when_is_valid_false():
 @pytest.mark.asyncio
 @respx.mock
 async def test_validate_422_raises_validation_error():
-    respx.post(f"{_BASE}/api/v1/wpn/validate").mock(
+    respx.post(f"{_BASE}/api/tools/wardstone-harold/wpn/validate").mock(
         return_value=httpx.Response(422, text="body must include wpn"),
     )
     with pytest.raises(HaroldValidationError):
         await harold_client.validate("")
 
 
-# ── /api/v1/wpn/issue ─────────────────────────────────────────────
+# ── /api/tools/wardstone-harold/wpn/issue ─────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
 @respx.mock
 async def test_issue_happy_path():
-    respx.post(f"{_BASE}/api/v1/wpn/issue").mock(
+    respx.post(f"{_BASE}/api/tools/wardstone-harold/wpn/issue").mock(
         return_value=httpx.Response(201, json={
             "id": 1, "wpn": "WS-FH-P000001-A", "system_code": "FH",
             "status": "active", "part_number_int": 1, "revision": "A",
@@ -204,18 +204,18 @@ async def test_issue_body_omits_none_fields():
             "status": "active", "part_number_int": 2, "revision": "A",
         })
 
-    respx.post(f"{_BASE}/api/v1/wpn/issue").mock(side_effect=_handler)
+    respx.post(f"{_BASE}/api/tools/wardstone-harold/wpn/issue").mock(side_effect=_handler)
     await harold_client.issue("FH")  # no optional fields supplied
     assert captured == {"system_code": "FH"}
 
 
-# ── /api/v1/wpn/issue-specific ────────────────────────────────────
+# ── /api/tools/wardstone-harold/wpn/issue-specific ────────────────────────────────────
 
 
 @pytest.mark.asyncio
 @respx.mock
 async def test_issue_specific_happy_path():
-    respx.post(f"{_BASE}/api/v1/wpn/issue-specific").mock(
+    respx.post(f"{_BASE}/api/tools/wardstone-harold/wpn/issue-specific").mock(
         return_value=httpx.Response(201, json={
             "id": 5, "wpn": "WS-FH-P000050-A", "system_code": "FH",
             "status": "active", "part_number_int": 50, "revision": "A",
@@ -233,7 +233,7 @@ async def test_issue_specific_happy_path():
 @pytest.mark.asyncio
 @respx.mock
 async def test_issue_specific_409_raises_duplicate():
-    respx.post(f"{_BASE}/api/v1/wpn/issue-specific").mock(
+    respx.post(f"{_BASE}/api/tools/wardstone-harold/wpn/issue-specific").mock(
         return_value=httpx.Response(409, text="already issued"),
     )
     with pytest.raises(HaroldDuplicateError):
@@ -243,20 +243,20 @@ async def test_issue_specific_409_raises_duplicate():
 @pytest.mark.asyncio
 @respx.mock
 async def test_issue_specific_422_raises_validation():
-    respx.post(f"{_BASE}/api/v1/wpn/issue-specific").mock(
+    respx.post(f"{_BASE}/api/tools/wardstone-harold/wpn/issue-specific").mock(
         return_value=httpx.Response(422, text="malformed wpn"),
     )
     with pytest.raises(HaroldValidationError):
         await harold_client.issue_specific("ws-fh-p000001-a")
 
 
-# ── /api/v1/ledger/{wpn} ──────────────────────────────────────────
+# ── /api/tools/wardstone-harold/ledger/{wpn} ──────────────────────────────────────────
 
 
 @pytest.mark.asyncio
 @respx.mock
 async def test_get_ledger_entry_happy_path():
-    respx.get(f"{_BASE}/api/v1/ledger/WS-FH-P000001-A").mock(
+    respx.get(f"{_BASE}/api/tools/wardstone-harold/ledger/WS-FH-P000001-A").mock(
         return_value=httpx.Response(200, json={
             "wpn": "WS-FH-P000001-A", "system_code": "FH",
             "part_number_int": 1, "revision": "A", "status": "active",
@@ -269,7 +269,7 @@ async def test_get_ledger_entry_happy_path():
 @pytest.mark.asyncio
 @respx.mock
 async def test_get_ledger_entry_404_raises_invalid_response():
-    respx.get(f"{_BASE}/api/v1/ledger/WS-FH-P999999-A").mock(
+    respx.get(f"{_BASE}/api/tools/wardstone-harold/ledger/WS-FH-P999999-A").mock(
         return_value=httpx.Response(404, text="not found"),
     )
     with pytest.raises(HaroldInvalidResponseError):

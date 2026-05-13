@@ -233,6 +233,13 @@ class SupplierDocument(Base):
         Integer, ForeignKey("suppliers.id", ondelete="CASCADE"), nullable=False, index=True
     )
     title             = Column(String(500), nullable=False)
+    # HAROLD-IN-WRENCH-001 Phase 6 (locked Q2 option a): the actual
+    # multipart upload filename, preserved verbatim so HAROLD's
+    # /filename-precheck can stem-match against ASTRA's stored
+    # documents. Nullable because pre-Phase-6 rows may not have it
+    # (migration 0034 backfills from title where title looks like a
+    # filename; the rest stay NULL).
+    original_filename = Column(String(500), nullable=True, index=True)
     document_type     = Column(
         SQLEnum(
             SupplierDocumentType,

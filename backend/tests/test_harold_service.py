@@ -35,7 +35,7 @@ from app.services.harold import (
 from app.services.harold.fallback import ALLOWED_SYSTEM_CODES
 
 
-_BASE = "http://host.docker.internal:8031"
+_BASE = "http://host.docker.internal:8030"
 
 
 @pytest.fixture(autouse=True)
@@ -142,7 +142,7 @@ async def test_suggest_flag_off_uses_fallback(harold_off, seeded):
 @pytest.mark.asyncio
 @respx.mock
 async def test_suggest_flag_on_routes_to_harold(harold_on, seeded):
-    respx.get(f"{_BASE}/api/v1/wpn/suggest").mock(
+    respx.get(f"{_BASE}/api/tools/wardstone-harold/wpn/suggest").mock(
         return_value=httpx.Response(200, json={
             "suggested_wpn":  "WS-FH-P000007-A",
             "system_code":    "FH",
@@ -159,7 +159,7 @@ async def test_suggest_flag_on_routes_to_harold(harold_on, seeded):
 @pytest.mark.asyncio
 @respx.mock
 async def test_suggest_harold_down_falls_back(harold_on, seeded):
-    respx.get(f"{_BASE}/api/v1/wpn/suggest").mock(
+    respx.get(f"{_BASE}/api/tools/wardstone-harold/wpn/suggest").mock(
         side_effect=httpx.ConnectError("no route"),
     )
     r = await suggest_wpn_for_part(seeded, "bracket")
@@ -171,7 +171,7 @@ async def test_suggest_harold_down_falls_back(harold_on, seeded):
 @pytest.mark.asyncio
 @respx.mock
 async def test_suggest_unmapped_class_routes_to_mh(harold_on, seeded):
-    respx.get(f"{_BASE}/api/v1/wpn/suggest").mock(
+    respx.get(f"{_BASE}/api/tools/wardstone-harold/wpn/suggest").mock(
         return_value=httpx.Response(200, json={
             "suggested_wpn": "WS-MH-P000001-A",
             "system_code":    "MH",
@@ -196,7 +196,7 @@ async def test_validate_flag_off_raises(harold_off):
 @pytest.mark.asyncio
 @respx.mock
 async def test_validate_passthrough(harold_on):
-    respx.post(f"{_BASE}/api/v1/wpn/validate").mock(
+    respx.post(f"{_BASE}/api/tools/wardstone-harold/wpn/validate").mock(
         return_value=httpx.Response(200, json={
             "wpn": "WS-FH-P000001-A",
             "is_valid_format": True,
@@ -233,7 +233,7 @@ async def test_validate_filename_wpn_present_flag_off(harold_off):
 @pytest.mark.asyncio
 @respx.mock
 async def test_validate_filename_wpn_present_flag_on(harold_on):
-    respx.post(f"{_BASE}/api/v1/wpn/validate").mock(
+    respx.post(f"{_BASE}/api/tools/wardstone-harold/wpn/validate").mock(
         return_value=httpx.Response(200, json={
             "wpn": "WS-FH-P000001-A",
             "is_valid_format": True,
@@ -250,7 +250,7 @@ async def test_validate_filename_wpn_present_flag_on(harold_on):
 @pytest.mark.asyncio
 @respx.mock
 async def test_validate_filename_harold_down_returns_partial(harold_on):
-    respx.post(f"{_BASE}/api/v1/wpn/validate").mock(
+    respx.post(f"{_BASE}/api/tools/wardstone-harold/wpn/validate").mock(
         side_effect=httpx.ConnectError("nope"),
     )
     r = await validate_filename_wpn("WS-FH-P000001-A.STEP")
@@ -281,7 +281,7 @@ async def test_issue_branch1_caller_supplied_flag_off_marks_pending(
 async def test_issue_branch1_caller_supplied_harold_up(
     harold_on, db_session, supplier, test_user, seeded,
 ):
-    respx.post(f"{_BASE}/api/v1/wpn/issue-specific").mock(
+    respx.post(f"{_BASE}/api/tools/wardstone-harold/wpn/issue-specific").mock(
         return_value=httpx.Response(201, json={
             "id": 1, "wpn": "WS-FH-P000050-A", "system_code": "FH",
             "status": "active", "part_number_int": 50, "revision": "A",
@@ -303,7 +303,7 @@ async def test_issue_branch1_caller_supplied_duplicate_propagates(
 ):
     """HAROLD 409 must propagate as HaroldDuplicateError so the router
     can map it to HTTP 409."""
-    respx.post(f"{_BASE}/api/v1/wpn/issue-specific").mock(
+    respx.post(f"{_BASE}/api/tools/wardstone-harold/wpn/issue-specific").mock(
         return_value=httpx.Response(409, text="already issued"),
     )
     part = _make_part(db_session, supplier, test_user)
@@ -318,7 +318,7 @@ async def test_issue_branch1_caller_supplied_duplicate_propagates(
 async def test_issue_branch2_auto_allocate_harold_up(
     harold_on, db_session, supplier, test_user, seeded,
 ):
-    respx.post(f"{_BASE}/api/v1/wpn/issue").mock(
+    respx.post(f"{_BASE}/api/tools/wardstone-harold/wpn/issue").mock(
         return_value=httpx.Response(201, json={
             "id": 1, "wpn": "WS-FH-P000001-A", "system_code": "FH",
             "status": "active", "part_number_int": 1, "revision": "A",
@@ -336,7 +336,7 @@ async def test_issue_branch2_auto_allocate_harold_up(
 async def test_issue_branch3_auto_allocate_harold_down(
     harold_on, db_session, supplier, test_user, seeded,
 ):
-    respx.post(f"{_BASE}/api/v1/wpn/issue").mock(
+    respx.post(f"{_BASE}/api/tools/wardstone-harold/wpn/issue").mock(
         side_effect=httpx.ConnectError("nope"),
     )
     part = _make_part(db_session, supplier, test_user)
@@ -394,7 +394,7 @@ async def test_reconcile_not_pending_noop(
 async def test_reconcile_happy_path(
     harold_on, db_session, supplier, test_user, seeded,
 ):
-    respx.post(f"{_BASE}/api/v1/wpn/issue-specific").mock(
+    respx.post(f"{_BASE}/api/tools/wardstone-harold/wpn/issue-specific").mock(
         return_value=httpx.Response(201, json={
             "id": 1, "wpn": "WS-FH-P000005-A", "system_code": "FH",
             "status": "active", "part_number_int": 5, "revision": "A",
@@ -417,10 +417,10 @@ async def test_reconcile_collision_falls_through_to_new_wpn(
     harold_on, db_session, supplier, test_user, seeded,
 ):
     """409 from issue_specific → call issue → new WPN, flag cleared."""
-    respx.post(f"{_BASE}/api/v1/wpn/issue-specific").mock(
+    respx.post(f"{_BASE}/api/tools/wardstone-harold/wpn/issue-specific").mock(
         return_value=httpx.Response(409, text="already issued"),
     )
-    respx.post(f"{_BASE}/api/v1/wpn/issue").mock(
+    respx.post(f"{_BASE}/api/tools/wardstone-harold/wpn/issue").mock(
         return_value=httpx.Response(201, json={
             "id": 99, "wpn": "WS-FH-P000099-A", "system_code": "FH",
             "status": "active", "part_number_int": 99, "revision": "A",
@@ -444,7 +444,7 @@ async def test_reconcile_collision_falls_through_to_new_wpn(
 async def test_reconcile_harold_down_returns_unreconciled(
     harold_on, db_session, supplier, test_user, seeded,
 ):
-    respx.post(f"{_BASE}/api/v1/wpn/issue-specific").mock(
+    respx.post(f"{_BASE}/api/tools/wardstone-harold/wpn/issue-specific").mock(
         side_effect=httpx.ConnectError("nope"),
     )
     part = _make_part(
@@ -469,7 +469,7 @@ async def test_list_system_codes_flag_off_raises(harold_off):
 @pytest.mark.asyncio
 @respx.mock
 async def test_list_system_codes_passthrough(harold_on):
-    respx.get(f"{_BASE}/api/v1/system-codes").mock(
+    respx.get(f"{_BASE}/api/tools/wardstone-harold/system-codes").mock(
         return_value=httpx.Response(200, json={
             "total": 21,
             "codes": [{"code": "FH", "category": "library-category",

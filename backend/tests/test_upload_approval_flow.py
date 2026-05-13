@@ -40,7 +40,7 @@ from app.models.catalog import (
 from app.services.harold.fallback import ALLOWED_SYSTEM_CODES
 
 
-_BASE = "http://host.docker.internal:8031"
+_BASE = "http://host.docker.internal:8030"
 
 
 # Same synthetic McMaster STEP body used by test_step_upload_flow.py,
@@ -163,7 +163,7 @@ def test_upload_flag_off_no_wpn_metadata(
 def test_upload_flag_on_harold_up_stashes_proposed_wpn(
     client, auth_headers, db_session, test_user, harold_on, seeded,
 ):
-    respx.get(f"{_BASE}/api/v1/wpn/suggest").mock(
+    respx.get(f"{_BASE}/api/tools/wardstone-harold/wpn/suggest").mock(
         return_value=httpx.Response(200, json={
             "suggested_wpn":  "WS-FH-P000003-A",
             "system_code":    "FH",
@@ -193,7 +193,7 @@ def test_upload_flag_on_harold_up_stashes_proposed_wpn(
 def test_upload_flag_on_harold_down_marks_fallback(
     client, auth_headers, db_session, test_user, harold_on, seeded,
 ):
-    respx.get(f"{_BASE}/api/v1/wpn/suggest").mock(
+    respx.get(f"{_BASE}/api/tools/wardstone-harold/wpn/suggest").mock(
         side_effect=httpx.ConnectError("nope"),
     )
     r = _upload_mcmaster(client, auth_headers)
@@ -217,7 +217,7 @@ def test_upload_filename_wpn_already_issued_adds_warning(
 ):
     """When the filename itself looks like a Wardstone WPN AND that
     WPN is already in HAROLD's ledger, the warning list grows."""
-    respx.get(f"{_BASE}/api/v1/wpn/suggest").mock(
+    respx.get(f"{_BASE}/api/tools/wardstone-harold/wpn/suggest").mock(
         return_value=httpx.Response(200, json={
             "suggested_wpn":  "WS-FH-P000003-A",
             "system_code":    "FH",
@@ -225,7 +225,7 @@ def test_upload_filename_wpn_already_issued_adds_warning(
             "existing_count": 2,
         }),
     )
-    respx.post(f"{_BASE}/api/v1/wpn/validate").mock(
+    respx.post(f"{_BASE}/api/tools/wardstone-harold/wpn/validate").mock(
         return_value=httpx.Response(200, json={
             "wpn": "WS-FH-P000001-A",
             "is_valid_format": True,
@@ -287,7 +287,7 @@ def test_approval_flag_off_leaves_internal_pn_null(
 def test_approval_flag_on_harold_up_auto_allocate(
     client, auth_headers, db_session, test_user, harold_on, seeded,
 ):
-    respx.get(f"{_BASE}/api/v1/wpn/suggest").mock(
+    respx.get(f"{_BASE}/api/tools/wardstone-harold/wpn/suggest").mock(
         return_value=httpx.Response(200, json={
             "suggested_wpn":  "WS-FH-P000001-A",
             "system_code":    "FH",
@@ -295,7 +295,7 @@ def test_approval_flag_on_harold_up_auto_allocate(
             "existing_count": 0,
         }),
     )
-    respx.post(f"{_BASE}/api/v1/wpn/issue").mock(
+    respx.post(f"{_BASE}/api/tools/wardstone-harold/wpn/issue").mock(
         return_value=httpx.Response(201, json={
             "id": 1, "wpn": "WS-FH-P000001-A", "system_code": "FH",
             "part_number_int": 1, "revision": "A", "status": "active",
@@ -322,7 +322,7 @@ def test_approval_flag_on_harold_down_uses_fallback(
 ):
     """HAROLD up for suggest at upload time, then down by approval
     time → fallback path; wpn_pending_sync=True."""
-    respx.get(f"{_BASE}/api/v1/wpn/suggest").mock(
+    respx.get(f"{_BASE}/api/tools/wardstone-harold/wpn/suggest").mock(
         return_value=httpx.Response(200, json={
             "suggested_wpn":  "WS-FH-P000001-A",
             "system_code":    "FH",
@@ -330,7 +330,7 @@ def test_approval_flag_on_harold_down_uses_fallback(
             "existing_count": 0,
         }),
     )
-    respx.post(f"{_BASE}/api/v1/wpn/issue").mock(
+    respx.post(f"{_BASE}/api/tools/wardstone-harold/wpn/issue").mock(
         side_effect=httpx.ConnectError("nope"),
     )
     r = _upload_mcmaster(client, auth_headers)
@@ -356,7 +356,7 @@ def test_approval_user_supplied_duplicate_returns_409(
     """If the operator types a WPN that's already in HAROLD's ledger,
     HAROLD returns 409 → the router rejects the approval with 409
     and rolls back the whole transaction."""
-    respx.get(f"{_BASE}/api/v1/wpn/suggest").mock(
+    respx.get(f"{_BASE}/api/tools/wardstone-harold/wpn/suggest").mock(
         return_value=httpx.Response(200, json={
             "suggested_wpn":  "WS-FH-P000001-A",
             "system_code":    "FH",
@@ -364,7 +364,7 @@ def test_approval_user_supplied_duplicate_returns_409(
             "existing_count": 0,
         }),
     )
-    respx.post(f"{_BASE}/api/v1/wpn/issue-specific").mock(
+    respx.post(f"{_BASE}/api/tools/wardstone-harold/wpn/issue-specific").mock(
         return_value=httpx.Response(409, text="already issued"),
     )
 
@@ -406,7 +406,7 @@ def test_approval_user_supplied_duplicate_returns_409(
 def test_approval_user_supplied_happy_path(
     client, auth_headers, db_session, test_user, harold_on, seeded,
 ):
-    respx.get(f"{_BASE}/api/v1/wpn/suggest").mock(
+    respx.get(f"{_BASE}/api/tools/wardstone-harold/wpn/suggest").mock(
         return_value=httpx.Response(200, json={
             "suggested_wpn":  "WS-FH-P000001-A",
             "system_code":    "FH",
@@ -414,7 +414,7 @@ def test_approval_user_supplied_happy_path(
             "existing_count": 0,
         }),
     )
-    respx.post(f"{_BASE}/api/v1/wpn/issue-specific").mock(
+    respx.post(f"{_BASE}/api/tools/wardstone-harold/wpn/issue-specific").mock(
         return_value=httpx.Response(201, json={
             "id": 1, "wpn": "WS-FH-P000050-A", "system_code": "FH",
             "part_number_int": 50, "revision": "A", "status": "active",

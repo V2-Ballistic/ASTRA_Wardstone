@@ -22,7 +22,7 @@ from app.models.catalog import (
 from app.services.harold.fallback import ALLOWED_SYSTEM_CODES
 
 
-_BASE = "http://host.docker.internal:8031"
+_BASE = "http://host.docker.internal:8030"
 
 
 @pytest.fixture(autouse=True)
@@ -131,7 +131,7 @@ def test_system_codes_flag_off_returns_unavailable(client, auth_headers, harold_
 
 @respx.mock
 def test_system_codes_happy_path(client, auth_headers, harold_on):
-    respx.get(f"{_BASE}/api/v1/system-codes").mock(
+    respx.get(f"{_BASE}/api/tools/wardstone-harold/system-codes").mock(
         return_value=httpx.Response(200, json={
             "total": 21,
             "codes": [
@@ -152,7 +152,7 @@ def test_system_codes_happy_path(client, auth_headers, harold_on):
 
 @respx.mock
 def test_system_codes_harold_500(client, auth_headers, harold_on):
-    respx.get(f"{_BASE}/api/v1/system-codes").mock(
+    respx.get(f"{_BASE}/api/tools/wardstone-harold/system-codes").mock(
         return_value=httpx.Response(500, text="boom"),
     )
     r = client.get("/api/v1/harold/system-codes", headers=auth_headers)
@@ -180,7 +180,7 @@ def test_suggest_flag_off_uses_fallback(client, auth_headers, harold_off, seeded
 
 @respx.mock
 def test_suggest_flag_on_routes_to_harold(client, auth_headers, harold_on, seeded):
-    respx.get(f"{_BASE}/api/v1/wpn/suggest").mock(
+    respx.get(f"{_BASE}/api/tools/wardstone-harold/wpn/suggest").mock(
         return_value=httpx.Response(200, json={
             "suggested_wpn":  "WS-FH-P000042-A",
             "system_code":    "FH",
@@ -201,7 +201,7 @@ def test_suggest_flag_on_routes_to_harold(client, auth_headers, harold_on, seede
 
 @respx.mock
 def test_suggest_harold_down_falls_back(client, auth_headers, harold_on, seeded):
-    respx.get(f"{_BASE}/api/v1/wpn/suggest").mock(
+    respx.get(f"{_BASE}/api/tools/wardstone-harold/wpn/suggest").mock(
         side_effect=httpx.ConnectError("no route"),
     )
     r = client.post(
@@ -237,7 +237,7 @@ def test_validate_flag_off_returns_unavailable(client, auth_headers, harold_off)
 
 @respx.mock
 def test_validate_happy_path(client, auth_headers, harold_on):
-    respx.post(f"{_BASE}/api/v1/wpn/validate").mock(
+    respx.post(f"{_BASE}/api/tools/wardstone-harold/wpn/validate").mock(
         return_value=httpx.Response(200, json={
             "wpn": "WS-FH-P000001-A",
             "is_valid_format": True,
@@ -262,7 +262,7 @@ def test_validate_happy_path(client, auth_headers, harold_on):
 def test_validate_malformed_returns_body(client, auth_headers, harold_on):
     """is_valid_format=false is a normal result, NOT the unavailable
     branch."""
-    respx.post(f"{_BASE}/api/v1/wpn/validate").mock(
+    respx.post(f"{_BASE}/api/tools/wardstone-harold/wpn/validate").mock(
         return_value=httpx.Response(200, json={
             "wpn": "ws-fh-p000001-a",
             "is_valid_format": False,
@@ -285,7 +285,7 @@ def test_validate_malformed_returns_body(client, auth_headers, harold_on):
 
 @respx.mock
 def test_validate_harold_down_unavailable_envelope(client, auth_headers, harold_on):
-    respx.post(f"{_BASE}/api/v1/wpn/validate").mock(
+    respx.post(f"{_BASE}/api/tools/wardstone-harold/wpn/validate").mock(
         side_effect=httpx.ConnectError("no route"),
     )
     r = client.post(
@@ -317,7 +317,7 @@ def test_validate_filename_mcmaster_style(client, auth_headers, harold_off):
 
 @respx.mock
 def test_validate_filename_with_wpn_flag_on(client, auth_headers, harold_on):
-    respx.post(f"{_BASE}/api/v1/wpn/validate").mock(
+    respx.post(f"{_BASE}/api/tools/wardstone-harold/wpn/validate").mock(
         return_value=httpx.Response(200, json={
             "wpn": "WS-FH-P000001-A",
             "is_valid_format": True,
@@ -362,7 +362,7 @@ def test_reconcile_happy_path(
         wpn_pending_sync=True,
     )
 
-    respx.post(f"{_BASE}/api/v1/wpn/issue-specific").mock(
+    respx.post(f"{_BASE}/api/tools/wardstone-harold/wpn/issue-specific").mock(
         return_value=httpx.Response(201, json={
             "id": 1, "wpn": "WS-FH-P000005-A", "system_code": "FH",
             "part_number_int": 5, "revision": "A", "status": "active",
@@ -390,10 +390,10 @@ def test_reconcile_collision_falls_through(
         wpn_pending_sync=True,
     )
 
-    respx.post(f"{_BASE}/api/v1/wpn/issue-specific").mock(
+    respx.post(f"{_BASE}/api/tools/wardstone-harold/wpn/issue-specific").mock(
         return_value=httpx.Response(409, text="already issued"),
     )
-    respx.post(f"{_BASE}/api/v1/wpn/issue").mock(
+    respx.post(f"{_BASE}/api/tools/wardstone-harold/wpn/issue").mock(
         return_value=httpx.Response(201, json={
             "id": 99, "wpn": "WS-FH-P000099-A", "system_code": "FH",
             "part_number_int": 99, "revision": "A", "status": "active",
@@ -420,7 +420,7 @@ def test_reconcile_harold_down(
         internal_part_number="WS-FH-P000005-A",
         wpn_pending_sync=True,
     )
-    respx.post(f"{_BASE}/api/v1/wpn/issue-specific").mock(
+    respx.post(f"{_BASE}/api/tools/wardstone-harold/wpn/issue-specific").mock(
         side_effect=httpx.ConnectError("nope"),
     )
     r = client.post(

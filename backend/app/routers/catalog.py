@@ -96,6 +96,8 @@ from app.models.interface import Unit
 from app.models.parts_library import MechanicalJoint, ProjectPart
 from app.schemas.catalog import (
     CatalogConnectorResponse,
+    CatalogDocumentMetadata,           # HAROLD-IN-WRENCH-001 Phase 6
+    CatalogDocumentsResponse,          # HAROLD-IN-WRENCH-001 Phase 6
     CatalogPartCreate,
     CatalogPartPlacementRequest,
     CatalogPartResponse,
@@ -596,6 +598,9 @@ async def upload_supplier_document(
     doc = SupplierDocument(
         supplier_id=supplier_id,
         title=title,
+        # HAROLD-IN-WRENCH-001 Phase 6: persist the multipart filename
+        # so HAROLD's filename-precheck can stem-match.
+        original_filename=original_name,
         document_type=document_type,
         revision=revision,
         document_number=document_number,
@@ -622,6 +627,116 @@ async def upload_supplier_document(
         request=request,
     )
     return SupplierDocumentResponse.model_validate(doc)
+
+
+@router.get("/documents", response_model=CatalogDocumentsResponse)
+def list_documents(
+    supplier_id: Optional[int] = Query(None),
+    document_type: Optional[SupplierDocumentType] = Query(None),
+    filename_stem: Optional[str] = Query(
+        None,
+        description=(
+            "Leading-anchored ILIKE match against original_filename "
+            "(falls back to title for pre-Phase-6 rows where "
+            "original_filename was not yet captured)."
+        ),
+    ),
+    extraction_status: Optional[ExtractionStatus] = Query(None),
+    since: Optional[datetime] = Query(
+        None, description="Only documents with uploaded_at >= this timestamp.",
+    ),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+):
+    """HAROLD-IN-WRENCH-001 Phase 6 (AD-7). Peer-service-friendly list
+    of supplier documents joined to their catalog_part metadata, used
+    by HAROLD's filename precheck endpoint.
+
+    Unauthenticated for LAN-only peer consumption — matches the
+    convention established by ``/api/v1/catalog/designators`` (the
+    earlier HAROLD-INTEGRATION-002 endpoint). A future TDD will add a
+    shared-token header when HAROLD-in-WRENCH ships to non-LAN
+    deployments.
+
+    Pagination matches the rest of the catalog router (skip / limit
+    default 50, cap 200).
+    """
+    q = db.query(SupplierDocument)
+    if supplier_id is not None:
+        q = q.filter(SupplierDocument.supplier_id == supplier_id)
+    if document_type is not None:
+        q = q.filter(SupplierDocument.document_type == document_type)
+    if filename_stem:
+        # ILIKE leading-anchored. Match against original_filename if
+        # present, fall back to title for pre-Phase-6 rows.
+        pat = f"{filename_stem}%"
+        q = q.filter(
+            or_(
+                SupplierDocument.original_filename.ilike(pat),
+                and_(
+                    SupplierDocument.original_filename.is_(None),
+                    SupplierDocument.title.ilike(pat),
+                ),
+            )
+        )
+    if extraction_status is not None:
+        q = q.filter(SupplierDocument.extraction_status == extraction_status)
+    if since is not None:
+        q = q.filter(SupplierDocument.uploaded_at >= since)
+
+    total = q.count()
+    rows = (
+        q.order_by(SupplierDocument.uploaded_at.desc())
+        .offset(skip).limit(limit).all()
+    )
+
+    # Join each document to its (most recent) live catalog_part for
+    # the WPN context HAROLD wants. Single batched lookup so we don't
+    # N+1 the catalog_part query inside the loop.
+    doc_ids = [d.id for d in rows]
+    part_by_doc_id: Dict[int, CatalogPart] = {}
+    if doc_ids:
+        part_rows = (
+            db.query(CatalogPart)
+            .filter(
+                CatalogPart.source_document_id.in_(doc_ids),
+                CatalogPart.deleted_at.is_(None),
+            )
+            .all()
+        )
+        for p in part_rows:
+            # If multiple live parts share a source_document_id, prefer
+            # the lowest id (oldest) — matches the supplier_doc → part
+            # association order the rest of the catalog uses.
+            existing = part_by_doc_id.get(p.source_document_id)
+            if existing is None or p.id < existing.id:
+                part_by_doc_id[p.source_document_id] = p
+
+    documents = [
+        CatalogDocumentMetadata(
+            id=d.id,
+            title=d.title,
+            original_filename=d.original_filename,
+            document_type=d.document_type,
+            file_path=d.file_path,
+            mime_type=d.mime_type,
+            sha256=d.sha256,
+            supplier_id=d.supplier_id,
+            supplier_document_id=d.id,
+            catalog_part_id=(
+                part_by_doc_id[d.id].id if d.id in part_by_doc_id else None
+            ),
+            internal_part_number=(
+                part_by_doc_id[d.id].internal_part_number
+                if d.id in part_by_doc_id else None
+            ),
+            extraction_status=d.extraction_status,
+            uploaded_at=d.uploaded_at,
+        )
+        for d in rows
+    ]
+    return CatalogDocumentsResponse(documents=documents, total=total)
 
 
 @router.get("/documents/{doc_id}", response_model=SupplierDocumentResponse)
@@ -1995,6 +2110,10 @@ async def upload_step_file(
     doc = SupplierDocument(
         supplier_id=supplier.id,
         title=original_filename,
+        # HAROLD-IN-WRENCH-001 Phase 6: distinct column so HAROLD's
+        # filename precheck can stem-match. STEP path always has a
+        # real filename in hand.
+        original_filename=original_filename,
         document_type=SupplierDocumentType.OTHER,
         file_path=str(stored_path),
         file_size_bytes=len(content),

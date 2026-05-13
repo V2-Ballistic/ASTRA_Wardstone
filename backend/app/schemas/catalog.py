@@ -129,6 +129,11 @@ class SupplierDocumentResponse(BaseModel):
     id: int
     supplier_id: int
     title: str
+    # HAROLD-IN-WRENCH-001 Phase 6: actual multipart upload filename.
+    # Nullable for pre-Phase-6 rows where the upload handler didn't
+    # capture it (migration 0034 backfills where it can; the rest
+    # stay None).
+    original_filename: Optional[str] = None
     document_type: SupplierDocumentType
     revision: Optional[str] = None
     document_number: Optional[str] = None
@@ -146,6 +151,38 @@ class SupplierDocumentResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ══════════════════════════════════════════════════════════════
+#  CatalogDocuments listing — HAROLD-IN-WRENCH-001 Phase 6
+# ══════════════════════════════════════════════════════════════
+
+class CatalogDocumentMetadata(BaseModel):
+    """Lightweight per-document row returned by
+    ``GET /api/v1/catalog/documents``. Joins each supplier_document
+    with the catalog_part it produced (when one exists) so HAROLD's
+    filename precheck can return WPN context alongside the
+    collision verdict in a single round-trip.
+    """
+    id: int
+    title: str
+    original_filename: Optional[str] = None
+    document_type: SupplierDocumentType
+    file_path: str
+    mime_type: str
+    sha256: str
+    supplier_id: int
+    # Mirror of `id` — preserved for the HAROLD-TDD payload shape.
+    supplier_document_id: int
+    catalog_part_id: Optional[int] = None
+    internal_part_number: Optional[str] = None
+    extraction_status: ExtractionStatus
+    uploaded_at: datetime
+
+
+class CatalogDocumentsResponse(BaseModel):
+    documents: List[CatalogDocumentMetadata]
+    total: int
 
 
 # ══════════════════════════════════════════════════════════════
