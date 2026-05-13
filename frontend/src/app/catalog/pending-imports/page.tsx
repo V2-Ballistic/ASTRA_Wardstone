@@ -5,17 +5,20 @@
  * ============================================
  * File: frontend/src/app/catalog/pending-imports/page.tsx
  *
- * CLEANUP-002 Phase 3: this list page exists at /catalog/pending-imports
+ * CLEANUP-002 Phase 3 created this list page at /catalog/pending-imports
  * so the parts-library/pending-imports → catalog/pending-imports 308
- * redirect lands somewhere real. Phase 0 found that /catalog only
- * had /pending-imports/[id]/page.tsx — no list. Ported minimally
- * from the legacy parts-library list, but reads the catalog API
- * (PendingCatalogImport rows) instead of the legacy parts-library API.
+ * redirect lands somewhere real.
+ *
+ * CLEANUP-002 Phase 4 (AD-6) adds an inline Delete action per row.
+ * Hard-deletes the pending import; the linked supplier_document is
+ * cascade-deleted iff no other live reference remains (server-side
+ * decision; the response carries `supplier_document_deleted` for the
+ * toast).
  */
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { AlertTriangle, Loader2 } from 'lucide-react';
+import { AlertTriangle, Loader2, Trash2 } from 'lucide-react';
 
 import { catalogAPI } from '@/lib/catalog-api';
 import { formatApiError } from '@/lib/errors';
@@ -23,13 +26,17 @@ import {
   type PendingCatalogImport,
   PENDING_IMPORT_STATUS_LABELS,
 } from '@/lib/catalog-types';
+import ConfirmDialog from '@/components/ConfirmDialog';
 
 export default function CatalogPendingImportsListPage() {
   const [imports, setImports] = useState<PendingCatalogImport[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<PendingCatalogImport | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [flash, setFlash] = useState<string | null>(null);
 
-  useEffect(() => {
+  const refresh = useCallback(() => {
     setLoading(true);
     catalogAPI
       .listPendingImports()
@@ -42,6 +49,28 @@ export default function CatalogPendingImportsListPage() {
       })
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const onConfirmDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    setError(null);
+    try {
+      const r = await catalogAPI.deletePendingImport(deleteTarget.id);
+      setDeleteTarget(null);
+      setFlash(
+        r.data.supplier_document_deleted
+          ? `Deleted pending import #${r.data.id} and its supplier document (no other references).`
+          : `Deleted pending import #${r.data.id}.`,
+      );
+      refresh();
+    } catch (err) {
+      setError(formatApiError(err, 'Failed to delete pending import'));
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   return (
     <div className="container mx-auto p-6">
@@ -61,6 +90,12 @@ export default function CatalogPendingImportsListPage() {
         <div className="flex items-center gap-2 text-sm text-slate-400">
           <Loader2 className="h-4 w-4 animate-spin" />
           Loading…
+        </div>
+      )}
+
+      {flash && (
+        <div role="status" className="mb-3 rounded border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">
+          {flash}
         </div>
       )}
 
@@ -106,12 +141,22 @@ export default function CatalogPendingImportsListPage() {
                       {new Date(p.created_at).toLocaleString()}
                     </td>
                     <td className="px-3 py-2 text-right">
-                      <Link
-                        href={`/catalog/pending-imports/${p.id}`}
-                        className="text-xs text-blue-400 hover:underline"
-                      >
-                        Review →
-                      </Link>
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          type="button"
+                          aria-label={`Delete pending import ${p.id}`}
+                          onClick={() => setDeleteTarget(p)}
+                          className="rounded p-1 text-slate-500 hover:bg-red-500/10 hover:text-red-400"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                        </button>
+                        <Link
+                          href={`/catalog/pending-imports/${p.id}`}
+                          className="text-xs text-blue-400 hover:underline"
+                        >
+                          Review →
+                        </Link>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -120,6 +165,20 @@ export default function CatalogPendingImportsListPage() {
           </table>
         </div>
       )}
+
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title={`Delete pending import #${deleteTarget?.id ?? ''}?`}
+        message={
+          deleteTarget
+            ? 'Hard-delete this pending import. The linked supplier_document will also be removed if no other pending import or live catalog_part references it. This action cannot be undone.'
+            : ''
+        }
+        confirmLabel={deleting ? 'Deleting…' : 'Delete'}
+        destructive
+        onCancel={() => { if (!deleting) setDeleteTarget(null); }}
+        onConfirm={onConfirmDelete}
+      />
     </div>
   );
 }

@@ -14,8 +14,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
   ArrowLeft, CheckCircle2, ChevronDown, Download, Loader2, ShieldCheck,
-  XCircle, Hash, AlertTriangle,
+  XCircle, Hash, AlertTriangle, Trash2,
 } from 'lucide-react';
+import ConfirmDialog from '@/components/ConfirmDialog';
 import clsx from 'clsx';
 
 import { catalogAPI } from '@/lib/catalog-api';
@@ -86,10 +87,11 @@ export default function PendingImportReviewPage() {
   const [edits, setEdits] = useState<Record<string, unknown>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [busy, setBusy] = useState<'approve' | 'reject' | 'save' | null>(null);
+  const [busy, setBusy] = useState<'approve' | 'reject' | 'save' | 'delete' | null>(null);
   const [rejectOpen, setRejectOpen] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
   const [warningsOpen, setWarningsOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
 
   // ── WPN section state ──
   // ``wpnInput`` is what the operator typed (drives extracted_data.user_supplied_wpn).
@@ -292,6 +294,24 @@ export default function PendingImportReviewPage() {
     }
   };
 
+  // CLEANUP-002 Phase 4 (AD-6) — hard-delete the pending import.
+  // Distinct from Reject: Reject keeps the row at status=rejected for
+  // audit; Delete removes it entirely and cascade-removes the linked
+  // supplier_document iff no other live reference holds it.
+  const onDelete = async () => {
+    if (!pendingImport) return;
+    setBusy('delete');
+    setError('');
+    try {
+      await catalogAPI.deletePendingImport(pendingImport.id);
+      router.push('/catalog/pending-imports');
+    } catch (e) {
+      setError(formatApiError(e, 'Delete failed'));
+      setBusy(null);
+      setDeleteOpen(false);
+    }
+  };
+
   // ── Loading / error fallback (after hooks) ──
   if (loading) {
     return (
@@ -359,6 +379,21 @@ export default function PendingImportReviewPage() {
         </div>
 
         <div className="flex items-center gap-2">
+          {/* CLEANUP-002 Phase 4 (AD-6) — hard-delete is available
+              regardless of status (pending/rejected/etc.). Audit row
+              is emitted server-side. */}
+          <button
+            type="button"
+            onClick={() => setDeleteOpen(true)}
+            disabled={busy !== null}
+            title="Hard-delete this pending import"
+            className="flex items-center gap-1.5 rounded-lg border border-slate-500/30 bg-slate-500/10 px-3 py-2 text-xs font-semibold text-slate-300 hover:bg-red-500/20 hover:text-red-300 disabled:opacity-40"
+          >
+            {busy === 'delete'
+              ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+              : <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />}
+            Delete
+          </button>
           <button
             type="button"
             onClick={() => setRejectOpen(true)}
@@ -659,6 +694,17 @@ export default function PendingImportReviewPage() {
           )}
         </div>
       )}
+
+      {/* ── Delete confirmation (CLEANUP-002 Phase 4) ── */}
+      <ConfirmDialog
+        open={deleteOpen}
+        title={`Hard-delete pending import #${pendingImport.id}?`}
+        message="The row is removed permanently. The linked supplier_document is also deleted if no other pending import or live catalog_part references it. This action cannot be undone."
+        confirmLabel={busy === 'delete' ? 'Deleting…' : 'Delete'}
+        destructive
+        onCancel={() => { if (busy !== 'delete') setDeleteOpen(false); }}
+        onConfirm={onDelete}
+      />
 
       {/* ── Reject modal ── */}
       {rejectOpen && (

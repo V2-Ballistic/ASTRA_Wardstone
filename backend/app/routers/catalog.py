@@ -89,6 +89,11 @@ from app.models.catalog import (
     SupplierDocumentType,
 )
 from app.models.interface import Unit
+# CLEANUP-002 Phase 4 (AD-7 + AD-8): the catalog_part usage check
+# spans project_parts (direct) and mechanical_joints (transitive via
+# project_parts.part_a_id / part_b_id, per Phase 0). Both live in the
+# legacy parts_library models module.
+from app.models.parts_library import MechanicalJoint, ProjectPart
 from app.schemas.catalog import (
     CatalogConnectorResponse,
     CatalogPartCreate,
@@ -96,6 +101,8 @@ from app.schemas.catalog import (
     CatalogPartResponse,
     CatalogPartSummary,
     CatalogPartUpdate,
+    CatalogPartUsageProjectEntry,
+    CatalogPartUsageReport,
     CatalogPartUsageRow,
     CatalogPinResponse,
     IcdExtractionResultSchema,
@@ -221,6 +228,101 @@ def _get_catalog_part_or_404(db: Session, part_id: int) -> CatalogPart:
             detail=f"CatalogPart {part_id} not found",
         )
     return p
+
+
+def _build_catalog_part_usage_report(
+    db: Session, part: CatalogPart,
+) -> CatalogPartUsageReport:
+    """CLEANUP-002 Phase 4 (AD-7 + AD-8). Usage report across the
+    three "downstream consumer" categories that should block delete:
+
+        project_parts.catalog_part_id              (direct, BOM lines)
+        mechanical_joints.part_a_id / part_b_id    (transitive via project_parts)
+        units.catalog_part_id                      (direct, project placements)
+
+    ``deletable`` is true iff every count is zero.
+
+    Phase 0's FK sweep also flagged catalog_connectors.catalog_part_id
+    and catalog_parts.parent_part_id (variant children). Both were
+    excluded after writing the first cut against the existing test
+    suite: connectors are *owned* by the part (the part's own pin
+    definition) and cascade with it on hard-delete; parent_part_id
+    is ``ON DELETE SET NULL`` so it doesn't block at the DB level
+    and variant children survive parent deletion with the parent
+    link nulled. Counting either as "usage" 409'd the pre-Phase-4
+    test that creates a part with connectors and immediately deletes
+    it, which is a legitimate flow.
+
+    Pending-import committed FKs and assembly_components are also
+    excluded — Phase 0 confirmed the former is ON DELETE SET NULL
+    and the latter table doesn't exist.
+    """
+    pp_rows = (
+        db.query(ProjectPart.id, ProjectPart.project_id)
+        .filter(ProjectPart.catalog_part_id == part.id)
+        .all()
+    )
+    pp_ids = [r[0] for r in pp_rows]
+
+    # Mechanical joints reach catalog_parts only through project_parts;
+    # mechanical_joints itself has no deleted_at column (Phase 0).
+    joint_rows: List = []
+    if pp_ids:
+        joint_rows = (
+            db.query(MechanicalJoint.id, MechanicalJoint.project_id)
+            .filter(
+                or_(
+                    MechanicalJoint.part_a_id.in_(pp_ids),
+                    MechanicalJoint.part_b_id.in_(pp_ids),
+                )
+            )
+            .all()
+        )
+
+    unit_rows = (
+        db.query(Unit.id, Unit.project_id)
+        .filter(Unit.catalog_part_id == part.id)
+        .all()
+    )
+
+    # Aggregate the project-scoped categories. A project may have zero
+    # of any one category but still show up because it has the others.
+    project_aggregate: Dict[int, CatalogPartUsageProjectEntry] = {}
+
+    def _ensure_entry(proj_id: int) -> CatalogPartUsageProjectEntry:
+        if proj_id not in project_aggregate:
+            proj = (
+                db.query(Project.code, Project.name)
+                .filter(Project.id == proj_id)
+                .first()
+            )
+            project_aggregate[proj_id] = CatalogPartUsageProjectEntry(
+                project_id=proj_id,
+                project_name=proj[1] if proj else None,
+                project_code=proj[0] if proj else None,
+            )
+        return project_aggregate[proj_id]
+
+    for _pp_id, proj_id in pp_rows:
+        _ensure_entry(proj_id).project_part_count += 1
+    for _j_id, proj_id in joint_rows:
+        _ensure_entry(proj_id).mechanical_joint_count += 1
+    for _u_id, proj_id in unit_rows:
+        _ensure_entry(proj_id).unit_count += 1
+
+    total = len(pp_rows) + len(joint_rows) + len(unit_rows)
+
+    return CatalogPartUsageReport(
+        part_id=part.id,
+        part_number=part.part_number,
+        internal_part_number=part.internal_part_number,
+        total_references=total,
+        deletable=total == 0,
+        projects=sorted(
+            project_aggregate.values(),
+            key=lambda e: (e.project_code or "", e.project_id),
+        ),
+    )
 
 
 def _supplier_response(db: Session, s: Supplier) -> SupplierResponse:
@@ -740,35 +842,97 @@ def delete_catalog_part(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """CLEANUP-002 Phase 4 (AD-7).
+
+    Default path (no admin_force): soft-delete when no downstream
+    refs; structured 409 with the full usage report when refs exist
+    (UI renders a project list + the reason). Hard-block — the user
+    removes the usage first, then retries.
+
+    Legacy ``?admin_force=true`` path: unchanged from pre-cleanup
+    behavior. Hard-deletes the row and lets the FK constraints
+    cascade or null-out as configured. Kept because existing tests
+    + admin tooling depend on it (rule #3 forbids adding a *new*
+    cascade override; this one already exists).
+    """
     _require_admin(current_user)
     p = _get_catalog_part_or_404(db, part_id)
-    in_use = placement_svc.is_part_in_use(db, part_id)
-    usage_count = (
-        db.query(func.count(Unit.id))
-        .filter(Unit.catalog_part_id == p.id)
-        .scalar()
-        or 0
-    )
-    if in_use and not admin_force:
+
+    if admin_force:
+        # Legacy hard-delete escape. Pre-CLEANUP-002 behaviour: rows
+        # with units pointing here get unlinked via the FK's SET NULL;
+        # rows with project_parts pointing here fail RESTRICT and
+        # surface a 500 to the caller (the existing behaviour).
+        usage_count = (
+            db.query(func.count(Unit.id))
+            .filter(Unit.catalog_part_id == p.id)
+            .scalar()
+            or 0
+        )
+        _audit(
+            db, "catalog_part.deleted", "catalog_part", p.id, current_user.id,
+            {
+                "part_number": p.part_number,
+                "supplier_id": p.supplier_id,
+                "units_unlinked": usage_count,
+                "admin_force": True,
+            },
+            request=request,
+        )
+        db.delete(p)
+        db.commit()
+        return {
+            "status": "deleted", "id": part_id,
+            "units_unlinked": usage_count, "admin_force": True,
+        }
+
+    # Already soft-deleted — surface a 404 so callers don't double-act.
+    if p.deleted_at is not None:
         raise HTTPException(
-            409,
-            f"CatalogPart is placed in {usage_count} project unit(s). "
-            "Pass ?admin_force=true to delete anyway (project units will have catalog_part_id set to NULL).",
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"CatalogPart {part_id} not found",
         )
 
+    usage = _build_catalog_part_usage_report(db, p)
+    if not usage.deletable:
+        _audit(
+            db, "catalog.part.deletion_blocked", "catalog_part", p.id,
+            current_user.id,
+            {
+                "part_number": p.part_number,
+                "total_references": usage.total_references,
+                "project_count": len(usage.projects),
+            },
+            request=request,
+        )
+        db.commit()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "part_in_use",
+                "message": (
+                    f"Cannot delete part {p.part_number}. It is "
+                    f"referenced by {usage.total_references} "
+                    f"{'entity' if usage.total_references == 1 else 'entities'} "
+                    f"across {len(usage.projects)} project(s). Remove "
+                    "those references first."
+                ),
+                "usage": usage.model_dump(),
+            },
+        )
+
+    p.deleted_at = datetime.utcnow()
     _audit(
-        db, "catalog_part.deleted", "catalog_part", p.id, current_user.id,
+        db, "catalog.part.deleted", "catalog_part", p.id, current_user.id,
         {
             "part_number": p.part_number,
+            "internal_part_number": p.internal_part_number,
             "supplier_id": p.supplier_id,
-            "units_unlinked": usage_count,
-            "admin_force": admin_force,
         },
         request=request,
     )
-    db.delete(p)
     db.commit()
-    return {"status": "deleted", "id": part_id, "units_unlinked": usage_count}
+    return {"status": "deleted", "id": part_id, "soft_delete": True}
 
 
 @router.get("/parts/{part_id}/usage", response_model=List[CatalogPartUsageRow])
@@ -800,6 +964,23 @@ def list_catalog_part_usage(
             )
         )
     return out
+
+
+@router.get(
+    "/parts/{part_id}/usage-report", response_model=CatalogPartUsageReport,
+)
+def get_catalog_part_usage_report(
+    part_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """CLEANUP-002 Phase 4 (AD-8). Returns the structured usage
+    report the frontend renders as a "Used in N projects" badge and
+    consults to decide whether the Delete button is live. Mirrors
+    the report the DELETE handler computes internally before
+    blocking with 409, so the UI never lies about deletability."""
+    p = _get_catalog_part_or_404(db, part_id)
+    return _build_catalog_part_usage_report(db, p)
 
 
 @router.post("/parts/{part_id}/place", response_model=UnitResponse, status_code=201)
@@ -1055,6 +1236,84 @@ def patch_pending_import(
         request=request,
     )
     return PendingCatalogImportResponse.model_validate(row)
+
+
+@router.delete("/pending-imports/{import_id}", status_code=200)
+def delete_pending_import(
+    import_id: int,
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """CLEANUP-002 Phase 4 (AD-6). Hard-delete the row — pending
+    imports are pre-catalog ephemeral state with no audit-retention
+    requirement once rejected. Cascades to deleting the linked
+    ``supplier_document`` *only if* no other live reference remains
+    (no other pending imports against it; no non-soft-deleted
+    catalog_part sourced from it). Otherwise the document is left in
+    place so its other dependents keep working.
+
+    ``deleted_at`` does not exist on pending_catalog_imports —
+    ``status='rejected'`` is the soft equivalent today. This
+    endpoint adds a true hard-delete option so the list page can
+    be cleaned up directly.
+    """
+    _require_req_eng_plus(current_user)
+    pi = (
+        db.query(PendingCatalogImport)
+        .filter(PendingCatalogImport.id == import_id)
+        .first()
+    )
+    if pi is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"PendingCatalogImport {import_id} not found",
+        )
+    supplier_doc_id = pi.source_document_id
+    pi_status = pi.status
+
+    db.delete(pi)
+    db.flush()
+
+    supplier_doc_deleted = False
+    if supplier_doc_id is not None:
+        other_pi = (
+            db.query(func.count(PendingCatalogImport.id))
+            .filter(PendingCatalogImport.source_document_id == supplier_doc_id)
+            .scalar()
+            or 0
+        )
+        live_parts = (
+            db.query(func.count(CatalogPart.id))
+            .filter(
+                CatalogPart.source_document_id == supplier_doc_id,
+                CatalogPart.deleted_at.is_(None),
+            )
+            .scalar()
+            or 0
+        )
+        if other_pi == 0 and live_parts == 0:
+            db.query(SupplierDocument).filter(
+                SupplierDocument.id == supplier_doc_id
+            ).delete()
+            supplier_doc_deleted = True
+
+    _audit(
+        db, "pending_import.deleted", "pending_catalog_import", import_id,
+        current_user.id,
+        {
+            "prior_status": pi_status.value if hasattr(pi_status, "value") else str(pi_status),
+            "source_document_id": supplier_doc_id,
+            "supplier_document_deleted": supplier_doc_deleted,
+        },
+        request=request,
+    )
+    db.commit()
+    return {
+        "deleted": True,
+        "id": import_id,
+        "supplier_document_deleted": supplier_doc_deleted,
+    }
 
 
 # ══════════════════════════════════════════════════════════════

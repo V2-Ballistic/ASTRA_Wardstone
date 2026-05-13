@@ -461,6 +461,40 @@ export interface CatalogPartUsage {
   serial_number?: string | null;
 }
 
+// ══════════════════════════════════════════════════════════════
+//  CLEANUP-002 Phase 4 — comprehensive usage report (AD-8)
+// ══════════════════════════════════════════════════════════════
+
+/** Per-project breakdown row inside a CatalogPartUsageReport. */
+export interface CatalogPartUsageProjectEntry {
+  project_id: number;
+  project_name?: string | null;
+  project_code?: string | null;
+  project_part_count: number;
+  mechanical_joint_count: number;
+  unit_count: number;
+}
+
+/**
+ * Body of GET /catalog/parts/{id}/usage-report. Powers the delete
+ * UX: `deletable` is the single bit the UI checks before enabling
+ * Delete; `projects` explains why not.
+ *
+ * Backend counts project_parts (BOM lines), mechanical_joints
+ * (transitive via project_parts), and units (project placements).
+ * catalog_connectors + variant children are intentionally NOT
+ * counted — the former are owned by the part and cascade with it;
+ * the latter's `parent_part_id` is ON DELETE SET NULL.
+ */
+export interface CatalogPartUsageReport {
+  part_id: number;
+  part_number: string;
+  internal_part_number?: string | null;
+  total_references: number;
+  deletable: boolean;
+  projects: CatalogPartUsageProjectEntry[];
+}
+
 /**
  * Body of POST /catalog/parts/{id}/variant — clones the parent part
  * with a new variant_label and (optionally) connectors+pins.

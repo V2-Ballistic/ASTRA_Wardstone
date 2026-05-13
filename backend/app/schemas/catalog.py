@@ -522,6 +522,40 @@ class CatalogPartUsageRow(BaseModel):
 
 
 # ══════════════════════════════════════════════════════════════
+#  CLEANUP-002 Phase 4: usage report for safe-deletion (AD-8)
+# ══════════════════════════════════════════════════════════════
+
+class CatalogPartUsageProjectEntry(BaseModel):
+    """One project that references this catalog_part. Counts each
+    category of reference so the UI can show 'used as 2 BOM lines +
+    1 joint in DART' without further drilling."""
+    project_id: int
+    project_name: Optional[str] = None
+    project_code: Optional[str] = None
+    project_part_count: int = 0
+    mechanical_joint_count: int = 0
+    unit_count: int = 0
+
+
+class CatalogPartUsageReport(BaseModel):
+    """Usage report for GET /catalog/parts/{id}/usage-report. Powers
+    the delete-with-warning UX: ``deletable`` is the single bit the
+    UI checks before enabling the Delete button; ``projects``
+    explains why if False. Counts cover project_parts (BOM lines),
+    mechanical_joints (transitive via project_parts), and units
+    (project placements). catalog_connectors and variant children
+    are intentionally excluded from blocking — connectors are owned
+    by the part and cascade with it; parent_part_id is ON DELETE
+    SET NULL."""
+    part_id: int
+    part_number: str
+    internal_part_number: Optional[str] = None
+    total_references: int
+    deletable: bool
+    projects: List[CatalogPartUsageProjectEntry] = []
+
+
+# ══════════════════════════════════════════════════════════════
 #  ICD Extraction (Phase 7) — strict schema for AI output
 # ══════════════════════════════════════════════════════════════
 #

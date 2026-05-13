@@ -266,10 +266,14 @@ class TestCatalogPartCreate:
         assert len(data["connectors"]) == 1
         assert len(data["connectors"][0]["pins"]) == 3
         # Cascade: delete the part, expect connectors and pins to vanish.
+        # CLEANUP-002 Phase 4: default delete is now soft-delete (no
+        # cascade). admin_force=true keeps the legacy hard-delete path
+        # that triggers the FK cascade on connectors → pins.
         part_id = data["id"]
         _, admin_headers = make_user(db_session, "admin", "admin_cascade")
         del_resp = client.delete(
-            f"/api/v1/catalog/parts/{part_id}", headers=admin_headers
+            f"/api/v1/catalog/parts/{part_id}?admin_force=true",
+            headers=admin_headers,
         )
         assert del_resp.status_code == 200, del_resp.text
         # Direct DB verify cascade

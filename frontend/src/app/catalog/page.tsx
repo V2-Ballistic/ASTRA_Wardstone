@@ -16,12 +16,14 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Loader2, RefreshCw, Plus, Search, ChevronRight, Building2, Cpu,
-  FileSearch2, AlertTriangle, Package, Globe, Upload,
+  FileSearch2, AlertTriangle, Package, Globe, Upload, Trash2,
 } from 'lucide-react';
 import clsx from 'clsx';
 
 import { catalogAPI } from '@/lib/catalog-api';
 import { formatApiError, parseStructuredApiError } from '@/lib/errors';
+import { useAuth } from '@/lib/auth';
+import CatalogPartDeleteModal from '@/components/catalog/CatalogPartDeleteModal';
 import {
   type Supplier,
   type CatalogPart,
@@ -178,6 +180,8 @@ function SuppliersTab() {
 
 function PartsTab() {
   const router = useRouter();
+  const { user } = useAuth();
+  const canDelete = user?.role === 'admin';
   const [items, setItems] = useState<CatalogPart[]>([]);
   const [search, setSearch] = useState('');
   const [partClass, setPartClass] = useState<PartClass | ''>('');
@@ -187,6 +191,8 @@ function PartsTab() {
   // ── TDD-CAT-002: STEP upload state ──
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // ── CLEANUP-002 Phase 4: per-row delete state ──
+  const [deleteTarget, setDeleteTarget] = useState<CatalogPart | null>(null);
 
   const refresh = useCallback(() => {
     setLoading(true);
@@ -380,7 +386,19 @@ function PartsTab() {
                     </td>
                     <td className="px-3 py-2 text-right text-slate-300">{p.used_in_project_count}</td>
                     <td className="px-3 py-2 text-right text-slate-500">
-                      <ChevronRight className="inline h-3.5 w-3.5" aria-hidden="true" />
+                      <div className="flex items-center justify-end gap-1.5">
+                        {canDelete && (
+                          <button
+                            type="button"
+                            aria-label={`Delete catalog part ${p.internal_part_number || p.part_number}`}
+                            onClick={(e) => { e.stopPropagation(); setDeleteTarget(p); }}
+                            className="rounded p-1 text-slate-500 hover:bg-red-500/10 hover:text-red-400"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                          </button>
+                        )}
+                        <ChevronRight className="inline h-3.5 w-3.5" aria-hidden="true" />
+                      </div>
                     </td>
                   </tr>
                 );
@@ -389,6 +407,19 @@ function PartsTab() {
           </table>
         )}
       </div>
+
+      {deleteTarget && (
+        <CatalogPartDeleteModal
+          open
+          partId={deleteTarget.id}
+          partLabel={deleteTarget.internal_part_number || deleteTarget.part_number}
+          onClose={() => setDeleteTarget(null)}
+          onDeleted={() => {
+            setDeleteTarget(null);
+            refresh();
+          }}
+        />
+      )}
     </div>
   );
 }
