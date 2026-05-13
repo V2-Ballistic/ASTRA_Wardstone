@@ -132,7 +132,7 @@ services:
       - ./frontend/tsconfig.json:/app/tsconfig.json
     depends_on:
       - backend
-    command: npm run dev
+    command: sh -c "npm run build && npm start"
     # F-105: dev healthcheck for the Next.js dev server. wget -qO- on
     # the root path returns 200 once Next is ready; before that it 502s.
     healthcheck:
