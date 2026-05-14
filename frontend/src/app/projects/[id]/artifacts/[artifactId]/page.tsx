@@ -9,12 +9,13 @@
  * the list of requirements that trace back to this artifact.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
   ArrowLeft, Edit, Save, Trash2, Download, Upload, FileText, X,
 } from 'lucide-react';
 import { artifactsAPI } from '@/lib/api';
+import { formatApiError } from '@/lib/errors';
 import {
   ArtifactType,
   ARTIFACT_TYPE_LABELS,
@@ -23,6 +24,18 @@ import {
   Requirement,
   SourceArtifact,
 } from '@/lib/types';
+
+// Phase 0 Fix 0b Part 3 — autosave the in-progress edit.
+import { useFormAutosave } from '@/lib/autosave';
+import RestorePromptBanner from '@/components/RestorePromptBanner';
+
+interface EditSourceDraft {
+  title: string;
+  artifactType: string;
+  description: string;
+  sourceDate: string;
+  participantsText: string;
+}
 
 export default function ArtifactDetailPage() {
   const params = useParams();
@@ -44,6 +57,28 @@ export default function ArtifactDetailPage() {
   const [sourceDate, setSourceDate] = useState('');
   const [participantsText, setParticipantsText] = useState('');
 
+  // ── Autosave (only meaningful while editing) ──
+  const draftState = useMemo<EditSourceDraft>(() => ({
+    title, artifactType, description, sourceDate, participantsText,
+  }), [title, artifactType, description, sourceDate, participantsText]);
+
+  const autosave = useFormAutosave<EditSourceDraft>(
+    `astra:autosave:source-edit:${artifactId}`,
+    draftState,
+    { disabled: !editing },
+  );
+
+  const onRestoreDraft = () => {
+    const draft = autosave.restoreDraft();
+    if (!draft) return;
+    setTitle(draft.title);
+    setArtifactType(draft.artifactType);
+    setDescription(draft.description);
+    setSourceDate(draft.sourceDate);
+    setParticipantsText(draft.participantsText);
+    autosave.clearDraft();
+  };
+
   const load = async () => {
     setLoading(true);
     try {
@@ -60,7 +95,7 @@ export default function ArtifactDetailPage() {
       setSourceDate(a.source_date ? a.source_date.split('T')[0] : '');
       setParticipantsText((a.participants || []).join(', '));
     } catch (e: any) {
-      setError(e?.response?.data?.detail || 'Failed to load artifact');
+      setError(formatApiError(e, 'Failed to load artifact'));
     } finally {
       setLoading(false);
     }
@@ -79,10 +114,12 @@ export default function ArtifactDetailPage() {
         source_date: sourceDate || null,
         participants: participantsText.split(',').map((s) => s.trim()).filter(Boolean),
       });
+      // Phase 0 Fix 0b Part 3: drop the autosaved draft on success.
+      autosave.clearDraft();
       setEditing(false);
       await load();
     } catch (e: any) {
-      setError(e?.response?.data?.detail || 'Save failed');
+      setError(formatApiError(e, 'Save failed'));
     } finally {
       setSaving(false);
     }
@@ -95,7 +132,7 @@ export default function ArtifactDetailPage() {
       await artifactsAPI.delete(projectId, artifactId);
       router.push(`/projects/${projectId}/artifacts`);
     } catch (e: any) {
-      setError(e?.response?.data?.detail || 'Delete failed');
+      setError(formatApiError(e, 'Delete failed'));
     }
   };
 
@@ -107,7 +144,7 @@ export default function ArtifactDetailPage() {
       await artifactsAPI.uploadFile(projectId, artifactId, f);
       await load();
     } catch (err: any) {
-      setError(err?.response?.data?.detail || 'Upload failed');
+      setError(formatApiError(err, 'Upload failed'));
     } finally {
       // Reset the file input so re-selecting the same file fires onChange.
       e.target.value = '';
@@ -203,6 +240,13 @@ export default function ArtifactDetailPage() {
           <div className="rounded-xl border border-astra-border bg-astra-surface p-6">
             {editing ? (
               <div className="space-y-4">
+                {autosave.hasDraft && autosave.draftAge !== null && (
+                  <RestorePromptBanner
+                    ageMs={autosave.draftAge}
+                    onRestore={onRestoreDraft}
+                    onDiscard={autosave.clearDraft}
+                  />
+                )}
                 <input
                   type="text"
                   value={title}

@@ -17,12 +17,14 @@ import type {
   CatalogPartCreatePayload,
   CatalogPartPlacementRequest,
   CatalogPartUsage,
+  CatalogPartUsageReport,
   CatalogPartVariantRequest,
   PartClass,
   LifecycleStatus,
   PendingCatalogImport,
   PendingCatalogImportUpdate,
   PendingImportStatus,
+  StepUploadResponse,
 } from './catalog-types';
 import type { Unit } from './interface-types';
 
@@ -127,12 +129,24 @@ export const catalogAPI = {
     api.patch<CatalogPartDetail>(`${BASE}/parts/${id}`, data),
 
   /**
-   * Hard-delete a catalog part. Pass `admin_force=true` to NULL out
-   * `catalog_part_id` on any project units that reference it — the backend
-   * 409s otherwise when the part is in use.
+   * Delete a catalog part. CLEANUP-002 Phase 4 (AD-7): default path
+   * is soft-delete and 409s with a structured usage report when any
+   * downstream entity (project_parts, mechanical_joints transitively,
+   * units, catalog_connectors, variant children) references this
+   * part. Pre-flight `getPartUsageReport` to decide if Delete should
+   * even be offered.
+   *
+   * The legacy `admin_force=true` escape still hard-deletes via the
+   * existing FK cascade/RESTRICT behavior — leave it false for normal
+   * UI deletes; admin tooling can override.
    */
   deletePart: (id: number, adminForce = false) =>
-    api.delete<{ status: string; id: number; units_unlinked: number }>(
+    api.delete<{
+      status: string; id: number;
+      soft_delete?: boolean;
+      units_unlinked?: number;
+      admin_force?: boolean;
+    }>(
       `${BASE}/parts/${id}`,
       { params: { admin_force: adminForce } },
     ),
@@ -140,6 +154,15 @@ export const catalogAPI = {
   /** Returns the list of project units that have this catalog part placed. */
   getPartUsage: (id: number) =>
     api.get<CatalogPartUsage[]>(`${BASE}/parts/${id}/usage`),
+
+  /**
+   * CLEANUP-002 Phase 4 (AD-8). Returns the comprehensive usage
+   * report — project breakdown plus non-project-scoped counts
+   * (catalog_connectors, variant children). `deletable` is the
+   * single bit the UI consults to enable/disable Delete.
+   */
+  getPartUsageReport: (id: number) =>
+    api.get<CatalogPartUsageReport>(`${BASE}/parts/${id}/usage-report`),
 
   /**
    * Place an existing catalog part into a project as a Unit. The placement
@@ -177,6 +200,20 @@ export const catalogAPI = {
   updatePendingImport: (id: number, data: PendingCatalogImportUpdate) =>
     api.patch<PendingCatalogImport>(`${BASE}/pending-imports/${id}`, data),
 
+  /**
+   * CLEANUP-002 Phase 4 (AD-6). Hard-deletes a pending import row.
+   * Backend also drops the linked supplier_document blob iff no
+   * other pending import references it and no live catalog_part was
+   * sourced from it; `supplier_document_deleted` in the response
+   * reports whether that cascade fired.
+   */
+  deletePendingImport: (id: number) =>
+    api.delete<{
+      deleted: boolean;
+      id: number;
+      supplier_document_deleted: boolean;
+    }>(`${BASE}/pending-imports/${id}`),
+
   // ══════════════════════════════════════
   //  Phase 7 — ICD ingestion endpoints
   // ══════════════════════════════════════
@@ -210,4 +247,31 @@ export const catalogAPI = {
       `${BASE}/pending-imports/${id}/reject`,
       { reason: reason || null },
     ),
+
+  // ══════════════════════════════════════
+  //  TDD-CAT-002 — STEP file upload
+  // ══════════════════════════════════════
+
+  /**
+   * Upload a STEP file. The backend parser runs inline:
+   *   - SHA-256 dedup across ALL suppliers (409 on duplicate)
+   *   - vendor auto-detect from filename
+   *   - supplier auto-create on first vendor sighting
+   *   - returns the new pending_import_id for the review page
+   *
+   * Note: the shared axios instance sets a default
+   * `Content-Type: application/json`. Axios only auto-fills the
+   * multipart boundary when *no* Content-Type is in effect; with the
+   * JSON default in place, FormData would be serialised as JSON and
+   * the backend would 422 with `body.file required`. We pass
+   * `multipart/form-data` here so axios replaces it with the correctly
+   * bounded form-data header.
+   */
+  uploadStep: (file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return api.post<StepUploadResponse>(`${BASE}/upload-step`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
 };

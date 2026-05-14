@@ -597,7 +597,9 @@ class TestProjectParts:
         assert resp.status_code == 201, resp.text
         body = resp.json()
         assert body["library_part_id"] == lp.id
-        assert body["quantity"] == 8
+        # PROJPARTS-001 Path C: quantity is now NUMERIC(12,4); JSON
+        # serializes it as a string like "8.0000".
+        assert Decimal(str(body["quantity"])) == Decimal("8")
         assert body["library_part"]["name"] == "M4 Screw"
 
     def test_add_draft_part_rejected(
@@ -619,10 +621,14 @@ class TestProjectParts:
         code = body.get("detail", {}).get("code") or body.get("code")
         assert code == "PART_NOT_APPROVED"
 
-    def test_duplicate_add_rejected(
+    def test_duplicate_library_part_allowed_under_path_c(
         self, client: TestClient, db_session: Session, test_user,
         test_project, auth_headers
     ):
+        """PROJPARTS-001 (Path C): the legacy uq_project_part UNIQUE on
+        (project_id, library_part_id) was dropped because a single
+        catalog/library part can legitimately appear as multiple BOM
+        lines (24× M5 bolts in chassis + 8× M5 bolts in radio bay)."""
         lp = _make_approved_part(
             db_session, PartType.WASHER, "M6 Washer", approver_id=test_user.id,
         )
@@ -635,7 +641,8 @@ class TestProjectParts:
             f"/api/v1/projects/{test_project.id}/parts/",
             json={"library_part_id": lp.id}, headers=auth_headers,
         )
-        assert r2.status_code == 409
+        assert r2.status_code == 201, r2.text
+        assert r2.json()["id"] != r1.json()["id"]
 
     def test_remove_does_not_delete_library_record(
         self, client: TestClient, db_session: Session, test_user,

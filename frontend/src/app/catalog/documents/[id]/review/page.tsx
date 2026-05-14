@@ -16,6 +16,7 @@ import {
   Plug, RefreshCw, ShieldCheck, X,
 } from 'lucide-react';
 import { catalogAPI } from '@/lib/catalog-api';
+import { formatApiError } from '@/lib/errors';
 import type {
   PendingCatalogImport, SupplierDocument,
 } from '@/lib/catalog-types';
@@ -178,8 +179,7 @@ export default function ReviewPendingImportPage() {
           }
         }
       } catch (e) {
-        const ax = e as { response?: { data?: { detail?: string } }; message?: string };
-        if (!cancelled) setError(ax?.response?.data?.detail || ax?.message || 'Failed to load review');
+        if (!cancelled) setError(formatApiError(e, 'Failed to load review'));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -211,8 +211,7 @@ export default function ReviewPendingImportPage() {
       setInfo('Edits saved');
       setTimeout(() => setInfo(''), 3000);
     } catch (e) {
-      const ax = e as { response?: { data?: { detail?: string } } };
-      setError(ax?.response?.data?.detail || 'Save failed');
+      setError(formatApiError(e, 'Save failed'));
     } finally {
       setSaving(false);
     }
@@ -231,8 +230,7 @@ export default function ReviewPendingImportPage() {
       const resp = await catalogAPI.approvePendingImport(pending.id);
       router.push(`/catalog/parts/${resp.data.id}`);
     } catch (e) {
-      const ax = e as { response?: { data?: { detail?: string } } };
-      setError(ax?.response?.data?.detail || 'Approval failed');
+      setError(formatApiError(e, 'Approval failed'));
       setSubmitting(false);
     }
   }, [pending, data, router]);
@@ -246,8 +244,7 @@ export default function ReviewPendingImportPage() {
       await catalogAPI.rejectPendingImport(pending.id, rejectReason || undefined);
       router.push('/catalog');
     } catch (e) {
-      const ax = e as { response?: { data?: { detail?: string } } };
-      setError(ax?.response?.data?.detail || 'Rejection failed');
+      setError(formatApiError(e, 'Rejection failed'));
       setSubmitting(false);
     }
   }, [pending, rejectReason, router]);

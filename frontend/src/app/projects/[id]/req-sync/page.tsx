@@ -21,6 +21,7 @@ import {
 import clsx from 'clsx';
 
 import { reqSyncAPI } from '@/lib/req-sync-api';
+import { formatApiError } from '@/lib/errors';
 import type {
   RequirementSyncProposal,
   RequirementSyncProposalDetail,
@@ -82,7 +83,7 @@ export default function ReqSyncPage() {
       });
       setProposals(r.data.items ?? []);
     } catch (e: any) {
-      setError(e?.response?.data?.detail || 'Failed to load proposals');
+      setError(formatApiError(e, 'Failed to load proposals'));
     } finally {
       setLoading(false);
     }
@@ -99,7 +100,7 @@ export default function ReqSyncPage() {
       const s = await reqSyncAPI.getRequirementSources(p.requirement_id);
       setSources(s.data.items ?? []);
     } catch (e: any) {
-      setError(e?.response?.data?.detail || 'Failed to open proposal');
+      setError(formatApiError(e, 'Failed to open proposal'));
     } finally {
       setBusy(false);
     }
@@ -114,7 +115,7 @@ export default function ReqSyncPage() {
       await fetchProposals();
       setSelected(null);
     } catch (e: any) {
-      setError(e?.response?.data?.detail || 'Failed to accept');
+      setError(formatApiError(e, 'Failed to accept'));
     } finally {
       setBusy(false);
     }
@@ -132,7 +133,7 @@ export default function ReqSyncPage() {
       await fetchProposals();
       setSelected(null);
     } catch (e: any) {
-      setError(e?.response?.data?.detail || 'Failed to reject');
+      setError(formatApiError(e, 'Failed to reject'));
     } finally {
       setBusy(false);
     }
@@ -149,7 +150,7 @@ export default function ReqSyncPage() {
       setBatchSelected(new Set());
       await fetchProposals();
     } catch (e: any) {
-      setError(e?.response?.data?.detail || 'Bulk accept failed');
+      setError(formatApiError(e, 'Bulk accept failed'));
     } finally {
       setBusy(false);
     }

@@ -60,6 +60,8 @@ export const interfaceAPI = {
 
   listUnits: (projectId: number, params?: {
     system_id?: number; unit_type?: string; search?: string;
+    /** TDD-SYSARCH-002 Phase 2: linked_to_catalog filter — true / false / undefined. */
+    linked_to_catalog?: boolean;
     skip?: number; limit?: number;
   }) =>
     api.get<UnitSummary[]>(`${BASE}/units`, { params: { project_id: projectId, ...params } }),

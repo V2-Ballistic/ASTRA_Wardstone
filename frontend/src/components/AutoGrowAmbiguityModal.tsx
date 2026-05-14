@@ -41,6 +41,7 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { interfaceAPI } from '@/lib/interface-api';
+import { formatApiError } from '@/lib/errors';
 import type {
   AutoGrowAmbiguity, AmbiguityDecision, AutoGrowPair, AutoGrowResult,
 } from '@/lib/interface-types';
@@ -188,10 +189,7 @@ export function useAmbiguityModal() {
       setState(s => ({
         ...s,
         submitting: false,
-        error:
-          err?.response?.data?.detail ||
-          err?.message ||
-          'Failed to submit decision',
+        error: formatApiError(err, 'Failed to submit decision'),
       }));
     }
   }, []);

@@ -1,0 +1,83 @@
+{
+  "stainless_steel": {
+    "aliases": [
+      "18-8 Stainless Steel",
+      "316 Stainless Steel",
+      "316L Stainless Steel",
+      "304 Stainless Steel",
+      "A2 Stainless",
+      "A4 Stainless",
+      "Stainless Steel",
+      "Stainless"
+    ],
+    "density_g_per_mm3": 0.00800
+  },
+  "aluminum": {
+    "aliases": [
+      "6061-T6 Aluminum",
+      "7075-T6 Aluminum",
+      "Aluminum 6061",
+      "AL 6061-T6",
+      "Al 7075",
+      "Aluminum",
+      "Aluminium"
+    ],
+    "density_g_per_mm3": 0.00270
+  },
+  "titanium": {
+    "aliases": [
+      "Ti-6Al-4V",
+      "Grade 5 Titanium",
+      "Titanium Grade 2",
+      "Titanium"
+    ],
+    "density_g_per_mm3": 0.00443
+  },
+  "carbon_steel": {
+    "aliases": [
+      "Mild Steel",
+      "Carbon Steel",
+      "1018 Steel",
+      "Black Oxide Steel"
+    ],
+    "density_g_per_mm3": 0.00785
+  },
+  "alloy_steel": {
+    "aliases": [
+      "Alloy Steel",
+      "4140 Alloy Steel",
+      "Grade 8 Alloy Steel"
+    ],
+    "density_g_per_mm3": 0.00785
+  },
+  "brass": {
+    "aliases": [
+      "Brass",
+      "C360 Brass"
+    ],
+    "density_g_per_mm3": 0.00850
+  },
+  "plastic_nylon": {
+    "aliases": [
+      "Nylon 6/6",
+      "Nylon",
+      "Polyamide"
+    ],
+    "density_g_per_mm3": 0.00114
+  },
+  "plastic_acetal": {
+    "aliases": [
+      "Acetal",
+      "Delrin",
+      "POM"
+    ],
+    "density_g_per_mm3": 0.00141
+  },
+  "plastic_ptfe": {
+    "aliases": [
+      "PTFE",
+      "Teflon"
+    ],
+    "density_g_per_mm3": 0.00220
+  }
+}

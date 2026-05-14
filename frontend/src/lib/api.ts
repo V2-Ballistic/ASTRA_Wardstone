@@ -18,13 +18,27 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-// Handle 401s globally
+// Phase 0 Fix 0b: defer 401 handling to the auth-refresh interceptor
+// (installed by AppShell at app boot from `lib/auth-refresh.ts`). That
+// path attempts a sliding-session refresh first and only redirects when
+// the refresh itself fails. The legacy "blow away token + go to /login
+// on every 401" path used to defeat the refresh attempt by navigating
+// away before the retry could land — keep this module's response
+// interceptor a no-op for 401s and let auth-refresh own the flow.
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401 && typeof window !== 'undefined') {
+    // Final fallback: if a 401 makes it past the auth-refresh interceptor
+    // (e.g. the request was on /auth/login or /auth/refresh, or refresh
+    // failed and rejected) clear the local token. The auth-refresh
+    // module redirects to /login on its own.
+    const cfg = error?.config as { _isRefresh?: boolean; _retried?: boolean } | undefined;
+    if (
+      error.response?.status === 401
+      && typeof window !== 'undefined'
+      && (!cfg || cfg._retried || cfg._isRefresh)
+    ) {
       localStorage.removeItem('astra_token');
-      window.location.href = '/login';
     }
     return Promise.reject(error);
   }

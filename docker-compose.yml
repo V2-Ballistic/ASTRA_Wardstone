@@ -75,12 +75,25 @@ services:
       AI_TIMEOUT: ${AI_TIMEOUT:-30}
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+      # HAROLD-IN-WRENCH-001 Phase 6: HAROLD now lives inside WRENCH
+      # at :8030 (was standalone V2 at :8031 under HAROLD-INT-002).
+      HAROLD_INTEGRATION_ENABLED: ${HAROLD_INTEGRATION_ENABLED:-false}
+      HAROLD_BASE_URL: ${HAROLD_BASE_URL:-http://host.docker.internal:8030}
+      HAROLD_TIMEOUT_SECONDS: ${HAROLD_TIMEOUT_SECONDS:-3.0}
     ports:
       - "8000:8000"
     volumes:
       - ./backend/app:/app/app
       - ./backend/alembic:/app/alembic
       - ./backend/alembic.ini:/app/alembic.ini
+      # CAT-002: catalog_seed JSON (vendor patterns, material lexicon,
+      # part-type lexicon) is loaded by app/services/cad/step_parser.py
+      # at module import — without this mount the parser silently falls
+      # through to "mechanical_other" / no-vendor on every upload.
+      - ./backend/catalog_seed:/app/catalog_seed
+      # SYSARCH-002 Phase 0: bind tests so `docker compose exec backend
+      # python -m pytest` runs the host-side test files.
+      - ./backend/tests:/app/tests
       - upload_data:/app/uploads
     depends_on:
       db:
@@ -98,7 +111,7 @@ services:
     # backend's true readiness, and `depends_on … condition:
     # service_healthy` works locally.
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')\""]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -115,16 +128,20 @@ services:
     volumes:
       - ./frontend/src:/app/src
       - ./frontend/public:/app/public
+      # SYSARCH-002 Phase 0: bind tsconfig.json so host edits to the
+      # exclude list are visible to `docker compose exec frontend npx tsc`.
+      - ./frontend/tsconfig.json:/app/tsconfig.json
     depends_on:
       - backend
-    command: npm run dev
+    command: sh -c "npm run build && npm start"
     # F-105: dev healthcheck for the Next.js dev server. wget -qO- on
     # the root path returns 200 once Next is ready; before that it 502s.
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3000 || exit 1"]
-      interval: 15s
-      timeout: 5s
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000 || exit 1"]
+      interval: 30s
+      timeout: 10s
       retries: 5
+      start_period: 60s
 
 volumes:
   postgres_data:

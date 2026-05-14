@@ -27,6 +27,7 @@ import {
   type DependencyTree,
   type ImpactItem,
 } from '@/lib/impact-api';
+import { formatApiError } from '@/lib/errors';
 
 interface ImpactAnalysisPanelProps {
   requirementId: number;
@@ -65,7 +66,7 @@ export default function ImpactAnalysisPanel({
       setReport(reportRes.data);
       setDeps(depsRes.data);
     } catch (err: any) {
-      setError(err.response?.data?.detail || 'Impact analysis failed');
+      setError(formatApiError(err, 'Impact analysis failed'));
     } finally {
       setLoading(false);
     }

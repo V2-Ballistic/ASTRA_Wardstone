@@ -50,6 +50,7 @@ class SupplierCreate(BaseModel):
     primary_email: Optional[str] = Field(None, max_length=200)
     notes: Optional[str] = None
     is_active: bool = True
+    is_in_house: bool = False  # TDD-CAT-002
 
 
 class SupplierUpdate(BaseModel):
@@ -64,6 +65,7 @@ class SupplierUpdate(BaseModel):
     primary_email: Optional[str] = Field(None, max_length=200)
     notes: Optional[str] = None
     is_active: Optional[bool] = None
+    is_in_house: Optional[bool] = None  # TDD-CAT-002
 
 
 class SupplierResponse(BaseModel):
@@ -79,12 +81,24 @@ class SupplierResponse(BaseModel):
     primary_email: Optional[str] = None
     notes: Optional[str] = None
     is_active: bool
+    is_in_house: bool = False  # TDD-CAT-002
     created_at: datetime
     updated_at: datetime
     created_by_id: int
     # Computed / aggregate fields populated by the response layer
     catalog_part_count: int = 0
     document_count: int = 0
+
+    class Config:
+        from_attributes = True
+
+
+class SupplierAliasResponse(BaseModel):
+    """TDD-CAT-002 — one row of supplier_aliases."""
+    id: int
+    supplier_id: int
+    alias: str
+    created_at: datetime
 
     class Config:
         from_attributes = True
@@ -115,6 +129,11 @@ class SupplierDocumentResponse(BaseModel):
     id: int
     supplier_id: int
     title: str
+    # HAROLD-IN-WRENCH-001 Phase 6: actual multipart upload filename.
+    # Nullable for pre-Phase-6 rows where the upload handler didn't
+    # capture it (migration 0034 backfills where it can; the rest
+    # stay None).
+    original_filename: Optional[str] = None
     document_type: SupplierDocumentType
     revision: Optional[str] = None
     document_number: Optional[str] = None
@@ -132,6 +151,38 @@ class SupplierDocumentResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ══════════════════════════════════════════════════════════════
+#  CatalogDocuments listing — HAROLD-IN-WRENCH-001 Phase 6
+# ══════════════════════════════════════════════════════════════
+
+class CatalogDocumentMetadata(BaseModel):
+    """Lightweight per-document row returned by
+    ``GET /api/v1/catalog/documents``. Joins each supplier_document
+    with the catalog_part it produced (when one exists) so HAROLD's
+    filename precheck can return WPN context alongside the
+    collision verdict in a single round-trip.
+    """
+    id: int
+    title: str
+    original_filename: Optional[str] = None
+    document_type: SupplierDocumentType
+    file_path: str
+    mime_type: str
+    sha256: str
+    supplier_id: int
+    # Mirror of `id` — preserved for the HAROLD-TDD payload shape.
+    supplier_document_id: int
+    catalog_part_id: Optional[int] = None
+    internal_part_number: Optional[str] = None
+    extraction_status: ExtractionStatus
+    uploaded_at: datetime
+
+
+class CatalogDocumentsResponse(BaseModel):
+    documents: List[CatalogDocumentMetadata]
+    total: int
 
 
 # ══════════════════════════════════════════════════════════════
@@ -304,6 +355,18 @@ class CatalogPartCreate(BaseModel):
     image_path: Optional[str] = Field(None, max_length=1000)
     # Connectors+pins for atomic-create flows
     connectors: List[CatalogConnectorCreate] = Field(default_factory=list)
+    # ── TDD-CAT-002: CAD / STEP-derived fields ──
+    part_subtype: Optional[str] = Field(None, max_length=64)
+    material_name: Optional[str] = Field(None, max_length=128)
+    material_class: Optional[str] = Field(None, max_length=64)
+    bbox_x_mm: Optional[Decimal] = None
+    bbox_y_mm: Optional[Decimal] = None
+    bbox_z_mm: Optional[Decimal] = None
+    volume_mm3: Optional[Decimal] = None
+    cad_step_path: Optional[str] = None
+    cad_preview_path: Optional[str] = None
+    cad_authoring_tool: Optional[str] = Field(None, max_length=64)
+    native_units: Optional[str] = Field(None, max_length=16)
 
 
 class CatalogPartUpdate(BaseModel):
@@ -347,6 +410,18 @@ class CatalogPartUpdate(BaseModel):
     source_page_refs: Optional[Dict[str, Any]] = None
     notes: Optional[str] = None
     image_path: Optional[str] = Field(None, max_length=1000)
+    # ── TDD-CAT-002 ──
+    part_subtype: Optional[str] = Field(None, max_length=64)
+    material_name: Optional[str] = Field(None, max_length=128)
+    material_class: Optional[str] = Field(None, max_length=64)
+    bbox_x_mm: Optional[Decimal] = None
+    bbox_y_mm: Optional[Decimal] = None
+    bbox_z_mm: Optional[Decimal] = None
+    volume_mm3: Optional[Decimal] = None
+    cad_step_path: Optional[str] = None
+    cad_preview_path: Optional[str] = None
+    cad_authoring_tool: Optional[str] = Field(None, max_length=64)
+    native_units: Optional[str] = Field(None, max_length=16)
 
 
 class CatalogPartSummary(BaseModel):
@@ -364,6 +439,9 @@ class CatalogPartSummary(BaseModel):
     mass_kg: Optional[Decimal] = None
     power_watts_nominal: Optional[Decimal] = None
     used_in_project_count: int = 0
+    # ── TDD-CAT-002 (only the chip-render fields belong on summary) ──
+    part_subtype: Optional[str] = None
+    material_class: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -401,6 +479,17 @@ class CatalogPartResponse(CatalogPartSummary):
     source_page_refs: Optional[Dict[str, Any]] = None
     notes: Optional[str] = None
     image_path: Optional[str] = None
+    # ── TDD-CAT-002 detail fields ──
+    material_name: Optional[str] = None
+    bbox_x_mm: Optional[Decimal] = None
+    bbox_y_mm: Optional[Decimal] = None
+    bbox_z_mm: Optional[Decimal] = None
+    volume_mm3: Optional[Decimal] = None
+    cad_step_path: Optional[str] = None
+    cad_preview_path: Optional[str] = None
+    cad_authoring_tool: Optional[str] = None
+    native_units: Optional[str] = None
+    deleted_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
     created_by_id: int
@@ -467,6 +556,40 @@ class CatalogPartUsageRow(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ══════════════════════════════════════════════════════════════
+#  CLEANUP-002 Phase 4: usage report for safe-deletion (AD-8)
+# ══════════════════════════════════════════════════════════════
+
+class CatalogPartUsageProjectEntry(BaseModel):
+    """One project that references this catalog_part. Counts each
+    category of reference so the UI can show 'used as 2 BOM lines +
+    1 joint in DART' without further drilling."""
+    project_id: int
+    project_name: Optional[str] = None
+    project_code: Optional[str] = None
+    project_part_count: int = 0
+    mechanical_joint_count: int = 0
+    unit_count: int = 0
+
+
+class CatalogPartUsageReport(BaseModel):
+    """Usage report for GET /catalog/parts/{id}/usage-report. Powers
+    the delete-with-warning UX: ``deletable`` is the single bit the
+    UI checks before enabling the Delete button; ``projects``
+    explains why if False. Counts cover project_parts (BOM lines),
+    mechanical_joints (transitive via project_parts), and units
+    (project placements). catalog_connectors and variant children
+    are intentionally excluded from blocking — connectors are owned
+    by the part and cascade with it; parent_part_id is ON DELETE
+    SET NULL."""
+    part_id: int
+    part_number: str
+    internal_part_number: Optional[str] = None
+    total_references: int
+    deletable: bool
+    projects: List[CatalogPartUsageProjectEntry] = []
 
 
 # ══════════════════════════════════════════════════════════════
@@ -584,6 +707,22 @@ class IcdExtractionResultSchema(BaseModel):
     extraction_warnings: List[str] = Field(default_factory=list)
     extraction_confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
 
+    # ── TDD-CAT-002: CAD / STEP-derived fields ──
+    # All optional; populated only on STEP-upload-derived imports. The
+    # approve handler dumps the model and forwards these fields to the
+    # CatalogPart row via **scalar.
+    part_subtype: Optional[str] = Field(None, max_length=64)
+    material_name: Optional[str] = Field(None, max_length=128)
+    material_class: Optional[str] = Field(None, max_length=64)
+    bbox_x_mm: Optional[float] = None
+    bbox_y_mm: Optional[float] = None
+    bbox_z_mm: Optional[float] = None
+    volume_mm3: Optional[float] = None
+    cad_step_path: Optional[str] = None
+    cad_preview_path: Optional[str] = None
+    cad_authoring_tool: Optional[str] = Field(None, max_length=64)
+    native_units: Optional[str] = Field(None, max_length=16)
+
 
 # ══════════════════════════════════════════════════════════════
 #  Approve / reject — Phase 7 endpoints
@@ -600,3 +739,23 @@ class IcdExtractionTriggerResponse(BaseModel):
     job_id: int            # the SupplierDocument.id (acts as the job key)
     status: str            # ExtractionStatus value
     started_at: datetime
+
+
+# ══════════════════════════════════════════════════════════════
+#  TDD-CAT-002 — STEP upload response
+# ══════════════════════════════════════════════════════════════
+
+class StepUploadResponse(BaseModel):
+    """Returned by POST /catalog/upload-step on success.
+
+    Every STEP upload lands in the existing pending_catalog_imports queue;
+    this payload tells the caller the IDs to navigate to and surfaces
+    whether a new supplier had to be auto-created.
+    """
+    pending_import_id: int
+    supplier_document_id: int
+    detected_supplier_id: int
+    detected_supplier_name: str
+    supplier_was_created: bool
+    extraction_confidence: float
+    warnings: List[str] = Field(default_factory=list)

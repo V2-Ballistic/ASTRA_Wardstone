@@ -29,6 +29,7 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { interfaceAPI } from '@/lib/interface-api';
+import { formatApiError } from '@/lib/errors';
 import type { ConnectionDetail, Wire } from '@/lib/interface-types';
 
 // ══════════════════════════════════════════════════════════════
@@ -385,7 +386,7 @@ export default function ConnectionDetailPage() {
       const res = await interfaceAPI.getConnection(connectionId);
       setConn(res.data);
     } catch (e: any) {
-      setError(e?.response?.data?.detail || 'Failed to load connection');
+      setError(formatApiError(e, 'Failed to load connection'));
     }
     setLoading(false);
   }, [connectionId]);

@@ -17,6 +17,7 @@ import {
   BarChart3, Sparkles,
 } from 'lucide-react';
 import { projectsAPI, dashboardAPI, traceabilityAPI, requirementsAPI } from '@/lib/api';
+import { formatApiError } from '@/lib/errors';
 
 /* ── Types ── */
 
@@ -153,7 +154,7 @@ export default function DashboardPage() {
       );
       setProjects(enriched);
     } catch (err: any) {
-      setError(err.response?.data?.detail || 'Failed to load projects');
+      setError(formatApiError(err, 'Failed to load projects'));
       setLoading(false);
     }
   }, []);

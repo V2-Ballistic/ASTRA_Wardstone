@@ -6,11 +6,24 @@
  * File: frontend/src/app/projects/[id]/artifacts/new/page.tsx
  */
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { ArrowLeft, Save, Loader2 } from 'lucide-react';
 import { artifactsAPI } from '@/lib/api';
+import { formatApiError } from '@/lib/errors';
 import { ARTIFACT_TYPE_LABELS } from '@/lib/types';
+
+// Phase 0 Fix 0b Part 3 — recover unsaved drafts on session timeout.
+import { useFormAutosave } from '@/lib/autosave';
+import RestorePromptBanner from '@/components/RestorePromptBanner';
+
+interface NewSourceDraft {
+  title: string;
+  artifactType: string;
+  description: string;
+  sourceDate: string;
+  participantsText: string;
+}
 
 export default function NewArtifactPage() {
   const params = useParams();
@@ -25,6 +38,27 @@ export default function NewArtifactPage() {
   const [file, setFile] = useState<File | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+
+  // ── Autosave (text fields only — files cannot be persisted to localStorage) ──
+  const draftState = useMemo<NewSourceDraft>(() => ({
+    title, artifactType, description, sourceDate, participantsText,
+  }), [title, artifactType, description, sourceDate, participantsText]);
+
+  const autosave = useFormAutosave<NewSourceDraft>(
+    `astra:autosave:source-new:project-${projectId}`,
+    draftState,
+  );
+
+  const onRestoreDraft = () => {
+    const draft = autosave.restoreDraft();
+    if (!draft) return;
+    setTitle(draft.title);
+    setArtifactType(draft.artifactType);
+    setDescription(draft.description);
+    setSourceDate(draft.sourceDate);
+    setParticipantsText(draft.participantsText);
+    autosave.clearDraft();
+  };
 
   const canSave = title.trim().length >= 3;
 
@@ -53,7 +87,7 @@ export default function NewArtifactPage() {
           // The artifact was created — surface the upload error but don't lose the row.
           setError(
             'Artifact created but file upload failed: ' +
-              (e?.response?.data?.detail || 'unknown error') +
+              formatApiError(e, 'unknown error') +
               ". Open the artifact to retry the upload.",
           );
           router.push(`/projects/${projectId}/artifacts/${created.data.id}`);
@@ -61,9 +95,11 @@ export default function NewArtifactPage() {
         }
       }
 
+      // Phase 0 Fix 0b Part 3: drop the autosaved draft on success.
+      autosave.clearDraft();
       router.push(`/projects/${projectId}/artifacts/${created.data.id}`);
     } catch (e: any) {
-      setError(e?.response?.data?.detail || 'Failed to create artifact');
+      setError(formatApiError(e, 'Failed to create artifact'));
       setSaving(false);
     }
   };
@@ -81,6 +117,14 @@ export default function NewArtifactPage() {
       <p className="mb-6 text-sm text-slate-500">
         Document the origin of one or more requirements (MRD, SOW, contract clause, meeting notes…).
       </p>
+
+      {autosave.hasDraft && autosave.draftAge !== null && (
+        <RestorePromptBanner
+          ageMs={autosave.draftAge}
+          onRestore={onRestoreDraft}
+          onDiscard={autosave.clearDraft}
+        />
+      )}
 
       <div className="space-y-4 rounded-xl border border-astra-border bg-astra-surface p-6">
         <div>

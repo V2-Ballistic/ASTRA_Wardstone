@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/lib/auth';
 import { Loader2, Shield, KeyRound, Globe, CreditCard } from 'lucide-react';
 import api from '@/lib/api';
+import { formatApiError } from '@/lib/errors';
 
 type AuthStep = 'provider' | 'local' | 'mfa';
 
@@ -94,7 +95,7 @@ export default function LoginPage() {
         router.push(nextParam);
       }
     } catch (err: any) {
-      setError(err.response?.data?.detail || 'Invalid credentials');
+      setError(formatApiError(err, 'Invalid credentials'));
     } finally {
       setLoading(false);
     }
@@ -115,7 +116,7 @@ export default function LoginPage() {
         router.push(nextParam);
       }
     } catch (err: any) {
-      setError(err.response?.data?.detail || 'Invalid MFA token');
+      setError(formatApiError(err, 'Invalid MFA token'));
     } finally {
       setLoading(false);
     }
@@ -137,7 +138,7 @@ export default function LoginPage() {
       await refresh();
       router.push(nextParam);
     } catch (err: any) {
-      setError(err.response?.data?.detail || 'CAC/PIV authentication failed. Ensure your smart card is inserted.');
+      setError(formatApiError(err, 'CAC/PIV authentication failed. Ensure your smart card is inserted.'));
     } finally {
       setLoading(false);
     }

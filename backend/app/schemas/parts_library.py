@@ -16,6 +16,7 @@ from app.models.parts_library import (
     PartType, PartStatus, MaterialClass, ThreadStandard, HeadType,
     DriveType, LockingFeature, QualificationStatus, PendingPartsStatus,
     ConfidenceLevel, JointType, JointStatus, AssemblyParseJobStatus,
+    BomStatus,
 )
 
 
@@ -407,31 +408,137 @@ class LibraryPartResponse(BaseModel):
 #  ProjectPart
 # ══════════════════════════════════════════════════════════════
 
+# ── PROJPARTS-001 Path C: nested summaries for BOM responses ──
+# Defined locally rather than imported to avoid a cross-module cycle
+# (interface.py imports from this file, catalog.py is a heavyweight
+# module). These two summaries carry only what the BOM grid needs.
+
+class ProjectPartCatalogSummary(BaseModel):
+    """Slim catalog_part payload embedded in ProjectPartResponse."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id:               int
+    part_number:      str
+    name:             str
+    part_class:       str
+    lifecycle_status: str
+    revision:         Optional[str]  = None
+    supplier_name:    Optional[str]  = None
+    mass_kg:          Optional[Decimal] = None
+
+
+class ProjectPartUnitSummary(BaseModel):
+    """Slim unit payload for the `linked_unit` field on BOM lines."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id:          int
+    unit_id:     str
+    name:        str
+    designation: str
+    system_id:   int
+
+
 class ProjectPartCreate(BaseModel):
-    library_part_id: int
-    quantity:        int = Field(default=1, ge=1)
-    designation:     Optional[str] = Field(default=None, max_length=64)
-    notes:           Optional[str] = None
+    # `library_part_id` stays for back-compat with old callers and the
+    # mechanical-joint surface, but Path C makes the catalog link the
+    # canonical reference. Either may be supplied; if both are present
+    # the catalog FK wins for display + class filtering.
+    library_part_id:    Optional[int] = None
+    catalog_part_id:    Optional[int] = None
+    quantity:           Decimal       = Field(default=Decimal("1"), gt=0)
+    quantity_unit:      str           = Field(default="each", max_length=16)
+    designation:        Optional[str] = Field(default=None, max_length=255)
+    bom_position:       Optional[str] = Field(default=None, max_length=64)
+    parent_bom_id:      Optional[int] = None
+    status:             BomStatus     = BomStatus.PLANNED
+    unit_id:            Optional[int] = None
+    location_zone:      Optional[str] = Field(default=None, max_length=128)
+    installation_notes: Optional[str] = None
+    procurement_notes:  Optional[str] = None
+    notes:              Optional[str] = None
+
+    @model_validator(mode="after")
+    def _require_part_reference(self) -> "ProjectPartCreate":
+        if self.library_part_id is None and self.catalog_part_id is None:
+            raise ValueError(
+                "ProjectPartCreate requires at least one of "
+                "`library_part_id` or `catalog_part_id`."
+            )
+        return self
 
 
 class ProjectPartUpdate(BaseModel):
-    quantity:    Optional[int] = Field(default=None, ge=1)
-    designation: Optional[str] = Field(default=None, max_length=64)
-    notes:       Optional[str] = None
+    catalog_part_id:    Optional[int]       = None
+    quantity:           Optional[Decimal]   = Field(default=None, gt=0)
+    quantity_unit:      Optional[str]       = Field(default=None, max_length=16)
+    designation:        Optional[str]       = Field(default=None, max_length=255)
+    bom_position:       Optional[str]       = Field(default=None, max_length=64)
+    parent_bom_id:      Optional[int]       = None
+    status:             Optional[BomStatus] = None
+    unit_id:            Optional[int]       = None
+    location_zone:      Optional[str]       = Field(default=None, max_length=128)
+    installation_notes: Optional[str]       = None
+    procurement_notes:  Optional[str]       = None
+    notes:              Optional[str]       = None
 
 
 class ProjectPartResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    id:              int
-    project_id:      int
-    library_part_id: int
-    quantity:        int
-    designation:     Optional[str] = None
-    notes:           Optional[str] = None
-    added_at:        datetime
-    library_part:    LibraryPartSummary
+    id:                 int
+    project_id:         int
+    library_part_id:    Optional[int] = None
+    catalog_part_id:    Optional[int] = None
+    quantity:           Decimal
+    quantity_unit:      str
+    designation:        Optional[str] = None
+    bom_position:       Optional[str] = None
+    parent_bom_id:      Optional[int] = None
+    status:             BomStatus
+    unit_id:            Optional[int] = None
+    location_zone:      Optional[str] = None
+    installation_notes: Optional[str] = None
+    procurement_notes:  Optional[str] = None
+    notes:              Optional[str] = None
+    added_at:           datetime
+    updated_at:         Optional[datetime] = None
+
+    library_part:         Optional[LibraryPartSummary] = None
+    catalog_part_summary: Optional[ProjectPartCatalogSummary] = None
+    linked_unit:          Optional[ProjectPartUnitSummary] = None
+    parent_designation:   Optional[str] = None
+
     system_id:       Optional[int] = None  # resolved from SystemPartAssignment
+
+
+class ProjectPartListItem(BaseModel):
+    """Lighter row payload for the BOM grid (no nested library_part)."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id:                   int
+    project_id:           int
+    catalog_part_id:      Optional[int] = None
+    library_part_id:      Optional[int] = None
+    quantity:             Decimal
+    quantity_unit:        str
+    designation:          Optional[str] = None
+    bom_position:         Optional[str] = None
+    parent_bom_id:        Optional[int] = None
+    parent_designation:   Optional[str] = None
+    status:               BomStatus
+    unit_id:              Optional[int] = None
+    linked_unit:          Optional[ProjectPartUnitSummary] = None
+    location_zone:        Optional[str] = None
+    catalog_part_summary: Optional[ProjectPartCatalogSummary] = None
+    added_at:             datetime
+    updated_at:           Optional[datetime] = None
+
+
+class BomStatsResponse(BaseModel):
+    """Aggregated counts for the BOM stat strip."""
+    total:         int
+    by_status:     dict[str, int]
+    by_part_class: dict[str, int]
 
 
 # ══════════════════════════════════════════════════════════════

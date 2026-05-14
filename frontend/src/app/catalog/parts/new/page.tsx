@@ -12,13 +12,14 @@
  * Phase 3 — ASTRA-TDD-INTF-002.
  */
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
   ChevronLeft, Cpu, Loader2, Plus, AlertTriangle, Globe,
 } from 'lucide-react';
 
 import { catalogAPI } from '@/lib/catalog-api';
+import { formatApiError } from '@/lib/errors';
 import {
   type Supplier,
   type PartClass,
@@ -90,7 +91,7 @@ export default function NewCatalogPartPage() {
   useEffect(() => {
     catalogAPI.listSuppliers({ limit: 200 })
       .then((r) => setSuppliers(r.data))
-      .catch((e) => setError(e?.response?.data?.detail || 'Failed to load suppliers'));
+      .catch((e) => setError(formatApiError(e, 'Failed to load suppliers')));
   }, []);
 
   const canSave = supplierId !== null && partNumber.trim().length > 0 && name.trim().length > 0;
@@ -142,8 +143,7 @@ export default function NewCatalogPartPage() {
       });
       router.push(`/catalog/parts/${r.data.id}`);
     } catch (e: unknown) {
-      const err = e as { response?: { data?: { detail?: string } } };
-      setError(err?.response?.data?.detail || 'Failed to create catalog part');
+      setError(formatApiError(e, 'Failed to create catalog part'));
       setSaving(false);
     }
   };

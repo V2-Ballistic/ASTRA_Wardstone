@@ -19,7 +19,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
-from sqlalchemy.sql import func
+from sqlalchemy.sql import func, text
 
 from app.database import Base
 
@@ -152,6 +152,18 @@ class AssemblyParseJobStatus(str, enum.Enum):
     FAILED   = "failed"
 
 
+# TDD-PROJPARTS-001 (Path C): BOM lifecycle on every project_parts row.
+# Matches the bom_status PG enum created in migration 0030.
+class BomStatus(str, enum.Enum):
+    PLANNED   = "planned"
+    RELEASED  = "released"
+    PROCURED  = "procured"
+    RECEIVED  = "received"
+    INSTALLED = "installed"
+    VERIFIED  = "verified"
+    OBSOLETE  = "obsolete"
+
+
 # Postgres ENUM type names — namespaced so they don't collide with
 # Python enum names but match what the migration creates.
 _PG_PART_TYPE                = "part_type"
@@ -167,6 +179,7 @@ _PG_CONFIDENCE_LEVEL         = "confidence_level"
 _PG_JOINT_TYPE               = "joint_type"
 _PG_JOINT_STATUS             = "joint_status"
 _PG_ASSEMBLY_PARSE_JOB_STATUS = "assembly_parse_job_status"
+_PG_BOM_STATUS               = "bom_status"
 
 
 # Helper: standardised SQLEnum builder
@@ -399,11 +412,38 @@ class PendingPartsImport(Base):
 # ══════════════════════════════════════════════════════════════
 
 class ProjectPart(Base):
+    """Project-scoped BOM line.
+
+    TDD-PROJPARTS-001 (Path C) extended this model in place — same
+    table, FKs to library_part_id (legacy) AND catalog_part_id (new
+    canonical) coexist. mechanical_joints and system_part_assignments
+    keep their FKs to project_parts(id) intact.
+
+    `added_at` / `added_by_id` are kept for backward compat with the
+    original 0027 schema; new code reads them through the
+    `created_at` / `created_by_id` aliases below.
+    """
+
     __tablename__ = "project_parts"
+    # Migration 0030 dropped uq_project_part(project_id, library_part_id) and
+    # replaced it with a partial UNIQUE on (project_id, bom_position) WHERE
+    # bom_position IS NOT NULL. The partial index is created at the DDL level
+    # (alembic) — we don't redeclare it here because SQLAlchemy can't express
+    # partial uniqueness on Index/UniqueConstraint constructs cleanly across
+    # the SQLite test path either.
+    # Single-column indexes are auto-created from `index=True` on each
+    # Column. The partial UNIQUE on (project_id, bom_position) is the
+    # only multi-column / partial declaration that needs to live here
+    # so both Postgres (prod, via Alembic) and SQLite (tests, via
+    # Base.metadata.create_all) enforce it identically.
     __table_args__ = (
-        UniqueConstraint("project_id", "library_part_id", name="uq_project_part"),
-        Index("ix_project_parts_project", "project_id"),
-        Index("ix_project_parts_library", "library_part_id"),
+        Index(
+            "uq_project_parts_bom_position",
+            "project_id", "bom_position",
+            unique=True,
+            postgresql_where=text("bom_position IS NOT NULL"),
+            sqlite_where=text("bom_position IS NOT NULL"),
+        ),
     )
 
     id              = Column(Integer, primary_key=True, index=True)
@@ -411,23 +451,78 @@ class ProjectPart(Base):
         Integer, ForeignKey("projects.id", ondelete="CASCADE"),
         nullable=False, index=True,
     )
+    # PROJPARTS-001 Path C: library_part_id is now optional — catalog
+    # parts are the canonical BOM reference and may be the only link
+    # on a line. Migration 0031 drops the NOT NULL in PostgreSQL.
     library_part_id = Column(
         Integer, ForeignKey("library_parts.id", ondelete="RESTRICT"),
-        nullable=False, index=True,
+        nullable=True, index=True,
     )
-    quantity        = Column(Integer, nullable=False, default=1)
-    designation     = Column(String(64), nullable=True)
-    notes           = Column(Text, nullable=True)
+
+    # ── TDD-PROJPARTS-001: canonical catalog link, nullable today
+    #    (legacy rows have no catalog mapping yet). New writes from
+    #    the BOM router populate this on every create.
+    catalog_part_id = Column(
+        Integer, ForeignKey("catalog_parts.id", ondelete="RESTRICT"),
+        nullable=True, index=True,
+    )
+
+    # Quantity is now NUMERIC(12,4); fractional units (3.5 m, 0.25 L)
+    # are legal. Default 1.0 preserves the existing default semantic.
+    quantity        = Column(Numeric(12, 4), nullable=False, default=1)
+    quantity_unit   = Column(
+        String(16), nullable=False, server_default="each", default="each",
+    )
+
+    designation     = Column(String(255), nullable=True)
+    bom_position    = Column(String(64), nullable=True)
+    parent_bom_id   = Column(
+        Integer, ForeignKey("project_parts.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
+
+    status          = Column(
+        _enum(BomStatus, _PG_BOM_STATUS),
+        nullable=False,
+        server_default=BomStatus.PLANNED.value,
+        default=BomStatus.PLANNED,
+        index=True,
+    )
+
+    unit_id         = Column(
+        Integer, ForeignKey("units.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
+
+    location_zone      = Column(String(128), nullable=True)
+    installation_notes = Column(Text, nullable=True)
+    procurement_notes  = Column(Text, nullable=True)
+    notes              = Column(Text, nullable=True)
+
     added_by_id     = Column(
         Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True,
     )
     added_at        = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,
     )
+    updated_at      = Column(
+        DateTime(timezone=True),
+        server_default=func.now(), onupdate=func.now(), nullable=False,
+    )
 
     project            = relationship("Project")
     library_part       = relationship("LibraryPart", back_populates="project_parts")
+    catalog_part       = relationship(
+        "CatalogPart", back_populates="project_part_instances",
+        foreign_keys=[catalog_part_id],
+    )
     added_by           = relationship("User")
+    linked_unit        = relationship(
+        "Unit", foreign_keys=[unit_id],
+    )
+    parent_bom         = relationship(
+        "ProjectPart", remote_side=[id], foreign_keys=[parent_bom_id],
+    )
     system_assignments = relationship(
         "SystemPartAssignment",
         back_populates="project_part",

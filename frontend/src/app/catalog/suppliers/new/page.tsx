@@ -16,6 +16,7 @@ import { useRouter } from 'next/navigation';
 import { ChevronLeft, Building2, Loader2, Plus, AlertTriangle } from 'lucide-react';
 
 import { catalogAPI } from '@/lib/catalog-api';
+import { formatApiError } from '@/lib/errors';
 
 export default function NewSupplierPage() {
   const router = useRouter();
@@ -57,8 +58,7 @@ export default function NewSupplierPage() {
       });
       router.push(`/catalog/suppliers/${r.data.id}`);
     } catch (e: unknown) {
-      const err = e as { response?: { data?: { detail?: string } } };
-      setError(err?.response?.data?.detail || 'Failed to create supplier');
+      setError(formatApiError(e, 'Failed to create supplier'));
       setSaving(false);
     }
   };

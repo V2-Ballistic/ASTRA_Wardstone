@@ -28,6 +28,7 @@ import {
   type RequirementStatus, type RequirementLevel, type Priority, type Requirement,
 } from '@/lib/types';
 import api, { requirementsAPI, projectsAPI, baselinesAPI } from '@/lib/api';
+import { formatApiError } from '@/lib/errors';
 import VirtualList from '@/components/VirtualList';
 
 // F-084: replaced runtime require() shim with normal typed import.
@@ -459,13 +460,12 @@ export default function ProjectRequirementsPage() {
 
       console.error('[requirements] list failed:', e);
       const status = e?.response?.status;
-      const detail = e?.response?.data?.detail;
-      setError(
-        typeof detail === 'string' ? detail :
-        Array.isArray(detail) ? detail.map((d: any) => d.msg || JSON.stringify(d)).join('; ') :
-        status ? `Failed to load requirements (HTTP ${status})` :
-        'Failed to load requirements — is the backend running?'
-      );
+      setError(formatApiError(
+        e,
+        status
+          ? `Failed to load requirements (HTTP ${status})`
+          : 'Failed to load requirements — is the backend running?',
+      ));
     } finally {
       if (!controller.signal.aborted) setLoading(false);
     }
@@ -549,7 +549,7 @@ export default function ProjectRequirementsPage() {
       setBaselineDesc('');
       setTimeout(() => { setShowBaselineModal(false); setBaselineMsg(''); }, 2000);
     } catch (e: any) {
-      setBaselineMsg(e.response?.data?.detail || 'Failed to create baseline');
+      setBaselineMsg(formatApiError(e, 'Failed to create baseline'));
     }
     setCreatingBaseline(false);
   };
@@ -587,11 +587,7 @@ export default function ProjectRequirementsPage() {
       fetchRequirements();
     } catch (e: any) {
       console.error('[requirements] bulk delete failed:', e);
-      setDeleteMsg(
-        e?.response?.data?.detail ||
-        e?.message ||
-        'Bulk delete failed'
-      );
+      setDeleteMsg(formatApiError(e, 'Bulk delete failed'));
     }
     setBulkDeleting(false);
   };

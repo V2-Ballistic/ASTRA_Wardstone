@@ -243,6 +243,9 @@ export interface UnitSummary {
   system_id: number;
   connector_count: number;
   bus_count: number;
+  // ── TDD-SYSARCH-002 Phase 2: catalog linkage at-a-glance ──
+  catalog_part_id?: number | null;
+  catalog_part_summary?: import('./sysarch-types').UnitCatalogPartSummary | null;
 }
 
 export interface Unit extends UnitSummary {
@@ -254,6 +257,11 @@ export interface Unit extends UnitSummary {
   revision?: string;
   serial_number_prefix?: string;
   heritage?: string;
+  // ── TDD-SYSARCH-002 Phase 2: catalog linkage + project-instance fields ──
+  // (catalog_part_id and catalog_part_summary are inherited from UnitSummary.)
+  location_zone?: string | null;
+  serial_number?: string | null;
+  asset_tag?: string | null;
   // Physical
   mass_kg?: number;
   mass_max_kg?: number;

@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { projectsAPI } from '@/lib/api';
 import api from '@/lib/api';
+import { formatApiError } from '@/lib/errors';
 
 export default function ProjectSettingsPage() {
   const params = useParams();
@@ -63,7 +64,7 @@ export default function ProjectSettingsPage() {
       await api.patch(`/projects/${projectId}`, { name, description });
       flash('Settings saved');
     } catch (e: any) {
-      flash(e?.response?.data?.detail || 'Save failed');
+      flash(formatApiError(e, 'Save failed'));
     }
     setSaving(false);
   };
@@ -81,7 +82,7 @@ export default function ProjectSettingsPage() {
         ? 'Enabled — auto-requirements will require manual approval'
         : 'Disabled — auto-requirements will be created directly as draft');
     } catch (e: any) {
-      flash(e?.response?.data?.detail || 'Failed to update setting');
+      flash(formatApiError(e, 'Failed to update setting'));
     }
     setTogglingApproval(false);
   };

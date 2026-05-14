@@ -18,6 +18,7 @@
 // ── Enums (literal unions; F-123 — no `| string` collapse) ──
 
 export type PartClass =
+  // ── Existing electrical / electronic values (INTF-002) ──
   | 'processor'
   | 'sensor'
   | 'power_supply'
@@ -30,7 +31,20 @@ export type PartClass =
   | 'compute_module'
   | 'power_distribution'
   | 'interface_card'
-  | 'other';
+  | 'other'
+  // ── TDD-CAT-002: mechanical / structural values ──
+  | 'fastener_screw'
+  | 'fastener_bolt'
+  | 'nut'
+  | 'washer'
+  | 'bracket'
+  | 'housing'
+  | 'enclosure'
+  | 'seal_o_ring'
+  | 'bearing'
+  | 'spring'
+  | 'structural_member'
+  | 'mechanical_other';
 
 export type LRUClass =
   | 'lru'
@@ -119,11 +133,23 @@ export interface Supplier {
   primary_email?: string | null;
   notes?: string | null;
   is_active: boolean;
+  /** TDD-CAT-002 — Wardstone is the in-house default for STEP files
+   *  with no detected vendor. */
+  is_in_house?: boolean;
   created_at: string;
   updated_at: string;
   created_by_id: number;
   catalog_part_count: number;
   document_count: number;
+}
+
+
+/** TDD-CAT-002 — one row of supplier_aliases. */
+export interface SupplierAlias {
+  id: number;
+  supplier_id: number;
+  alias: string;
+  created_at: string;
 }
 
 /**
@@ -267,6 +293,15 @@ export interface CatalogPart {
   mass_kg?: string | null;
   power_watts_nominal?: string | null;
   used_in_project_count: number;
+  // ── TDD-CAT-002 (chip-render only — full CAD on detail) ──
+  part_subtype?: string | null;
+  material_class?: string | null;
+  // ── TDD-HAROLD-INT-002 — Wardstone Part Number ──
+  /** Issued (or fallback-allocated) WPN. Primary identifier when present. */
+  internal_part_number?: string | null;
+  /** True when the WPN was minted by the local fallback allocator and
+   *  has not yet been reconciled with HAROLD's authoritative ledger. */
+  wpn_pending_sync?: boolean;
 }
 
 /**
@@ -312,10 +347,33 @@ export interface CatalogPartDetail extends CatalogPart {
   source_page_refs?: Record<string, unknown> | null;
   notes?: string | null;
   image_path?: string | null;
+  // ── TDD-CAT-002 detail fields ──
+  material_name?: string | null;
+  bbox_x_mm?: string | null;
+  bbox_y_mm?: string | null;
+  bbox_z_mm?: string | null;
+  volume_mm3?: string | null;
+  cad_step_path?: string | null;
+  cad_preview_path?: string | null;
+  cad_authoring_tool?: string | null;
+  native_units?: string | null;
+  deleted_at?: string | null;
   created_at: string;
   updated_at: string;
   created_by_id: number;
   connectors: CatalogConnector[];
+}
+
+
+/** TDD-CAT-002 — body returned by POST /catalog/upload-step. */
+export interface StepUploadResponse {
+  pending_import_id: number;
+  supplier_document_id: number;
+  detected_supplier_id: number;
+  detected_supplier_name: string;
+  supplier_was_created: boolean;
+  extraction_confidence: number;
+  warnings: string[];
 }
 
 /**
@@ -403,6 +461,40 @@ export interface CatalogPartUsage {
   serial_number?: string | null;
 }
 
+// ══════════════════════════════════════════════════════════════
+//  CLEANUP-002 Phase 4 — comprehensive usage report (AD-8)
+// ══════════════════════════════════════════════════════════════
+
+/** Per-project breakdown row inside a CatalogPartUsageReport. */
+export interface CatalogPartUsageProjectEntry {
+  project_id: number;
+  project_name?: string | null;
+  project_code?: string | null;
+  project_part_count: number;
+  mechanical_joint_count: number;
+  unit_count: number;
+}
+
+/**
+ * Body of GET /catalog/parts/{id}/usage-report. Powers the delete
+ * UX: `deletable` is the single bit the UI checks before enabling
+ * Delete; `projects` explains why not.
+ *
+ * Backend counts project_parts (BOM lines), mechanical_joints
+ * (transitive via project_parts), and units (project placements).
+ * catalog_connectors + variant children are intentionally NOT
+ * counted — the former are owned by the part and cascade with it;
+ * the latter's `parent_part_id` is ON DELETE SET NULL.
+ */
+export interface CatalogPartUsageReport {
+  part_id: number;
+  part_number: string;
+  internal_part_number?: string | null;
+  total_references: number;
+  deletable: boolean;
+  projects: CatalogPartUsageProjectEntry[];
+}
+
 /**
  * Body of POST /catalog/parts/{id}/variant — clones the parent part
  * with a new variant_label and (optionally) connectors+pins.
@@ -479,6 +571,19 @@ export const PART_CLASS_LABELS: Record<PartClass, string> = {
   power_distribution:  'Power Distribution',
   interface_card:      'Interface Card',
   other:               'Other',
+  // TDD-CAT-002 mechanical / structural values
+  fastener_screw:      'Fastener — Screw',
+  fastener_bolt:       'Fastener — Bolt',
+  nut:                 'Nut',
+  washer:              'Washer',
+  bracket:             'Bracket',
+  housing:             'Housing',
+  enclosure:           'Enclosure',
+  seal_o_ring:         'Seal / O-Ring',
+  bearing:             'Bearing',
+  spring:              'Spring',
+  structural_member:   'Structural Member',
+  mechanical_other:    'Mechanical (Other)',
 };
 
 /** Human-readable label for an `LRUClass` value. */

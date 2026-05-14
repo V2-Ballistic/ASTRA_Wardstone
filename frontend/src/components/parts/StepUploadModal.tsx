@@ -1,6 +1,7 @@
 'use client';
 import { useCallback, useRef, useState } from 'react';
 import { partsLibraryAPI } from '@/lib/parts-api';
+import { formatApiError } from '@/lib/errors';
 
 interface StepUploadModalProps {
   open: boolean;
@@ -34,7 +35,11 @@ export function StepUploadModal({
     return null;
   };
 
-  const handleFileSelect = (f: File) => {
+  // Phase 0 (sysarch-prep §0.3) — wrap in useCallback so the eslint
+  // react-hooks/exhaustive-deps rule is satisfied when handleDrop (also
+  // useCallback) lists it as a dependency. The body only references
+  // state setters, which are stable identities — empty dep array is OK.
+  const handleFileSelect = useCallback((f: File) => {
     const err = validateFile(f);
     if (err) {
       setError(err);
@@ -42,14 +47,14 @@ export function StepUploadModal({
     }
     setFile(f);
     setError(null);
-  };
+  }, []);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setDragOver(false);
     const dropped = e.dataTransfer.files[0];
     if (dropped) handleFileSelect(dropped);
-  }, []);
+  }, [handleFileSelect]);
 
   const handleUpload = async () => {
     if (!file) return;
@@ -70,12 +75,7 @@ export function StepUploadModal({
         onSuccess(data.pending_import_id);
       }
     } catch (err: unknown) {
-      const ax = err as { response?: { data?: { detail?: { detail?: string } | string } } };
-      const detail = ax?.response?.data?.detail;
-      const message = typeof detail === 'string'
-        ? detail
-        : (detail as { detail?: string })?.detail || 'Upload failed.';
-      setError(message);
+      setError(formatApiError(err, 'Upload failed.'));
     } finally {
       setUploading(false);
     }

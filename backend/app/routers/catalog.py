@@ -67,7 +67,7 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
@@ -84,17 +84,27 @@ from app.models.catalog import (
     PendingCatalogImport,
     PendingImportStatus,
     Supplier,
+    SupplierAlias,                      # TDD-CAT-002
     SupplierDocument,
     SupplierDocumentType,
 )
 from app.models.interface import Unit
+# CLEANUP-002 Phase 4 (AD-7 + AD-8): the catalog_part usage check
+# spans project_parts (direct) and mechanical_joints (transitive via
+# project_parts.part_a_id / part_b_id, per Phase 0). Both live in the
+# legacy parts_library models module.
+from app.models.parts_library import MechanicalJoint, ProjectPart
 from app.schemas.catalog import (
     CatalogConnectorResponse,
+    CatalogDocumentMetadata,           # HAROLD-IN-WRENCH-001 Phase 6
+    CatalogDocumentsResponse,          # HAROLD-IN-WRENCH-001 Phase 6
     CatalogPartCreate,
     CatalogPartPlacementRequest,
     CatalogPartResponse,
     CatalogPartSummary,
     CatalogPartUpdate,
+    CatalogPartUsageProjectEntry,
+    CatalogPartUsageReport,
     CatalogPartUsageRow,
     CatalogPinResponse,
     IcdExtractionResultSchema,
@@ -102,12 +112,18 @@ from app.schemas.catalog import (
     PendingCatalogImportResponse,
     PendingCatalogImportUpdate,
     PendingImportRejectRequest,
+    StepUploadResponse,                # TDD-CAT-002
     SupplierCreate,
     SupplierDocumentResponse,
     SupplierResponse,
     SupplierUpdate,
 )
+from app.schemas.harold import (
+    CatalogDesignatorEntry,
+    CatalogDesignatorsResponseV2,  # TDD-HAROLD-INT-002 Phase 3 (AD-9)
+)
 from app.schemas.interface import UnitResponse
+from app.config import settings
 from app.services.auth import get_current_user
 from app.services.catalog import placement as placement_svc
 
@@ -117,6 +133,22 @@ try:
 except ImportError:  # pragma: no cover - dev test fallback
     def _audit(*a, **kw):
         pass
+
+# Optional HAROLD V2 integration (TDD-HAROLD-INT-002 Phase 3).
+# Loaded lazily and gated on settings.HAROLD_INTEGRATION_ENABLED so
+# legacy paths keep working unmodified when the flag is off
+# (gotcha #12 — flag-off behaviour must be byte-identical to today).
+try:
+    from app.services.harold import (
+        HaroldDuplicateError,
+        issue_wpn_for_catalog_part as _harold_issue,
+        suggest_wpn_for_part as _harold_suggest,
+        validate_filename_wpn as _harold_validate_filename,
+    )
+    _HAROLD_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    _HAROLD_AVAILABLE = False
+    HaroldDuplicateError = Exception  # type: ignore[assignment,misc]
 
 # Optional RBAC
 try:
@@ -198,6 +230,101 @@ def _get_catalog_part_or_404(db: Session, part_id: int) -> CatalogPart:
             detail=f"CatalogPart {part_id} not found",
         )
     return p
+
+
+def _build_catalog_part_usage_report(
+    db: Session, part: CatalogPart,
+) -> CatalogPartUsageReport:
+    """CLEANUP-002 Phase 4 (AD-7 + AD-8). Usage report across the
+    three "downstream consumer" categories that should block delete:
+
+        project_parts.catalog_part_id              (direct, BOM lines)
+        mechanical_joints.part_a_id / part_b_id    (transitive via project_parts)
+        units.catalog_part_id                      (direct, project placements)
+
+    ``deletable`` is true iff every count is zero.
+
+    Phase 0's FK sweep also flagged catalog_connectors.catalog_part_id
+    and catalog_parts.parent_part_id (variant children). Both were
+    excluded after writing the first cut against the existing test
+    suite: connectors are *owned* by the part (the part's own pin
+    definition) and cascade with it on hard-delete; parent_part_id
+    is ``ON DELETE SET NULL`` so it doesn't block at the DB level
+    and variant children survive parent deletion with the parent
+    link nulled. Counting either as "usage" 409'd the pre-Phase-4
+    test that creates a part with connectors and immediately deletes
+    it, which is a legitimate flow.
+
+    Pending-import committed FKs and assembly_components are also
+    excluded — Phase 0 confirmed the former is ON DELETE SET NULL
+    and the latter table doesn't exist.
+    """
+    pp_rows = (
+        db.query(ProjectPart.id, ProjectPart.project_id)
+        .filter(ProjectPart.catalog_part_id == part.id)
+        .all()
+    )
+    pp_ids = [r[0] for r in pp_rows]
+
+    # Mechanical joints reach catalog_parts only through project_parts;
+    # mechanical_joints itself has no deleted_at column (Phase 0).
+    joint_rows: List = []
+    if pp_ids:
+        joint_rows = (
+            db.query(MechanicalJoint.id, MechanicalJoint.project_id)
+            .filter(
+                or_(
+                    MechanicalJoint.part_a_id.in_(pp_ids),
+                    MechanicalJoint.part_b_id.in_(pp_ids),
+                )
+            )
+            .all()
+        )
+
+    unit_rows = (
+        db.query(Unit.id, Unit.project_id)
+        .filter(Unit.catalog_part_id == part.id)
+        .all()
+    )
+
+    # Aggregate the project-scoped categories. A project may have zero
+    # of any one category but still show up because it has the others.
+    project_aggregate: Dict[int, CatalogPartUsageProjectEntry] = {}
+
+    def _ensure_entry(proj_id: int) -> CatalogPartUsageProjectEntry:
+        if proj_id not in project_aggregate:
+            proj = (
+                db.query(Project.code, Project.name)
+                .filter(Project.id == proj_id)
+                .first()
+            )
+            project_aggregate[proj_id] = CatalogPartUsageProjectEntry(
+                project_id=proj_id,
+                project_name=proj[1] if proj else None,
+                project_code=proj[0] if proj else None,
+            )
+        return project_aggregate[proj_id]
+
+    for _pp_id, proj_id in pp_rows:
+        _ensure_entry(proj_id).project_part_count += 1
+    for _j_id, proj_id in joint_rows:
+        _ensure_entry(proj_id).mechanical_joint_count += 1
+    for _u_id, proj_id in unit_rows:
+        _ensure_entry(proj_id).unit_count += 1
+
+    total = len(pp_rows) + len(joint_rows) + len(unit_rows)
+
+    return CatalogPartUsageReport(
+        part_id=part.id,
+        part_number=part.part_number,
+        internal_part_number=part.internal_part_number,
+        total_references=total,
+        deletable=total == 0,
+        projects=sorted(
+            project_aggregate.values(),
+            key=lambda e: (e.project_code or "", e.project_id),
+        ),
+    )
 
 
 def _supplier_response(db: Session, s: Supplier) -> SupplierResponse:
@@ -471,6 +598,9 @@ async def upload_supplier_document(
     doc = SupplierDocument(
         supplier_id=supplier_id,
         title=title,
+        # HAROLD-IN-WRENCH-001 Phase 6: persist the multipart filename
+        # so HAROLD's filename-precheck can stem-match.
+        original_filename=original_name,
         document_type=document_type,
         revision=revision,
         document_number=document_number,
@@ -497,6 +627,116 @@ async def upload_supplier_document(
         request=request,
     )
     return SupplierDocumentResponse.model_validate(doc)
+
+
+@router.get("/documents", response_model=CatalogDocumentsResponse)
+def list_documents(
+    supplier_id: Optional[int] = Query(None),
+    document_type: Optional[SupplierDocumentType] = Query(None),
+    filename_stem: Optional[str] = Query(
+        None,
+        description=(
+            "Leading-anchored ILIKE match against original_filename "
+            "(falls back to title for pre-Phase-6 rows where "
+            "original_filename was not yet captured)."
+        ),
+    ),
+    extraction_status: Optional[ExtractionStatus] = Query(None),
+    since: Optional[datetime] = Query(
+        None, description="Only documents with uploaded_at >= this timestamp.",
+    ),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+):
+    """HAROLD-IN-WRENCH-001 Phase 6 (AD-7). Peer-service-friendly list
+    of supplier documents joined to their catalog_part metadata, used
+    by HAROLD's filename precheck endpoint.
+
+    Unauthenticated for LAN-only peer consumption — matches the
+    convention established by ``/api/v1/catalog/designators`` (the
+    earlier HAROLD-INTEGRATION-002 endpoint). A future TDD will add a
+    shared-token header when HAROLD-in-WRENCH ships to non-LAN
+    deployments.
+
+    Pagination matches the rest of the catalog router (skip / limit
+    default 50, cap 200).
+    """
+    q = db.query(SupplierDocument)
+    if supplier_id is not None:
+        q = q.filter(SupplierDocument.supplier_id == supplier_id)
+    if document_type is not None:
+        q = q.filter(SupplierDocument.document_type == document_type)
+    if filename_stem:
+        # ILIKE leading-anchored. Match against original_filename if
+        # present, fall back to title for pre-Phase-6 rows.
+        pat = f"{filename_stem}%"
+        q = q.filter(
+            or_(
+                SupplierDocument.original_filename.ilike(pat),
+                and_(
+                    SupplierDocument.original_filename.is_(None),
+                    SupplierDocument.title.ilike(pat),
+                ),
+            )
+        )
+    if extraction_status is not None:
+        q = q.filter(SupplierDocument.extraction_status == extraction_status)
+    if since is not None:
+        q = q.filter(SupplierDocument.uploaded_at >= since)
+
+    total = q.count()
+    rows = (
+        q.order_by(SupplierDocument.uploaded_at.desc())
+        .offset(skip).limit(limit).all()
+    )
+
+    # Join each document to its (most recent) live catalog_part for
+    # the WPN context HAROLD wants. Single batched lookup so we don't
+    # N+1 the catalog_part query inside the loop.
+    doc_ids = [d.id for d in rows]
+    part_by_doc_id: Dict[int, CatalogPart] = {}
+    if doc_ids:
+        part_rows = (
+            db.query(CatalogPart)
+            .filter(
+                CatalogPart.source_document_id.in_(doc_ids),
+                CatalogPart.deleted_at.is_(None),
+            )
+            .all()
+        )
+        for p in part_rows:
+            # If multiple live parts share a source_document_id, prefer
+            # the lowest id (oldest) — matches the supplier_doc → part
+            # association order the rest of the catalog uses.
+            existing = part_by_doc_id.get(p.source_document_id)
+            if existing is None or p.id < existing.id:
+                part_by_doc_id[p.source_document_id] = p
+
+    documents = [
+        CatalogDocumentMetadata(
+            id=d.id,
+            title=d.title,
+            original_filename=d.original_filename,
+            document_type=d.document_type,
+            file_path=d.file_path,
+            mime_type=d.mime_type,
+            sha256=d.sha256,
+            supplier_id=d.supplier_id,
+            supplier_document_id=d.id,
+            catalog_part_id=(
+                part_by_doc_id[d.id].id if d.id in part_by_doc_id else None
+            ),
+            internal_part_number=(
+                part_by_doc_id[d.id].internal_part_number
+                if d.id in part_by_doc_id else None
+            ),
+            extraction_status=d.extraction_status,
+            uploaded_at=d.uploaded_at,
+        )
+        for d in rows
+    ]
+    return CatalogDocumentsResponse(documents=documents, total=total)
 
 
 @router.get("/documents/{doc_id}", response_model=SupplierDocumentResponse)
@@ -717,35 +957,97 @@ def delete_catalog_part(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """CLEANUP-002 Phase 4 (AD-7).
+
+    Default path (no admin_force): soft-delete when no downstream
+    refs; structured 409 with the full usage report when refs exist
+    (UI renders a project list + the reason). Hard-block — the user
+    removes the usage first, then retries.
+
+    Legacy ``?admin_force=true`` path: unchanged from pre-cleanup
+    behavior. Hard-deletes the row and lets the FK constraints
+    cascade or null-out as configured. Kept because existing tests
+    + admin tooling depend on it (rule #3 forbids adding a *new*
+    cascade override; this one already exists).
+    """
     _require_admin(current_user)
     p = _get_catalog_part_or_404(db, part_id)
-    in_use = placement_svc.is_part_in_use(db, part_id)
-    usage_count = (
-        db.query(func.count(Unit.id))
-        .filter(Unit.catalog_part_id == p.id)
-        .scalar()
-        or 0
-    )
-    if in_use and not admin_force:
+
+    if admin_force:
+        # Legacy hard-delete escape. Pre-CLEANUP-002 behaviour: rows
+        # with units pointing here get unlinked via the FK's SET NULL;
+        # rows with project_parts pointing here fail RESTRICT and
+        # surface a 500 to the caller (the existing behaviour).
+        usage_count = (
+            db.query(func.count(Unit.id))
+            .filter(Unit.catalog_part_id == p.id)
+            .scalar()
+            or 0
+        )
+        _audit(
+            db, "catalog_part.deleted", "catalog_part", p.id, current_user.id,
+            {
+                "part_number": p.part_number,
+                "supplier_id": p.supplier_id,
+                "units_unlinked": usage_count,
+                "admin_force": True,
+            },
+            request=request,
+        )
+        db.delete(p)
+        db.commit()
+        return {
+            "status": "deleted", "id": part_id,
+            "units_unlinked": usage_count, "admin_force": True,
+        }
+
+    # Already soft-deleted — surface a 404 so callers don't double-act.
+    if p.deleted_at is not None:
         raise HTTPException(
-            409,
-            f"CatalogPart is placed in {usage_count} project unit(s). "
-            "Pass ?admin_force=true to delete anyway (project units will have catalog_part_id set to NULL).",
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"CatalogPart {part_id} not found",
         )
 
+    usage = _build_catalog_part_usage_report(db, p)
+    if not usage.deletable:
+        _audit(
+            db, "catalog.part.deletion_blocked", "catalog_part", p.id,
+            current_user.id,
+            {
+                "part_number": p.part_number,
+                "total_references": usage.total_references,
+                "project_count": len(usage.projects),
+            },
+            request=request,
+        )
+        db.commit()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "part_in_use",
+                "message": (
+                    f"Cannot delete part {p.part_number}. It is "
+                    f"referenced by {usage.total_references} "
+                    f"{'entity' if usage.total_references == 1 else 'entities'} "
+                    f"across {len(usage.projects)} project(s). Remove "
+                    "those references first."
+                ),
+                "usage": usage.model_dump(),
+            },
+        )
+
+    p.deleted_at = datetime.utcnow()
     _audit(
-        db, "catalog_part.deleted", "catalog_part", p.id, current_user.id,
+        db, "catalog.part.deleted", "catalog_part", p.id, current_user.id,
         {
             "part_number": p.part_number,
+            "internal_part_number": p.internal_part_number,
             "supplier_id": p.supplier_id,
-            "units_unlinked": usage_count,
-            "admin_force": admin_force,
         },
         request=request,
     )
-    db.delete(p)
     db.commit()
-    return {"status": "deleted", "id": part_id, "units_unlinked": usage_count}
+    return {"status": "deleted", "id": part_id, "soft_delete": True}
 
 
 @router.get("/parts/{part_id}/usage", response_model=List[CatalogPartUsageRow])
@@ -777,6 +1079,23 @@ def list_catalog_part_usage(
             )
         )
     return out
+
+
+@router.get(
+    "/parts/{part_id}/usage-report", response_model=CatalogPartUsageReport,
+)
+def get_catalog_part_usage_report(
+    part_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """CLEANUP-002 Phase 4 (AD-8). Returns the structured usage
+    report the frontend renders as a "Used in N projects" badge and
+    consults to decide whether the Delete button is live. Mirrors
+    the report the DELETE handler computes internally before
+    blocking with 409, so the UI never lies about deletability."""
+    p = _get_catalog_part_or_404(db, part_id)
+    return _build_catalog_part_usage_report(db, p)
 
 
 @router.post("/parts/{part_id}/place", response_model=UnitResponse, status_code=201)
@@ -1034,6 +1353,84 @@ def patch_pending_import(
     return PendingCatalogImportResponse.model_validate(row)
 
 
+@router.delete("/pending-imports/{import_id}", status_code=200)
+def delete_pending_import(
+    import_id: int,
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """CLEANUP-002 Phase 4 (AD-6). Hard-delete the row — pending
+    imports are pre-catalog ephemeral state with no audit-retention
+    requirement once rejected. Cascades to deleting the linked
+    ``supplier_document`` *only if* no other live reference remains
+    (no other pending imports against it; no non-soft-deleted
+    catalog_part sourced from it). Otherwise the document is left in
+    place so its other dependents keep working.
+
+    ``deleted_at`` does not exist on pending_catalog_imports —
+    ``status='rejected'`` is the soft equivalent today. This
+    endpoint adds a true hard-delete option so the list page can
+    be cleaned up directly.
+    """
+    _require_req_eng_plus(current_user)
+    pi = (
+        db.query(PendingCatalogImport)
+        .filter(PendingCatalogImport.id == import_id)
+        .first()
+    )
+    if pi is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"PendingCatalogImport {import_id} not found",
+        )
+    supplier_doc_id = pi.source_document_id
+    pi_status = pi.status
+
+    db.delete(pi)
+    db.flush()
+
+    supplier_doc_deleted = False
+    if supplier_doc_id is not None:
+        other_pi = (
+            db.query(func.count(PendingCatalogImport.id))
+            .filter(PendingCatalogImport.source_document_id == supplier_doc_id)
+            .scalar()
+            or 0
+        )
+        live_parts = (
+            db.query(func.count(CatalogPart.id))
+            .filter(
+                CatalogPart.source_document_id == supplier_doc_id,
+                CatalogPart.deleted_at.is_(None),
+            )
+            .scalar()
+            or 0
+        )
+        if other_pi == 0 and live_parts == 0:
+            db.query(SupplierDocument).filter(
+                SupplierDocument.id == supplier_doc_id
+            ).delete()
+            supplier_doc_deleted = True
+
+    _audit(
+        db, "pending_import.deleted", "pending_catalog_import", import_id,
+        current_user.id,
+        {
+            "prior_status": pi_status.value if hasattr(pi_status, "value") else str(pi_status),
+            "source_document_id": supplier_doc_id,
+            "supplier_document_deleted": supplier_doc_deleted,
+        },
+        request=request,
+    )
+    db.commit()
+    return {
+        "deleted": True,
+        "id": import_id,
+        "supplier_document_deleted": supplier_doc_deleted,
+    }
+
+
 # ══════════════════════════════════════════════════════════════
 #  Phase 7 — ICD Ingestion endpoints (extract / approve / reject)
 # ══════════════════════════════════════════════════════════════
@@ -1247,7 +1644,7 @@ def _approve_pending_import(
     response_model=CatalogPartResponse,
     status_code=201,
 )
-def approve_pending_import(
+async def approve_pending_import(
     import_id: int,
     request: Request = None,
     db: Session = Depends(get_db),
@@ -1258,10 +1655,74 @@ def approve_pending_import(
     Atomic: any failure rolls every newly-created Supplier / CatalogPart /
     CatalogConnector / CatalogPin row back. Marks the source document
     APPROVED on success.
+
+    Phase 3 of HAROLD-INT-002: when the integration is enabled, also
+    assigns ``internal_part_number`` via HAROLD. Three branches per
+    AD-11:
+      1. ``user_supplied_wpn`` set in pending.extracted_data → call
+         issue_specific. 409 from HAROLD → reject the approval.
+      2. user didn't override + HAROLD up → issue (auto-allocate).
+      3. user didn't override + HAROLD down → fallback allocator,
+         set ``wpn_pending_sync=True``.
+
+    Flag-off: the new code path is skipped entirely; behaviour
+    identical to today.
     """
     _require_req_eng_plus(current_user)
+
+    # Pull the WPN metadata from extracted_data BEFORE `_approve_pending_import`
+    # runs — the IcdExtractionResultSchema inside that helper drops
+    # unknown keys, so reading these after would return nothing.
+    harold_meta: dict[str, object] = {}
+    if _HAROLD_AVAILABLE and settings.HAROLD_INTEGRATION_ENABLED:
+        peek = (
+            db.query(PendingCatalogImport)
+            .filter(PendingCatalogImport.id == import_id)
+            .first()
+        )
+        if peek is not None and isinstance(peek.extracted_data, dict):
+            ext = peek.extracted_data
+            # AD-11: only an explicit user_supplied_wpn drives
+            # issue-specific. proposed_wpn in extracted_data is just
+            # the UI hint and never implicitly becomes a commitment —
+            # auto-allocate happens when the user didn't override.
+            user_supplied = (ext.get("user_supplied_wpn") or "").strip() or None
+            harold_meta["final_wpn"] = user_supplied
+            harold_meta["had_user_override"] = bool(user_supplied)
+
     try:
         part = _approve_pending_import(db, import_id, current_user)
+
+        # HAROLD WPN assignment — feature-flagged. Must happen BEFORE
+        # the commit so a hard failure (e.g. caller-supplied duplicate)
+        # rolls back the whole approval.
+        wpn_audit_payload: dict[str, object] | None = None
+        if _HAROLD_AVAILABLE and settings.HAROLD_INTEGRATION_ENABLED:
+            try:
+                wpn, source, pending_sync = await _harold_issue(
+                    db, part,
+                    supplied_wpn=harold_meta.get("final_wpn"),  # type: ignore[arg-type]
+                )
+                part.internal_part_number = wpn
+                part.wpn_pending_sync = bool(pending_sync)
+                wpn_audit_payload = {
+                    "wpn":              wpn,
+                    "source":           source,
+                    "wpn_pending_sync": bool(pending_sync),
+                    "had_user_override": bool(harold_meta.get("had_user_override")),
+                }
+            except HaroldDuplicateError as exc:
+                db.rollback()
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"WPN {harold_meta.get('final_wpn')!r} is already "
+                        f"issued in HAROLD's ledger. Pick a different WPN "
+                        f"or clear the override to auto-allocate. "
+                        f"({exc!s})"
+                    ),
+                ) from exc
+
         db.commit()
     except HTTPException:
         db.rollback()
@@ -1281,6 +1742,12 @@ def approve_pending_import(
         },
         request=request,
     )
+    if wpn_audit_payload is not None:
+        _audit(
+            db, "catalog.part.wpn_assigned", "catalog_part", part.id, current_user.id,
+            wpn_audit_payload,
+            request=request,
+        )
 
     return _catalog_part_response(db, part)
 
@@ -1329,3 +1796,467 @@ def reject_pending_import(
         request=request,
     )
     return PendingCatalogImportResponse.model_validate(pending)
+
+
+# ══════════════════════════════════════════════════════════════
+#  TDD-CAT-002 — STEP file upload (additive endpoint)
+# ══════════════════════════════════════════════════════════════
+#
+# The PDF / datasheet flow uploads a document FIRST (with the supplier
+# known up-front) then runs an LLM-driven ICD extractor in the
+# background. STEP files invert that: the supplier is auto-detected
+# from the filename, the parser runs INLINE (CPU only), and the row
+# lands in the existing pending_catalog_imports queue ready for review
+# via the existing /pending-imports/{id}/approve endpoint.
+#
+# The two flows share the underlying tables (suppliers,
+# supplier_documents, pending_catalog_imports) but use distinct upload
+# routes — keeps each handler small and avoids overloading the PDF
+# upload semantics. AD-3 in CAT-002.
+# ══════════════════════════════════════════════════════════════
+
+from app.services.cad.step_parser import (   # noqa: E402  (after main imports)
+    PARSER_VERSION as _STEP_PARSER_VERSION,
+    average_confidence as _step_avg_confidence,
+    parse_step_file as _parse_step_file,
+)
+
+
+def _resolve_supplier_for_step(
+    db: Session,
+    canonical: Optional[str],
+    aliases: List[str],
+    current_user: User,
+) -> tuple[Supplier, bool]:
+    """Look up the canonical-named supplier (alias → name match), creating
+    a new row + alias entries when nothing matches.
+
+    Returns ``(supplier, was_created)``. When ``canonical`` is None the
+    caller resolves to Wardstone separately; this helper assumes a vendor
+    name is in hand.
+    """
+    if not canonical:
+        raise ValueError("_resolve_supplier_for_step requires a canonical name")
+
+    # 1. Alias hit (case-insensitive across the canonical + detected aliases)
+    candidates = list(dict.fromkeys([canonical, *aliases]))
+    lower_candidates = [c.lower() for c in candidates if c]
+    alias_hit = (
+        db.query(SupplierAlias)
+        .filter(func.lower(SupplierAlias.alias).in_(lower_candidates))
+        .first()
+    )
+    if alias_hit is not None:
+        sup = db.query(Supplier).filter(Supplier.id == alias_hit.supplier_id).first()
+        if sup is not None:
+            return sup, False
+
+    # 2. Direct supplier-name match (case-insensitive against canonical)
+    name_hit = (
+        db.query(Supplier)
+        .filter(func.lower(Supplier.name) == canonical.lower())
+        .first()
+    )
+    if name_hit is not None:
+        return name_hit, False
+
+    # 3. Auto-create
+    sup = Supplier(
+        name=canonical,
+        is_active=True,
+        is_in_house=False,
+        notes=f"Auto-created from STEP upload at {datetime.utcnow().isoformat()}.",
+        created_by_id=current_user.id,
+    )
+    db.add(sup)
+    db.flush()  # need sup.id for alias inserts
+
+    # Insert each detected alias. UNIQUE collisions are silently skipped
+    # — another supplier may already own the alias text. (Common gotcha
+    # §13.) Use a SAVEPOINT around each insert so a failure on one alias
+    # doesn't abort the whole transaction.
+    for raw_alias in candidates:
+        if not raw_alias:
+            continue
+        try:
+            with db.begin_nested():
+                db.add(SupplierAlias(supplier_id=sup.id, alias=raw_alias))
+                # Force the INSERT now so a UNIQUE collision raises
+                # inside this with-block (savepoint can roll back),
+                # not at outer commit (where the whole tx blows up).
+                db.flush()
+        except Exception as exc:  # noqa: BLE001 - integrity errors stay narrow
+            logger.info(
+                "Skipping alias %r for new supplier %r (collision): %s",
+                raw_alias, canonical, exc,
+            )
+    db.flush()
+    return sup, True
+
+
+def _wardstone_or_500(db: Session) -> Supplier:
+    sup = (
+        db.query(Supplier)
+        .filter(func.lower(Supplier.name) == "wardstone")
+        .first()
+    )
+    if sup is None:
+        raise HTTPException(
+            500,
+            "Wardstone supplier missing — apply migration 0029 (`alembic upgrade head`).",
+        )
+    return sup
+
+
+@router.post(
+    "/upload-step",
+    response_model=StepUploadResponse,
+    status_code=201,
+)
+async def upload_step_file(
+    file: UploadFile = File(...),
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """TDD-CAT-002 — STEP file ingest.
+
+    Pipeline (synchronous):
+      1. SHA-256 dedup across ALL suppliers (STEP files are globally
+         identifiable by content — same hash = same geometry).
+      2. Run the pure-Python STEP parser (`backend/app/services/cad`).
+         pythonOCC enrichment is opportunistic.
+      3. Resolve the detected supplier — alias map → name match →
+         auto-create new Supplier row + alias entries. No vendor
+         detected → link to Wardstone (the in-house default seeded in
+         migration 0029).
+      4. Save the file under SUPPLIER_DOC_DIR/{uuid}.step.
+      5. Create a SupplierDocument (extraction_status=PENDING_REVIEW —
+         the parser already ran).
+      6. Create a PendingCatalogImport with the parser's extracted_data
+         JSONB. Reviewer approves via the existing
+         /pending-imports/{id}/approve endpoint.
+      7. Return IDs + detection result.
+
+    RBAC: req_eng+ (mirrors document upload).
+    """
+    _require_req_eng_plus(current_user)
+
+    # ── 1. read + dedup ──
+    content = await file.read()
+    if not content:
+        raise HTTPException(422, "uploaded file is empty")
+    sha256 = hashlib.sha256(content).hexdigest()
+
+    # CLEANUP-002 Phase 2 (AD-2 revised per Phase 0): soft-delete-aware
+    # dedup. A supplier_document with this hash blocks re-upload only
+    # if it still has live downstream state — either a non-soft-deleted
+    # catalog_part, or a still-pending pending_import. Once both are
+    # gone (catalog_part soft-deleted; pending_import terminal or
+    # hard-deleted by Phase 4's cleanup flow), the supplier_document is
+    # effectively orphaned and re-uploading the same STEP succeeds.
+    # supplier_documents itself has no deleted_at column, so the
+    # liveness check joins through the dependent tables.
+    dup_row = (
+        db.query(SupplierDocument.id, SupplierDocument.supplier_id)
+        .outerjoin(
+            CatalogPart, CatalogPart.source_document_id == SupplierDocument.id,
+        )
+        .outerjoin(
+            PendingCatalogImport,
+            PendingCatalogImport.source_document_id == SupplierDocument.id,
+        )
+        .filter(SupplierDocument.sha256 == sha256)
+        .filter(
+            or_(
+                and_(
+                    CatalogPart.id.isnot(None),
+                    CatalogPart.deleted_at.is_(None),
+                ),
+                and_(
+                    PendingCatalogImport.id.isnot(None),
+                    PendingCatalogImport.status == PendingImportStatus.PENDING,
+                ),
+            )
+        )
+        .first()
+    )
+    if dup_row is not None:
+        existing_doc_id, _existing_supplier_id = dup_row
+        # AD-3: enrich the 409 body with actionable IDs + URL so the
+        # frontend can route the user to the existing pending import
+        # rather than show the opaque ID dump that prompted this TDD.
+        active_pi = (
+            db.query(PendingCatalogImport.id)
+            .filter(
+                PendingCatalogImport.source_document_id == existing_doc_id,
+                PendingCatalogImport.status == PendingImportStatus.PENDING,
+            )
+            .first()
+        )
+        active_pi_id = active_pi[0] if active_pi else None
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "step_already_uploaded",
+                "message": (
+                    f"This STEP file (sha256={sha256[:8]}…) is already "
+                    "uploaded and has live downstream state. Open the "
+                    "existing pending import instead."
+                ),
+                "existing_supplier_document_id": existing_doc_id,
+                "existing_pending_import_id": active_pi_id,
+                "existing_pending_import_url": (
+                    f"/catalog/pending-imports/{active_pi_id}"
+                    if active_pi_id else None
+                ),
+            },
+        )
+
+    # ── 2. save to disk + parse ──
+    SUPPLIER_DOC_DIR.mkdir(parents=True, exist_ok=True)
+    file_uuid = uuid.uuid4().hex
+    stored_path = SUPPLIER_DOC_DIR / f"{file_uuid}.step"
+    stored_path.write_bytes(content)
+
+    original_filename = file.filename or "upload.step"
+    try:
+        # Pass the user-supplied filename so vendor regex / lexicon
+        # match against the real name, not the UUID storage path.
+        parsed = _parse_step_file(
+            stored_path,
+            run_pythonocc=True,
+            original_filename=original_filename,
+        )
+    except ValueError as exc:
+        # Clean up the partial save before bubbling.
+        try:
+            stored_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise HTTPException(422, f"STEP parse failed: {exc}") from exc
+
+    # ── 3. resolve / auto-create supplier ──
+    supplier_was_created = False
+    if parsed.detected_supplier_canonical:
+        supplier, supplier_was_created = _resolve_supplier_for_step(
+            db,
+            canonical=parsed.detected_supplier_canonical,
+            aliases=parsed.detected_supplier_aliases,
+            current_user=current_user,
+        )
+    else:
+        # In-house default
+        supplier = _wardstone_or_500(db)
+        # Surface the in-house decision in the parsed result so the
+        # review UI can show the right banner.
+        parsed.extracted.setdefault("manufacturer", supplier.name)
+        parsed.confidence.setdefault("manufacturer", "low")
+
+    # IcdExtractionResultSchema requires a nested supplier.name on
+    # approve — synthesize it here so /pending-imports/{id}/approve
+    # validates without per-handler special-casing.
+    parsed.extracted["supplier"] = {
+        "name": supplier.name,
+        "cage_code": supplier.cage_code,
+        "country": supplier.country,
+    }
+
+    # ── 4b. HAROLD integration: WPN suggestion + filename WPN check ──
+    # Flag-gated per AD-1; when off, the parsed.extracted dict stays
+    # exactly as today. The suggestion fields land in extracted_data
+    # so the pending-imports review page can render the proposed WPN
+    # without re-calling HAROLD on every page load.
+    if _HAROLD_AVAILABLE and settings.HAROLD_INTEGRATION_ENABLED:
+        part_class_value = parsed.extracted.get("part_class") or ""
+        try:
+            suggestion = await _harold_suggest(
+                db, part_class_value, hint=original_filename,
+            )
+            parsed.extracted["proposed_wpn"]          = suggestion.get("suggested_wpn")
+            parsed.extracted["wpn_source"]            = suggestion.get("source")
+            parsed.extracted["wpn_system_code"]       = suggestion.get("system_code")
+            if suggestion.get("reason"):
+                parsed.extracted["wpn_suggestion_reason"] = suggestion.get("reason")
+        except Exception as exc:  # noqa: BLE001 — best-effort during upload
+            logger.warning("HAROLD suggest failed during upload: %s", exc)
+            parsed.extracted["wpn_source"] = "unavailable"
+            parsed.extracted["wpn_suggestion_reason"] = str(exc)
+
+        # If the filename itself looks like a Wardstone WPN, validate
+        # it and surface a duplicate warning so the reviewer knows.
+        try:
+            fcheck = await _harold_validate_filename(original_filename)
+            if fcheck.get("is_wardstone_format"):
+                parsed.extracted["filename_wpn"] = fcheck.get("extracted_wpn")
+                wv = fcheck.get("wpn_validation") or {}
+                if wv.get("is_issued"):
+                    parsed.warnings.append(
+                        f"Filename WPN {fcheck['extracted_wpn']!r} is already "
+                        "issued in HAROLD's ledger. Use the suggested WPN or pick "
+                        "a different filename."
+                    )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("HAROLD validate-filename failed during upload: %s", exc)
+
+    # ── 5. SupplierDocument ──
+    extraction_log = {
+        "warnings": parsed.warnings,
+        "parser_version": parsed.parser_version,
+        "confidence_per_field": parsed.confidence,
+        "supplier_was_auto_created": supplier_was_created,
+    }
+
+    doc = SupplierDocument(
+        supplier_id=supplier.id,
+        title=original_filename,
+        # HAROLD-IN-WRENCH-001 Phase 6: distinct column so HAROLD's
+        # filename precheck can stem-match. STEP path always has a
+        # real filename in hand.
+        original_filename=original_filename,
+        document_type=SupplierDocumentType.OTHER,
+        file_path=str(stored_path),
+        file_size_bytes=len(content),
+        sha256=sha256,
+        mime_type="model/step",
+        extraction_status=ExtractionStatus.PENDING_REVIEW,
+        extraction_log=extraction_log,
+        extraction_at=datetime.utcnow(),
+        uploaded_by_id=current_user.id,
+    )
+    db.add(doc)
+    db.flush()
+
+    # ── 6. PendingCatalogImport ──
+    extraction_confidence = _step_avg_confidence(parsed.confidence)
+    pending = PendingCatalogImport(
+        source_document_id=doc.id,
+        supplier_id=supplier.id,
+        extracted_data=parsed.extracted,
+        extraction_warnings={
+            "warnings": parsed.warnings,
+            "supplier_was_auto_created": supplier_was_created,
+            "parser_version": parsed.parser_version,
+        },
+        extraction_confidence=extraction_confidence,
+        status=PendingImportStatus.PENDING,
+    )
+    db.add(pending)
+    db.commit()
+    db.refresh(pending)
+    db.refresh(doc)
+    db.refresh(supplier)
+
+    # ── 7. audit trail ──
+    if supplier_was_created:
+        _audit(
+            db, "catalog.supplier.auto_created", "supplier", supplier.id, current_user.id,
+            {
+                "detected_name": parsed.detected_supplier_canonical,
+                "alias_count": len(parsed.detected_supplier_aliases),
+                "supplier_document_id": doc.id,
+            },
+            request=request,
+        )
+
+    _audit(
+        db, "catalog.step_uploaded", "supplier_document", doc.id, current_user.id,
+        {
+            "supplier_id": supplier.id,
+            "supplier_was_created": supplier_was_created,
+            "pending_import_id": pending.id,
+            "mpn": parsed.extracted.get("part_number"),
+            "sha256_short": sha256[:12],
+            "size_bytes": len(content),
+            "extraction_confidence": float(extraction_confidence),
+        },
+        request=request,
+    )
+
+    return StepUploadResponse(
+        pending_import_id=pending.id,
+        supplier_document_id=doc.id,
+        detected_supplier_id=supplier.id,
+        detected_supplier_name=supplier.name,
+        supplier_was_created=supplier_was_created,
+        extraction_confidence=float(extraction_confidence),
+        warnings=parsed.warnings,
+    )
+
+
+
+# ═════════════════════════════════════════════════════════════════
+#  TDD-HAROLD-001: outbound designator feed (HAROLD ← ASTRA)
+# ═════════════════════════════════════════════════════════════════
+
+@router.get("/designators", response_model=CatalogDesignatorsResponseV2)
+def list_catalog_designators(
+    system: Optional[str] = Query(
+        None,
+        description="2-letter HAROLD system code, e.g. FH. Case-insensitive.",
+    ),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(200, ge=1, le=200),
+    db: Session = Depends(get_db),
+    # AD-10: unauthenticated in v1 — peer-service consumption on a
+    # trusted LAN. Future TDD adds a shared-token header.
+):
+    """List Wardstone Part Numbers (WPNs) ASTRA has issued.
+
+    Phase 3 of HAROLD-INT-002 pivots the source column from the
+    manufacturer ``part_number`` (MPN) to the assigned
+    ``internal_part_number`` (WPN) per AD-9. Only rows with a
+    non-NULL WPN are returned — pre-integration parts (e.g. the
+    McMaster row, ``internal_part_number IS NULL``) are excluded.
+
+    When ``system`` is supplied, filters to WPNs matching
+    ``WS-<SYSTEM>-P%``. Returns structured rows so HAROLD's browse
+    surface can show part_class + part_id linkbacks without a second
+    query.
+
+    The response shape is the V2 form ``CatalogDesignatorsResponseV2``;
+    confirmed in Phase 0 that no caller was on the legacy flat-list
+    shape (the endpoint was added speculatively in the prior
+    HAROLD-001 phase-3 commit and never exercised).
+    """
+    query = (
+        db.query(CatalogPart)
+        .filter(
+            CatalogPart.internal_part_number.isnot(None),
+            CatalogPart.deleted_at.is_(None),
+        )
+    )
+    sys_upper: Optional[str] = None
+    if system:
+        sys_upper = system.upper()
+        query = query.filter(
+            CatalogPart.internal_part_number.like(f"WS-{sys_upper}-P%")
+        )
+
+    total = query.count()
+    rows = (
+        query.order_by(CatalogPart.internal_part_number)
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+
+    designators = []
+    for p in rows:
+        wpn = p.internal_part_number or ""
+        sys_code = None
+        if wpn.count("-") >= 3:
+            sys_code = wpn.split("-")[1]
+        designators.append(CatalogDesignatorEntry(
+            wpn=wpn,
+            part_id=p.id,
+            part_class=p.part_class.value if p.part_class else None,
+            system_code=sys_code,
+            created_at=p.created_at,
+        ))
+
+    return CatalogDesignatorsResponseV2(
+        designators=designators,
+        total=int(total or 0),
+        system_filter=sys_upper,
+    )

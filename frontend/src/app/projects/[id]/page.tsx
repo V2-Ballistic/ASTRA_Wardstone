@@ -37,6 +37,7 @@ import type { AIStats } from '@/lib/ai-api';
 // Whether AI is actually available at runtime is a separate question
 // answered by `aiAPI.isAvailable()` (cached, hits /ai/stats).
 import { aiAPI } from '@/lib/ai-api';
+import { formatApiError } from '@/lib/errors';
 
 // ══════════════════════════════════════
 //  Helpers
@@ -403,7 +404,7 @@ export default function ProjectDashboard() {
           if (!ctl.signal.aborted) setAiStats(null);
         });
     } catch (e: any) {
-      setError(e.response?.data?.detail || 'Failed to load dashboard');
+      setError(formatApiError(e, 'Failed to load dashboard'));
     }
     setLoading(false);
   }, [projectId]);
@@ -422,7 +423,7 @@ export default function ProjectDashboard() {
       );
       await fetchAll();
     } catch (e: any) {
-      setSeedResult(e.response?.data?.detail || e.response?.data?.status || 'Seed failed');
+      setSeedResult(formatApiError(e, e.response?.data?.status || 'Seed failed'));
     }
     setSeeding(false);
   };

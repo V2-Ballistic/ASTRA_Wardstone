@@ -14,6 +14,7 @@ import {
   AlertTriangle, CheckCircle, Info,
 } from 'lucide-react';
 import { projectsAPI } from '@/lib/api';
+import { formatApiError } from '@/lib/errors';
 
 const TEMPLATES = [
   {
@@ -79,14 +80,7 @@ export default function CreateProjectPage() {
       });
       router.push('/');
     } catch (err: any) {
-      const detail = err.response?.data?.detail;
-      if (typeof detail === 'string') {
-        setError(detail);
-      } else if (Array.isArray(detail)) {
-        setError(detail.map((d: any) => d.msg).join('; '));
-      } else {
-        setError('Failed to create project');
-      }
+      setError(formatApiError(err, 'Failed to create project'));
     } finally {
       setSaving(false);
     }

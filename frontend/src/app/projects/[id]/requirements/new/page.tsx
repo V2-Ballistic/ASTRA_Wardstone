@@ -13,7 +13,7 @@
  *   5. Parent selector with hierarchy tree
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
   ArrowLeft, Save, Loader2, ChevronDown, Sparkles, Wand2,
@@ -28,7 +28,24 @@ import { requirementsAPI, projectsAPI, artifactsAPI } from '@/lib/api';
 
 // F-084: runtime require() shims replaced with normal typed imports.
 import { aiAPI } from '@/lib/ai-api';
+import { formatApiError } from '@/lib/errors';
 import { aiWriterAPI } from '@/lib/ai-writer-api';
+
+// Phase 0 Fix 0b Part 3 — autosave unsaved drafts so a session timeout
+// can't eat an hour of work.
+import { useFormAutosave } from '@/lib/autosave';
+import RestorePromptBanner from '@/components/RestorePromptBanner';
+
+interface NewReqDraft {
+  title: string;
+  statement: string;
+  rationale: string;
+  reqType: RequirementType;
+  priority: Priority;
+  level: RequirementLevel;
+  parentId: number | null;
+  sourceArtifactId: number | null;
+}
 
 // ── Score ring ──
 function ScoreRing({ score, size = 70 }: { score: number; size?: number }) {
@@ -111,6 +128,33 @@ export default function NewRequirementPage() {
   // ASTRA-TDD-LEVELS-001: source artifact picker for L0 (Customer/Contractual) reqs.
   const [artifacts, setArtifacts] = useState<SourceArtifact[]>([]);
   const [sourceArtifactId, setSourceArtifactId] = useState<number | null>(null);
+
+  // ── Phase 0 Fix 0b Part 3: autosave ──
+  const draftState = useMemo<NewReqDraft>(() => ({
+    title, statement, rationale,
+    reqType, priority, level,
+    parentId, sourceArtifactId,
+  }), [title, statement, rationale, reqType, priority, level, parentId, sourceArtifactId]);
+
+  const autosave = useFormAutosave<NewReqDraft>(
+    `astra:autosave:req-new:project-${projectId}`,
+    draftState,
+  );
+
+  const onRestoreDraft = () => {
+    const draft = autosave.restoreDraft();
+    if (!draft) return;
+    setTitle(draft.title);
+    setStatement(draft.statement);
+    setRationale(draft.rationale);
+    setReqType(draft.reqType);
+    setPriority(draft.priority);
+    setLevel(draft.level);
+    setLevelManuallyChosen(true);
+    setParentId(draft.parentId);
+    setSourceArtifactId(draft.sourceArtifactId);
+    autosave.clearDraft();
+  };
 
   // Quality
   const [quality, setQuality] = useState<any>({ score: 0, passed: false, warnings: [], suggestions: [] });
@@ -228,9 +272,12 @@ export default function NewRequirementPage() {
         parent_id: parentId || undefined,
         source_artifact_id: sourceArtifactId || undefined,
       });
+      // Phase 0 Fix 0b Part 3: clear the autosaved draft once the
+      // requirement has been persisted server-side.
+      autosave.clearDraft();
       router.push(`${p}/requirements`);
     } catch (err: any) {
-      setError(err.response?.data?.detail || 'Failed to create requirement');
+      setError(formatApiError(err, 'Failed to create requirement'));
     }
     setSaving(false);
   };
@@ -272,6 +319,14 @@ export default function NewRequirementPage() {
 
       {error && (
         <div className="mb-4 rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-400">{error}</div>
+      )}
+
+      {autosave.hasDraft && autosave.draftAge !== null && (
+        <RestorePromptBanner
+          ageMs={autosave.draftAge}
+          onRestore={onRestoreDraft}
+          onDiscard={autosave.clearDraft}
+        />
       )}
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">

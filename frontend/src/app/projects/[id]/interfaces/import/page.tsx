@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { interfaceAPI, downloadBlob } from '@/lib/interface-api';
+import { formatApiError } from '@/lib/errors';
 import type { ImportPreviewResponse, ImportConfirmResponse } from '@/lib/interface-types';
 import { labelize } from '@/lib/interface-types';
 
@@ -127,8 +128,7 @@ export default function InterfaceImportPage() {
       if (first) setActiveSheet(first);
       setStep('preview');
     } catch (e: any) {
-      const detail = e.response?.data?.detail;
-      setError(typeof detail === 'string' ? detail : 'Failed to parse file. Check the template format.');
+      setError(formatApiError(e, 'Failed to parse file. Check the template format.'));
       setUploadedFile(null);
     }
     setUploading(false);
@@ -173,8 +173,7 @@ export default function InterfaceImportPage() {
       setResult(res.data);
       setStep('done');
     } catch (e: any) {
-      const detail = e.response?.data?.detail;
-      setError(typeof detail === 'string' ? detail : 'Import failed');
+      setError(formatApiError(e, 'Import failed'));
       setStep('preview');
     }
   };

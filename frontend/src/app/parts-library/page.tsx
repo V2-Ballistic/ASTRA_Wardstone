@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { partsLibraryAPI } from '@/lib/parts-api';
+import { formatApiError } from '@/lib/errors';
 import type {
   LibraryPartSummary, MaterialClass, PartStatus, PartType,
 } from '@/lib/parts-types';
@@ -47,7 +48,7 @@ export default function PartsLibraryPage() {
       })
       .catch((err) => {
         if (cancelled) return;
-        setError(err?.response?.data?.detail || 'Failed to load parts');
+        setError(formatApiError(err, 'Failed to load parts'));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);

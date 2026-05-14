@@ -27,6 +27,7 @@ import {
 
 // F-084: runtime require() shim replaced with normal typed import.
 import { aiAPI } from '@/lib/ai-api';
+import { formatApiError } from '@/lib/errors';
 
 // ── Coverage bar ──
 function CoverageBar({ label, value, pct, total, color }: {
@@ -133,7 +134,7 @@ export default function TraceabilityPage() {
       setGraphData(graphRes.data || { nodes: [], edges: [] });
       if (projRes?.data) setProjectCode(projRes.data.code);
     } catch (e: any) {
-      setError(e.response?.data?.detail || 'Failed to load traceability data');
+      setError(formatApiError(e, 'Failed to load traceability data'));
     }
     setLoading(false);
   }, [projectId]);

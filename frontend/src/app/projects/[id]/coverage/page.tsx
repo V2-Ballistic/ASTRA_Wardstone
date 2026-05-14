@@ -21,6 +21,7 @@ import {
 import clsx from 'clsx';
 
 import { coverageAPI } from '@/lib/coverage-api';
+import { formatApiError } from '@/lib/errors';
 import type {
   CoverageException,
   CoverageReportResponse,
@@ -107,8 +108,7 @@ function FileExceptionModal({
       onFiled();
       onClose();
     } catch (e: unknown) {
-      const err = e as { response?: { data?: { detail?: string } } };
-      setError(err?.response?.data?.detail ?? 'Failed to file exception');
+      setError(formatApiError(e, 'Failed to file exception'));
     } finally {
       setBusy(false);
     }
@@ -215,8 +215,7 @@ export default function CoveragePage() {
       setOrphans(o.data.items);
       setExceptions(ex.data.items);
     } catch (e: unknown) {
-      const err = e as { response?: { data?: { detail?: string } } };
-      setError(err?.response?.data?.detail ?? 'Failed to load coverage data');
+      setError(formatApiError(e, 'Failed to load coverage data'));
     } finally {
       setLoading(false);
     }

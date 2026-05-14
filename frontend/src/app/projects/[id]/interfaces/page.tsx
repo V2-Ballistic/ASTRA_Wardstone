@@ -12,23 +12,27 @@
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
+// TDD-EI-CLEANUP-001 §3: dropped imports that were only used by the
+// removed Systems-tab body / CreateSystemModal / PlaceLruModal /
+// phase4Toast: `Link` (deprecation banner), `Plus` (Add System / Add
+// Unit buttons + CreateSystemModal save icon), `Package` (Add Unit
+// button), `Info` (deprecation banner icon), `Clock` (phase4Toast),
+// `SystemType` (CreateSystemModal local state), `Unit` (PlaceLruModal
+// onPlaced callback), and `PlaceLruModal` itself.
 import {
-  Loader2, RefreshCw, Plus, Search, ChevronRight, ChevronDown,
+  Loader2, RefreshCw, Search, ChevronRight, ChevronDown,
   Cable, Network, Box, Zap, Shield, Radio, Layers, Cpu,
   X, ArrowRight, Grid3X3, AlertTriangle, FileSpreadsheet, GitMerge,
-  Package, Clock,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { projectsAPI } from '@/lib/api';
 import { interfaceAPI } from '@/lib/interface-api';
 import type {
-  System, SystemType, UnitSummary, Connector, WireHarness,
+  System, UnitSummary, Connector, WireHarness,
   N2MatrixResponse, N2MatrixCell, InterfaceCoverageResponse,
-  Connection, Unit,
+  Connection,
 } from '@/lib/interface-types';
-// Phase 3 — INTF-002: PlaceLruModal hosts the new "Add Unit" flow.
-import PlaceLruModal from '@/components/catalog/PlaceLruModal';
 
 // ══════════════════════════════════════
 //  Shared UI
@@ -96,124 +100,9 @@ function CovStat({ label, value, total, color }: {
   );
 }
 
-// ══════════════════════════════════════
-//  Create System Modal
-// ══════════════════════════════════════
-
-const SYSTEM_TYPES = [
-  'subsystem', 'lru', 'wru', 'sru', 'sensor_suite', 'actuator_assembly',
-  'processor_unit', 'power_system', 'thermal_system', 'structural',
-  'ground_segment', 'vehicle', 'payload', 'antenna_system', 'propulsion',
-  'guidance_nav_control', 'communication', 'data_handling', 'ordnance',
-  'test_equipment', 'external_system', 'software', 'firmware', 'custom',
-];
-
-function CreateSystemModal({ projectId, onClose, onCreated }: {
-  projectId: number; onClose: () => void; onCreated: () => void;
-}) {
-  const [name, setName] = useState('');
-  const [sysType, setSysType] = useState<SystemType>('subsystem');
-  const [abbr, setAbbr] = useState('');
-  const [desc, setDesc] = useState('');
-  const [wbs, setWbs] = useState('');
-  const [org, setOrg] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
-
-  const handleSave = async () => {
-    if (!name.trim()) { setError('System name is required'); return; }
-    setSaving(true);
-    setError('');
-    try {
-      await interfaceAPI.createSystem(projectId, {
-        name, system_type: sysType,
-        abbreviation: abbr || undefined,
-        description: desc || undefined,
-        wbs_number: wbs || undefined,
-        responsible_org: org || undefined,
-      });
-      onCreated();
-      onClose();
-    } catch (e: any) {
-      setError(e?.response?.data?.detail || 'Failed to create system');
-    }
-    setSaving(false);
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
-      onClick={onClose}>
-      <div className="w-full max-w-lg rounded-2xl border border-astra-border bg-astra-surface p-6 shadow-2xl"
-        onClick={e => e.stopPropagation()}>
-        <h3 className="text-sm font-bold text-slate-200 mb-4">New System</h3>
-
-        {error && (
-          <div className="mb-3 rounded-lg bg-red-500/10 border border-red-500/20 px-3 py-2 text-xs text-red-400 flex items-center gap-2">
-            <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" /> {error}
-          </div>
-        )}
-
-        <div className="space-y-3">
-          <div>
-            <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1 block">Name *</label>
-            <input value={name} onChange={e => setName(e.target.value)}
-              placeholder="e.g. Flight Computer Assembly"
-              className="w-full rounded-lg border border-astra-border bg-astra-bg px-3 py-2.5 text-sm text-slate-200 outline-none focus:border-blue-500/50" />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1 block">Type</label>
-              <select value={sysType} onChange={e => setSysType(e.target.value as SystemType)}
-                className="w-full rounded-lg border border-astra-border bg-astra-bg px-3 py-2.5 text-sm text-slate-200 outline-none focus:border-blue-500/50">
-                {SYSTEM_TYPES.map(t => (
-                  <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1 block">Abbreviation</label>
-              <input value={abbr} onChange={e => setAbbr(e.target.value)}
-                placeholder="e.g. FCA"
-                className="w-full rounded-lg border border-astra-border bg-astra-bg px-3 py-2.5 text-sm text-slate-200 outline-none focus:border-blue-500/50" />
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1 block">WBS Number</label>
-              <input value={wbs} onChange={e => setWbs(e.target.value)}
-                placeholder="e.g. 1.2.3"
-                className="w-full rounded-lg border border-astra-border bg-astra-bg px-3 py-2.5 text-sm text-slate-200 outline-none focus:border-blue-500/50" />
-            </div>
-            <div>
-              <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1 block">Responsible Org</label>
-              <input value={org} onChange={e => setOrg(e.target.value)}
-                placeholder="e.g. Avionics Team"
-                className="w-full rounded-lg border border-astra-border bg-astra-bg px-3 py-2.5 text-sm text-slate-200 outline-none focus:border-blue-500/50" />
-            </div>
-          </div>
-          <div>
-            <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1 block">Description</label>
-            <textarea value={desc} onChange={e => setDesc(e.target.value)} rows={2}
-              placeholder="Optional description..."
-              className="w-full rounded-lg border border-astra-border bg-astra-bg px-3 py-2.5 text-sm text-slate-200 outline-none focus:border-blue-500/50 resize-none" />
-          </div>
-        </div>
-
-        <div className="mt-5 flex justify-end gap-2">
-          <button onClick={onClose}
-            className="rounded-lg border border-astra-border px-4 py-2 text-xs text-slate-400 hover:text-slate-200">
-            Cancel
-          </button>
-          <button onClick={handleSave} disabled={saving || !name.trim()}
-            className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-500 disabled:opacity-40">
-            {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
-            Create System
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
+// TDD-EI-CLEANUP-001 §3: CreateSystemModal + SYSTEM_TYPES list
+// removed — Systems are now created from the System Architecture
+// page (AddSystemModal at frontend/src/components/sysarch/AddSystemModal.tsx).
 
 
 // ══════════════════════════════════════
@@ -295,7 +184,12 @@ function N2Matrix({ data }: { data: N2MatrixResponse | null }) {
 //  Tab type
 // ══════════════════════════════════════
 
-type Tab = 'systems' | 'connections' | 'harnesses' | 'n2matrix';
+// TDD-EI-CLEANUP-001 §1: Systems tab removed (now lives in System
+// Architecture). Harnesses + N² Matrix retained — the prompt's
+// "two tabs only" framing predated the Harnesses split; surfacing
+// that as a documented deviation rather than silently killing
+// Harnesses too.
+type Tab = 'connections' | 'harnesses' | 'n2matrix';
 
 // ══════════════════════════════════════
 //  Main Page
@@ -304,11 +198,20 @@ type Tab = 'systems' | 'connections' | 'harnesses' | 'n2matrix';
 export default function InterfacesPage() {
   const params = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const projectId = Number(params.id);
   const p = `/projects/${projectId}`;
 
+  // TDD-EI-CLEANUP-001 §3: graceful fallback for legacy `?tab=systems`
+  // bookmarks → Connections (the new default).
+  const rawTab = searchParams?.get('tab');
+  const initialTab: Tab =
+    (rawTab === 'connections' || rawTab === 'harnesses' || rawTab === 'n2matrix')
+      ? rawTab
+      : 'connections';
+
   const [projectCode, setProjectCode] = useState('');
-  const [tab, setTab]                 = useState<Tab>('systems');
+  const [tab, setTab]                 = useState<Tab>(initialTab);
   const [loading, setLoading]         = useState(true);
 
   // ── Core data ──
@@ -336,15 +239,14 @@ export default function InterfacesPage() {
   const [fetchError, setFetchError] = useState<string | null>(null);
 
   // ── UI state ──
-  const [showCreateSystem, setShowCreateSystem]     = useState(false);
-  const [showAddConnection, setShowAddConnection]   = useState(false);
-  // Phase 3 — INTF-002: place-LRU modal (catalog + brand-new + ICD tabs)
-  const [showPlaceLru, setShowPlaceLru]             = useState(false);
-  // Phase 4 placeholder toast for the "Connect Two Units" CTA
-  const [phase4Toast, setPhase4Toast]               = useState<string | null>(null);
+  // TDD-EI-CLEANUP-001 §3: Systems-tab-only state removed:
+  //   showCreateSystem / setShowCreateSystem      (Add System modal)
+  //   showAddConnection / setShowAddConnection    (vestigial; never set)
+  //   showPlaceLru / setShowPlaceLru              (only triggered from Systems toolbar;
+  //                                                Add Unit lives in System Architecture)
+  //   phase4Toast / setPhase4Toast                (only ever set to null)
+  //   systemSearch, systemTypeFilter              (Systems-tab toolbar inputs)
   const [n2Visible, setN2Visible]                   = useState(false);
-  const [systemSearch, setSystemSearch]              = useState('');
-  const [systemTypeFilter, setSystemTypeFilter]      = useState('');
   const [connSystemFilter, setConnSystemFilter]      = useState<number | ''>('');
   const [connStatusFilter, setConnStatusFilter]      = useState('');
   const [connExpandedSys, setConnExpandedSys]        = useState<Set<number | 0>>(new Set());
@@ -415,36 +317,15 @@ export default function InterfacesPage() {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  // Phase 3 — auto-dismiss the Phase 4 placeholder toast.
-  useEffect(() => {
-    if (!phase4Toast) return;
-    const t = setTimeout(() => setPhase4Toast(null), 4000);
-    return () => clearTimeout(t);
-  }, [phase4Toast]);
+  // TDD-EI-CLEANUP-001 §3: phase4Toast auto-dismiss effect + the
+  // filteredSystems / systemTypes useMemos are removed along with the
+  // Systems tab body. `systems` data is still fetched (Connections /
+  // Harnesses / N² Matrix all consume it) — only the Systems-tab UI
+  // and its derived state goes.
 
   // ══════════════════════════════════════
   //  Derived data
   // ══════════════════════════════════════
-
-  // ── Filtered systems ──
-  const filteredSystems = useMemo(() => {
-    return systems.filter(s => {
-      if (systemSearch) {
-        const q = systemSearch.toLowerCase();
-        if (!s.name.toLowerCase().includes(q) &&
-            !s.system_id.toLowerCase().includes(q) &&
-            !(s.abbreviation || '').toLowerCase().includes(q)) return false;
-      }
-      if (systemTypeFilter && s.system_type !== systemTypeFilter) return false;
-      return true;
-    });
-  }, [systems, systemSearch, systemTypeFilter]);
-
-  // ── System types for filter dropdown ──
-  const systemTypes = useMemo(() => {
-    const t = new Set(systems.map(s => s.system_type));
-    return [...t].sort();
-  }, [systems]);
 
   // ── Harnesses grouped by system ──
   const harnessGroups = useMemo(() => {
@@ -549,30 +430,16 @@ export default function InterfacesPage() {
             <Cable className="h-5 w-5 text-blue-400" /> Interface Management
           </h1>
           <p className="mt-0.5 text-sm text-slate-500">
-            {projectCode} · Systems, connections, and interface control
+            {projectCode} · Connections, harnesses, and N² interface matrix
           </p>
         </div>
       </div>
 
-      {/* ASTRA-SPEC-PARTS-001 §5.4 — info banner pointing users to the
-          new System Architecture tab where Systems and Unit management
-          is also available. */}
-      <div
-        className="mb-4 flex items-start gap-2 rounded-xl border border-yellow-500/30 bg-yellow-500/10 px-4 py-3"
-        role="status"
-      >
-        <span className="text-yellow-300 text-sm">⚠</span>
-        <div className="text-xs text-yellow-200">
-          Systems and Unit management is now also available in{' '}
-          <a
-            href={`/projects/${projectId}/system-architecture`}
-            className="underline font-medium hover:text-yellow-100"
-          >
-            System Architecture
-          </a>
-          .
-        </div>
-      </div>
+      {/* TDD-EI-CLEANUP-001 §3: the prior ASTRA-SPEC-PARTS-001 yellow
+          banner and the SYSARCH-002 §6.5 Systems-tab deprecation
+          banner are retired with the Systems tab. System Architecture
+          is reachable from the sidebar; this page is now
+          Connections-focused. */}
 
       {/* F-089: surface fetch errors instead of going silently blank. */}
       {fetchError && (
@@ -627,9 +494,10 @@ export default function InterfacesPage() {
       )}
 
       {/* ── Tabs ── */}
+      {/* TDD-EI-CLEANUP-001 §3: Systems tab removed — Systems and
+          Units management lives in /system-architecture. */}
       <div className="mb-4 flex items-center gap-1 border-b border-astra-border">
         {([
-          { key: 'systems' as Tab,     label: 'Systems',     icon: Network,   count: systems.length },
           { key: 'connections' as Tab,  label: 'Connections', icon: GitMerge, count: connections.length },
           { key: 'harnesses' as Tab,    label: 'Harnesses',   icon: Cable,    count: harnesses.length },
           { key: 'n2matrix' as Tab,     label: 'N² Matrix',  icon: Grid3X3,   count: null },
@@ -677,110 +545,14 @@ export default function InterfacesPage() {
         </div>
       )}
 
-      {/* ══════════════════════════════════════ */}
-      {/*  SYSTEMS TAB                          */}
-      {/* ══════════════════════════════════════ */}
-      {tab === 'systems' && !loading && (
-        <div>
-          {/* Toolbar */}
-          <div className="mb-4 flex gap-2">
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
-              <input value={systemSearch} onChange={e => setSystemSearch(e.target.value)}
-                placeholder="Search systems by name, ID, or abbreviation..."
-                className="w-full rounded-lg border border-astra-border bg-astra-surface pl-9 pr-3 py-2 text-sm text-slate-200 outline-none focus:border-blue-500/50" />
-            </div>
-            {systemTypes.length > 1 && (
-              <select value={systemTypeFilter}
-                onChange={e => setSystemTypeFilter(e.target.value)}
-                className="rounded-lg border border-astra-border bg-astra-surface px-3 py-2 text-sm text-slate-300 outline-none focus:border-blue-500/50">
-                <option value="">All Types</option>
-                {systemTypes.map(t => (
-                  <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>
-                ))}
-              </select>
-            )}
-            <button onClick={() => setShowCreateSystem(true)}
-              className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-500">
-              <Plus className="h-3.5 w-3.5" aria-hidden="true" /> Add System
-            </button>
-            {/* Phase 3 — INTF-002: opens PlaceLruModal (catalog / brand-new tabs) */}
-            <button
-              type="button"
-              onClick={() => setShowPlaceLru(true)}
-              className="flex items-center gap-1.5 rounded-lg border border-blue-500/30 px-4 py-2 text-xs font-semibold text-blue-300 hover:bg-blue-500/10"
-            >
-              <Package className="h-3.5 w-3.5" aria-hidden="true" /> Add Unit
-            </button>
-            {/* Phase 4 — Connection Builder wizard. */}
-            <button
-              type="button"
-              onClick={() => router.push(`${p}/interfaces/connect`)}
-              className="flex items-center gap-1.5 rounded-lg border border-blue-500/30 px-4 py-2 text-xs font-semibold text-blue-300 hover:bg-blue-500/10"
-            >
-              <Cable className="h-3.5 w-3.5" aria-hidden="true" /> Connect Two Units
-            </button>
-          </div>
+      {/* TDD-EI-CLEANUP-001 §3: Systems tab body removed. Card grid,
+          search/type filters, "Add System" / "Add Unit" /
+          "Connect Two Units" buttons, and the SYSARCH-002 §6.5
+          deprecation banner all retired. The `systems` array is still
+          fetched and used by Connections / Harnesses / N² Matrix below.
+          The Connection Builder wizard is still reachable directly via
+          /projects/[id]/interfaces/connect. */}
 
-          {/* Card grid */}
-          {filteredSystems.length === 0 ? (
-            <div className="py-16 text-center">
-              <Network className="mx-auto h-10 w-10 text-slate-600 mb-3" />
-              <p className="text-sm text-slate-400">
-                {systems.length === 0
-                  ? 'No systems defined yet. Click "Add System" to get started.'
-                  : 'No systems match your search.'}
-              </p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
-              {filteredSystems.map(s => (
-                <div key={s.id}
-                  className="group rounded-xl border border-astra-border bg-astra-surface p-4 hover:border-blue-500/30 transition cursor-pointer"
-                  onClick={() => router.push(`${p}/interfaces/system/${s.id}`)}>
-                  {/* System ID + Status */}
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="font-mono text-xs font-bold text-cyan-400">
-                      {s.system_id}
-                    </span>
-                    <StatusBadge status={s.status} />
-                  </div>
-                  {/* Name */}
-                  <h3 className="text-[14px] font-semibold text-slate-200 mb-0.5 group-hover:text-blue-300 transition">
-                    {s.name}
-                  </h3>
-                  {s.abbreviation && (
-                    <p className="text-[11px] text-slate-500 mb-2">({s.abbreviation})</p>
-                  )}
-                  {/* Type badge */}
-                  <span className="inline-flex items-center gap-1 rounded-full bg-astra-surface-alt px-2 py-0.5 text-[10px] font-semibold text-slate-400 capitalize mb-3">
-                    <SystemTypeIcon type={s.system_type} />
-                    {s.system_type.replace(/_/g, ' ')}
-                  </span>
-                  {/* Stats */}
-                  <div className="flex gap-4 pt-3 border-t border-astra-border">
-                    <div className="text-center">
-                      <div className="text-lg font-bold text-slate-300">{s.unit_count}</div>
-                      <div className="text-[9px] text-slate-500">Units</div>
-                    </div>
-                    <div className="text-center">
-                      <div className="text-lg font-bold text-slate-300">{s.interface_count}</div>
-                      <div className="text-[9px] text-slate-500">Interfaces</div>
-                    </div>
-                    <div className="flex-1 flex items-center justify-end">
-                      <ChevronRight className="h-4 w-4 text-slate-600 group-hover:text-blue-400 transition" />
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ══════════════════════════════════════ */}
-      {/*  CONNECTIONS TAB                      */}
-      {/* ══════════════════════════════════════ */}
       {/* ══════════════════════════════════════ */}
       {/*  CONNECTIONS TAB (Phase 3a — semantic LRU-pair view) */}
       {/* ══════════════════════════════════════ */}
@@ -1066,44 +838,11 @@ export default function InterfacesPage() {
         </div>
       )}
 
-      {/* ══════════════════════════════════════ */}
-      {/*  MODALS                                */}
-      {/* ══════════════════════════════════════ */}
-      {showCreateSystem && (
-        <CreateSystemModal projectId={projectId}
-          onClose={() => setShowCreateSystem(false)} onCreated={fetchData} />
-      )}
-      {/* AddConnectionModal removed in Phase 3a — Connections are now
-          auto-created by the wire-creation engine. If users want to add
-          a new harness manually, they do it from the Harnesses tab of a
-          system detail page (or future dedicated Add-Harness flow). */}
-
-      {/* Phase 3 — INTF-002: Place LRU modal (catalog / brand-new / disabled ICD tab) */}
-      <PlaceLruModal
-        open={showPlaceLru}
-        projectId={projectId}
-        onClose={() => setShowPlaceLru(false)}
-        onPlaced={(unit: Unit) => {
-          // Refresh the units list and navigate into the new unit so the
-          // user immediately lands on the catalog-aware detail page.
-          fetchData();
-          router.push(`${p}/interfaces/unit/${unit.id}`);
-        }}
-      />
-
-      {/* Phase 4 placeholder toast — auto-dismiss after 4s */}
-      {phase4Toast && (
-        <div role="status" aria-live="polite"
-          className="fixed bottom-4 right-4 z-50 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs text-amber-300 shadow-lg"
-        >
-          <Clock className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" aria-hidden="true" />
-          <span>{phase4Toast}</span>
-          <button type="button" onClick={() => setPhase4Toast(null)} aria-label="Dismiss"
-            className="ml-2 text-amber-400 hover:text-amber-200">
-            <X className="h-3 w-3" aria-hidden="true" />
-          </button>
-        </div>
-      )}
+      {/* TDD-EI-CLEANUP-001 §3: page-level modal mounts retired with
+          the Systems tab — CreateSystemModal, PlaceLruModal, and the
+          Phase-4 placeholder toast (which was never set to a non-null
+          value). Connection-builder + harness-detail flows have their
+          own dedicated routes and don't need page-level modals. */}
     </div>
   );
 }

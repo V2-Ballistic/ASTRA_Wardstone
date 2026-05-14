@@ -30,6 +30,7 @@ import {
   type DecomposeResponse,
   type VerificationCriteria,
 } from '@/lib/ai-writer-api';
+import { formatApiError } from '@/lib/errors';
 
 // ══════════════════════════════════════
 //  Types
@@ -251,7 +252,7 @@ function ConvertProsePanel({
         setError('AI provider not available');
       }
     } catch (err: any) {
-      setError(err.response?.data?.detail || 'Extraction failed');
+      setError(formatApiError(err, 'Extraction failed'));
     } finally {
       setLoading(false);
     }
@@ -412,7 +413,7 @@ function ImprovePanel({
       });
       setSuggestions(res.data.suggestions);
     } catch (err: any) {
-      setError(err.response?.data?.detail || 'Improvement failed');
+      setError(formatApiError(err, 'Improvement failed'));
     } finally {
       setLoading(false);
     }
@@ -567,7 +568,7 @@ function DecomposePanel({
       });
       setResult(res.data);
     } catch (err: any) {
-      setError(err.response?.data?.detail || 'Decomposition failed');
+      setError(formatApiError(err, 'Decomposition failed'));
     } finally {
       setLoading(false);
     }

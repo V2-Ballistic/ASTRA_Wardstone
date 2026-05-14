@@ -30,6 +30,7 @@ from app.models.workflow import (
 from app.models.catalog import (
     Supplier, SupplierDocument, CatalogPart, CatalogConnector, CatalogPin,
     PendingCatalogImport,
+    SupplierAlias,  # TDD-CAT-002 — vendor auto-detect dedup map
     PartClass, LRUClass, LifecycleStatus,
     ConnectorGender as CatalogConnectorGender,
     SignalType as CatalogSignalType,
@@ -48,6 +49,7 @@ from app.models.parts_library import (
     PartType, PartStatus, MaterialClass, ThreadStandard, HeadType,
     DriveType, LockingFeature, QualificationStatus, PendingPartsStatus,
     ConfidenceLevel, JointType, JointStatus, AssemblyParseJobStatus,
+    BomStatus,  # TDD-PROJPARTS-001 Path C
     WPNSequence, LibraryPart, PendingPartsImport,
     ProjectPart, SystemPartAssignment,
     MechanicalJointSequence, AssemblyParseJob, MechanicalJoint,

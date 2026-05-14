@@ -162,6 +162,11 @@ class UnitCreate(BaseModel):
     test_report_doc: Optional[str] = Field(None, max_length=255)
     notes: Optional[str] = None
     metadata_json: Optional[dict] = None
+    # ── TDD-SYSARCH-002 Phase 2: catalog linkage on create ──
+    catalog_part_id: Optional[int] = None
+    location_zone: Optional[str] = Field(None, max_length=100)
+    serial_number: Optional[str] = Field(None, max_length=200)
+    asset_tag: Optional[str] = Field(None, max_length=200)
 
 
 class UnitUpdate(BaseModel):
@@ -251,6 +256,36 @@ class UnitUpdate(BaseModel):
     test_report_doc: Optional[str] = Field(None, max_length=255)
     notes: Optional[str] = None
     metadata_json: Optional[dict] = None
+    # ── TDD-SYSARCH-002 Phase 2: catalog linkage editable via PATCH ──
+    # Set to a CatalogPart.id to link, set to null explicitly to unlink.
+    # Audit emits unit.linked_to_catalog / catalog_link_changed /
+    # unlinked_from_catalog as appropriate.
+    catalog_part_id: Optional[int] = None
+    location_zone: Optional[str] = Field(None, max_length=100)
+    serial_number: Optional[str] = Field(None, max_length=200)
+    asset_tag: Optional[str] = Field(None, max_length=200)
+
+
+class UnitCatalogPartSummary(BaseModel):
+    """TDD-SYSARCH-002 Phase 2 — embedded preview of the linked
+    CatalogPart on a Unit response.
+
+    Distinct from ``app.schemas.catalog.CatalogPartSummary`` (which is
+    the catalog-side list-view payload, with different fields).
+    """
+    id: int
+    part_number: str
+    name: str
+    part_class: str
+    part_subtype: Optional[str] = None
+    mass_kg: Optional[float] = None
+    cad_step_path: Optional[str] = None
+    cad_preview_path: Optional[str] = None
+    supplier_name: Optional[str] = None
+    supplier_is_in_house: Optional[bool] = None
+
+    class Config:
+        from_attributes = True
 
 
 class UnitSummary(BaseModel):
@@ -267,6 +302,9 @@ class UnitSummary(BaseModel):
     system_id: int
     connector_count: int = 0
     bus_count: int = 0
+    # ── TDD-SYSARCH-002 Phase 2: catalog linkage at-a-glance ──
+    catalog_part_id: Optional[int] = None
+    catalog_part_summary: Optional[UnitCatalogPartSummary] = None
 
     class Config:
         from_attributes = True
@@ -363,6 +401,12 @@ class UnitResponse(BaseModel):
     # FKs
     system_id: int
     project_id: int
+    # ── INTF-002 catalog linkage (TDD-SYSARCH-002 Phase 2 surfaces it) ──
+    catalog_part_id: Optional[int] = None
+    catalog_part_summary: Optional[UnitCatalogPartSummary] = None
+    location_zone: Optional[str] = None
+    serial_number: Optional[str] = None
+    asset_tag: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     # Computed

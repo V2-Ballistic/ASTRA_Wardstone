@@ -19,6 +19,7 @@ import {
 import clsx from 'clsx';
 import { projectsAPI } from '@/lib/api';
 import api from '@/lib/api';
+import { formatApiError } from '@/lib/errors';
 
 // ── Report catalog ──
 
@@ -209,7 +210,7 @@ function ReportCard({ report, projectId, projectCode }: {
           setError('Report generation failed');
         }
       } else {
-        setError(e.response?.data?.detail || 'Report generation failed');
+        setError(formatApiError(e, 'Report generation failed'));
       }
     }
     setGenerating(null);

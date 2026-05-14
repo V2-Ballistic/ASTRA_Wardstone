@@ -26,10 +26,27 @@ import {
   STATUS_COLORS, STATUS_LABELS, LEVEL_COLORS, LEVEL_LABELS,
   PRIORITY_COLORS, TYPE_PREFIXES,
   type RequirementStatus, type RequirementLevel, type Priority,
+  type RequirementType,
 } from '@/lib/types';
+
+// Phase 0 (CLAUDE_CODE_PROMPT_PHASE0 §Fix 0a) — req_type is editable at any
+// status. The 10 valid values mirror RequirementType in @/lib/types.
+const REQ_TYPE_OPTIONS: Array<{ value: RequirementType; label: string }> = [
+  { value: 'functional',      label: 'Functional' },
+  { value: 'performance',     label: 'Performance' },
+  { value: 'interface',       label: 'Interface' },
+  { value: 'environmental',   label: 'Environmental' },
+  { value: 'constraint',      label: 'Constraint' },
+  { value: 'safety',          label: 'Safety' },
+  { value: 'security',        label: 'Security' },
+  { value: 'reliability',     label: 'Reliability' },
+  { value: 'maintainability', label: 'Maintainability' },
+  { value: 'derived',         label: 'Derived' },
+];
 
 // F-084: runtime require() shims replaced with normal typed imports.
 import { aiAPI } from '@/lib/ai-api';
+import { formatApiError } from '@/lib/errors';
 import { aiWriterAPI } from '@/lib/ai-writer-api';
 // Phase 5 — sync lock + source links panel.
 import RequirementSyncPanel from '@/components/req-sync/RequirementSyncPanel';
@@ -526,7 +543,7 @@ export default function RequirementDetailPage() {
       setComments(cr.data.comments || []);
       setChildren(rr.data.children || []);
     } catch (e: any) {
-      setError(e.response?.data?.detail || 'Failed to load');
+      setError(formatApiError(e, 'Failed to load'));
     }
     setLoading(false);
   }, [reqId]);
@@ -540,7 +557,7 @@ export default function RequirementDetailPage() {
       setTimeout(() => setSaveMsg(''), 2000);
       await fetchData();
     } catch (e: any) {
-      setError(e.response?.data?.detail || 'Save failed');
+      setError(formatApiError(e, 'Save failed'));
     }
   };
 
@@ -566,7 +583,7 @@ export default function RequirementDetailPage() {
       await requirementsAPI.delete(reqId);
       router.push(`/projects/${projectId}/requirements`);
     } catch (e: any) {
-      setError(e.response?.data?.detail || 'Delete failed');
+      setError(formatApiError(e, 'Delete failed'));
     }
   };
 
@@ -575,7 +592,7 @@ export default function RequirementDetailPage() {
       const res = await requirementsAPI.clone(reqId);
       router.push(`/projects/${projectId}/requirements/${res.data.id}`);
     } catch (e: any) {
-      setError(e.response?.data?.detail || 'Clone failed');
+      setError(formatApiError(e, 'Clone failed'));
     }
   };
 
@@ -778,6 +795,18 @@ export default function RequirementDetailPage() {
               <EditableSelect label="Priority" value={priority}
                 options={['critical', 'high', 'medium', 'low'].map((p) => ({ value: p, label: p.charAt(0).toUpperCase() + p.slice(1) }))}
                 onSave={(v) => saveField('priority', v)} />
+              {/* Phase 0 (Fix 0a): req_type is editable at any status. */}
+              <div>
+                <EditableSelect
+                  label="Type"
+                  value={(req.req_type as string) || 'functional'}
+                  options={REQ_TYPE_OPTIONS as unknown as { value: string; label: string }[]}
+                  onSave={(v) => saveField('req_type', v)}
+                />
+                <p className="mt-1 text-[10px] text-slate-600">
+                  Changing type does not change the requirement ID.
+                </p>
+              </div>
               <div className="flex items-center justify-between">
                 <span className="text-[11px] text-slate-500">Version</span>
                 <span className="font-mono text-xs font-semibold text-slate-300">v{req.version}</span>

@@ -39,6 +39,7 @@ import clsx from 'clsx';
 import api, { projectsAPI, requirementsAPI } from '@/lib/api';
 import { interfaceAPI } from '@/lib/interface-api';
 import type { InterfaceRequirementLink, InterfaceCoverageResponse } from '@/lib/interface-types';
+import { formatApiError } from '@/lib/errors';
 
 // ══════════════════════════════════════
 //  Types
@@ -126,7 +127,7 @@ function EditApproveForm({ ar, onSaved, onCancel }: {
       await api.post('/interfaces/auto-requirements/approve', { requirement_ids: [ar.req.id] });
       onSaved();
     } catch (e: any) {
-      setError(e?.response?.data?.detail || 'Failed');
+      setError(formatApiError(e, 'Failed'));
     }
     setSaving(false);
   };
@@ -352,7 +353,7 @@ export default function AutoRequirementsPage() {
       await api.post('/interfaces/auto-requirements/approve', { requirement_ids: [reqId] });
       flash('Requirement approved — trace links created', 'success');
       fetchData();
-    } catch (e: any) { flash(e?.response?.data?.detail || 'Approve failed', 'error'); }
+    } catch (e: any) { flash(formatApiError(e, 'Approve failed'), 'error'); }
   };
 
   // ── Reject single ──
@@ -361,7 +362,7 @@ export default function AutoRequirementsPage() {
       await api.post('/interfaces/auto-requirements/reject', { requirement_ids: [reqId] });
       flash('Requirement rejected', 'success');
       fetchData();
-    } catch (e: any) { flash(e?.response?.data?.detail || 'Reject failed', 'error'); }
+    } catch (e: any) { flash(formatApiError(e, 'Reject failed'), 'error'); }
   };
 
   // ── Bulk approve ──
@@ -373,7 +374,7 @@ export default function AutoRequirementsPage() {
       flash(`${res.data.approved} approved, ${res.data.trace_links_created} trace links created`, 'success');
       setSelected(new Set());
       fetchData();
-    } catch (e: any) { flash(e?.response?.data?.detail || 'Bulk approve failed', 'error'); }
+    } catch (e: any) { flash(formatApiError(e, 'Bulk approve failed'), 'error'); }
     setBulkLoading(false);
   };
 
@@ -386,7 +387,7 @@ export default function AutoRequirementsPage() {
       flash(`${res.data.rejected} rejected`, 'success');
       setSelected(new Set());
       fetchData();
-    } catch (e: any) { flash(e?.response?.data?.detail || 'Bulk reject failed', 'error'); }
+    } catch (e: any) { flash(formatApiError(e, 'Bulk reject failed'), 'error'); }
     setBulkLoading(false);
   };
 
@@ -409,7 +410,7 @@ export default function AutoRequirementsPage() {
       setSelected(new Set());
       fetchData();
     } catch (e: any) {
-      flash(e?.response?.data?.detail || 'Bulk delete failed', 'error');
+      flash(formatApiError(e, 'Bulk delete failed'), 'error');
     }
     setBulkLoading(false);
   };

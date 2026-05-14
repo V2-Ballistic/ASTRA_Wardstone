@@ -84,6 +84,21 @@ class Settings(BaseSettings):
     APP_NAME: str = "ASTRA"
     APP_VERSION: str = "1.0.0"
 
+    # ── TDD-HAROLD-001: HAROLD nomenclature integration ──
+    # Default-off. ASTRA must continue to work when this is false or
+    # when HAROLD itself is unreachable. From inside the backend
+    # container, `localhost` is the container's own loopback — use
+    # `host.docker.internal` on Windows/Mac Docker Desktop.
+    HAROLD_INTEGRATION_ENABLED: bool = False
+    # HAROLD-IN-WRENCH-001 Phase 6: HAROLD is now a plugin INSIDE the
+    # WRENCH chassis at :8030. Endpoint paths flipped from
+    # ``/api/v1/<thing>`` to ``/api/tools/wardstone-harold/<thing>``
+    # (request/response shapes unchanged). Standalone V2 at :8031
+    # stays running through this phase as a fallback but ASTRA no
+    # longer targets it; Phase 7 decommissions V2 entirely.
+    HAROLD_BASE_URL: str = "http://host.docker.internal:8030"
+    HAROLD_TIMEOUT_SECONDS: float = 3.0
+
     # ── Derived helpers ──
 
     @property

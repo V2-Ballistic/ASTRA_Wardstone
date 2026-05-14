@@ -1,0 +1,44 @@
+[
+  {"tokens": ["socket head cap screw", "socket head screw", "shcs"], "part_class": "fastener_screw", "part_subtype": "socket_head_cap_screw"},
+  {"tokens": ["button head cap screw", "button head screw", "bhcs"], "part_class": "fastener_screw", "part_subtype": "button_head_cap_screw"},
+  {"tokens": ["flat head cap screw", "fhcs", "flat head screw"], "part_class": "fastener_screw", "part_subtype": "flat_head_cap_screw"},
+  {"tokens": ["pan head screw"],                           "part_class": "fastener_screw",    "part_subtype": "pan_head_screw"},
+  {"tokens": ["machine screw"],                            "part_class": "fastener_screw",    "part_subtype": "machine_screw"},
+  {"tokens": ["set screw"],                                "part_class": "fastener_screw",    "part_subtype": "set_screw"},
+  {"tokens": ["shoulder bolt"],                            "part_class": "fastener_screw",    "part_subtype": "shoulder_bolt"},
+  {"tokens": ["self tapping screw", "self-tapping screw"], "part_class": "fastener_screw",    "part_subtype": "self_tapping_screw"},
+  {"tokens": ["thread forming screw", "thread-forming screw"], "part_class": "fastener_screw","part_subtype": "thread_forming_screw"},
+
+  {"tokens": ["hex bolt", "hex cap screw", "hex head screw"], "part_class": "fastener_bolt",   "part_subtype": "hex_bolt"},
+  {"tokens": ["carriage bolt"],                            "part_class": "fastener_bolt",     "part_subtype": "carriage_bolt"},
+  {"tokens": ["eye bolt"],                                 "part_class": "fastener_bolt",     "part_subtype": "eye_bolt"},
+
+  {"tokens": ["lock nut", "nylock"],                       "part_class": "nut",               "part_subtype": "lock_nut"},
+  {"tokens": ["jam nut"],                                  "part_class": "nut",               "part_subtype": "jam_nut"},
+  {"tokens": ["wing nut"],                                 "part_class": "nut",               "part_subtype": "wing_nut"},
+  {"tokens": ["hex nut"],                                  "part_class": "nut",               "part_subtype": "hex_nut"},
+
+  {"tokens": ["lock washer", "split washer"],              "part_class": "washer",            "part_subtype": "lock_washer"},
+  {"tokens": ["belleville washer"],                        "part_class": "washer",            "part_subtype": "belleville_washer"},
+  {"tokens": ["shoulder washer"],                          "part_class": "washer",            "part_subtype": "shoulder_washer"},
+  {"tokens": ["flat washer", "plain washer"],              "part_class": "washer",            "part_subtype": "flat_washer"},
+
+  {"tokens": ["o-ring", "o ring"],                         "part_class": "seal_o_ring"},
+  {"tokens": ["gasket"],                                   "part_class": "seal_o_ring",       "part_subtype": "gasket"},
+
+  {"tokens": ["enclosure"],                                "part_class": "enclosure"},
+  {"tokens": ["housing"],                                  "part_class": "housing"},
+  {"tokens": ["chassis"],                                  "part_class": "housing",           "part_subtype": "chassis"},
+  {"tokens": ["panel"],                                    "part_class": "housing",           "part_subtype": "panel"},
+
+  {"tokens": ["bracket"],                                  "part_class": "bracket"},
+  {"tokens": ["bearing"],                                  "part_class": "bearing"},
+  {"tokens": ["spring"],                                   "part_class": "spring"},
+
+  {"tokens": ["frame member", "longeron", "stringer", "rib", "bulkhead"], "part_class": "structural_member"},
+
+  {"tokens": ["screw"],                                    "part_class": "fastener_screw"},
+  {"tokens": ["bolt"],                                     "part_class": "fastener_bolt"},
+  {"tokens": ["nut"],                                      "part_class": "nut"},
+  {"tokens": ["washer"],                                   "part_class": "washer"}
+]

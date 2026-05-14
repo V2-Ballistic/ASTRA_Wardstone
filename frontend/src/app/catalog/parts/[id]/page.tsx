@@ -20,21 +20,23 @@ import { useParams, useRouter } from 'next/navigation';
 import {
   ChevronLeft, ChevronRight, ChevronDown, Cpu, Loader2, AlertTriangle,
   Trash2, Plug, Building2, MapPin, GitBranch, Clock, Zap, Thermometer,
-  ShieldCheck, Hash,
+  ShieldCheck, Hash, RefreshCw, CheckCircle2,
 } from 'lucide-react';
 import clsx from 'clsx';
 
 import { catalogAPI } from '@/lib/catalog-api';
+import { haroldAPI } from '@/lib/harold-api';
+import { formatApiError, parseStructuredApiError } from '@/lib/errors';
 import {
   type CatalogPartDetail,
   type CatalogPartUsage,
+  type CatalogPartUsageReport,
   type CatalogPart,
   PART_CLASS_LABELS,
   LRU_CLASS_LABELS,
   LIFECYCLE_COLORS,
 } from '@/lib/catalog-types';
 import { useAuth } from '@/lib/auth';
-import ConfirmDialog from '@/components/ConfirmDialog';
 
 // ══════════════════════════════════════
 //  Helpers
@@ -74,12 +76,18 @@ export default function CatalogPartDetailPage() {
 
   const [part, setPart] = useState<CatalogPartDetail | null>(null);
   const [usage, setUsage] = useState<CatalogPartUsage[]>([]);
+  const [usageReport, setUsageReport] = useState<CatalogPartUsageReport | null>(null);
   const [variants, setVariants] = useState<CatalogPart[]>([]);
   const [parent, setParent] = useState<CatalogPart | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [expandedConn, setExpandedConn] = useState<Set<number>>(new Set());
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  // ── Phase 4: manual HAROLD reconcile state ──
+  const [syncing, setSyncing] = useState(false);
+  const [syncMessage, setSyncMessage] = useState<string | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
   const canDelete = user?.role === 'admin';
 
@@ -90,10 +98,12 @@ export default function CatalogPartDetailPage() {
     Promise.all([
       catalogAPI.getPart(partId),
       catalogAPI.getPartUsage(partId),
+      catalogAPI.getPartUsageReport(partId),
     ])
-      .then(async ([pRes, uRes]) => {
+      .then(async ([pRes, uRes, rRes]) => {
         setPart(pRes.data);
         setUsage(uRes.data);
+        setUsageReport(rRes.data);
 
         // Variants: list parts whose parent_part_id == this part
         // The list endpoint doesn't filter by parent_part_id, so we
@@ -121,7 +131,7 @@ export default function CatalogPartDetailPage() {
           setParent(null);
         }
       })
-      .catch((e) => setError(e?.response?.data?.detail || 'Failed to load catalog part'))
+      .catch((e) => setError(formatApiError(e, 'Failed to load catalog part')))
       .finally(() => setLoading(false));
   }, [partId]);
 
@@ -137,13 +147,66 @@ export default function CatalogPartDetailPage() {
   };
 
   const handleDelete = async () => {
-    setConfirmDelete(false);
+    setDeleting(true);
+    setError('');
     try {
       await catalogAPI.deletePart(partId);
       router.push('/catalog');
     } catch (e: unknown) {
-      const err = e as { response?: { data?: { detail?: string } } };
-      setError(err?.response?.data?.detail || 'Failed to delete catalog part');
+      // CLEANUP-002 Phase 4 (AD-7): a 409 carries a structured
+      // usage report. Refresh the local usageReport so the modal
+      // surfaces the live project list rather than the stale
+      // "looked deletable a moment ago" view.
+      const structured = parseStructuredApiError(e);
+      if (
+        structured?.code === 'part_in_use'
+        && typeof structured.usage === 'object'
+        && structured.usage !== null
+      ) {
+        setUsageReport(structured.usage as CatalogPartUsageReport);
+        setError(
+          typeof structured.message === 'string'
+            ? structured.message
+            : 'Cannot delete — part is in use.',
+        );
+      } else {
+        setError(formatApiError(e, 'Failed to delete catalog part'));
+        setConfirmDelete(false);
+      }
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  // Manual "Sync with HAROLD" — visible only when wpn_pending_sync is true.
+  // Calls POST /harold/parts/{id}/reconcile and refetches the part on
+  // success so the freshly cleared flag (and any reissued WPN) lands.
+  const handleReconcile = async () => {
+    setSyncing(true);
+    setSyncMessage(null);
+    setSyncError(null);
+    try {
+      const r = await haroldAPI.reconcile(partId);
+      if (r.data.harold_available) {
+        const result = r.data.data;
+        if (result.reconciled) {
+          const reissued = result.prior_wpn && result.prior_wpn !== result.wpn;
+          setSyncMessage(
+            reissued
+              ? `Reissued: ${result.prior_wpn} → ${result.wpn}`
+              : `Synced with HAROLD as ${result.wpn}`,
+          );
+        } else {
+          setSyncMessage(result.message || 'Nothing to reconcile');
+        }
+        refresh();
+      } else {
+        setSyncError(r.data.reason || 'HAROLD unavailable');
+      }
+    } catch (e) {
+      setSyncError(formatApiError(e, 'Sync failed'));
+    } finally {
+      setSyncing(false);
     }
   };
 
@@ -187,10 +250,30 @@ export default function CatalogPartDetailPage() {
               {part.supplier_name || `supplier ${part.supplier_id}`}
             </button>
           </div>
-          <h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-100">
-            {part.part_number}
-            {part.revision && <span className="ml-2 text-sm font-normal text-slate-500">rev {part.revision}</span>}
+          <h1 className="mt-1 flex flex-wrap items-baseline gap-2 text-2xl font-bold tracking-tight text-slate-100">
+            {part.internal_part_number ? (
+              <>
+                <span className="font-mono tracking-wider">{part.internal_part_number}</span>
+                {part.wpn_pending_sync && (
+                  <span
+                    title="Fallback WPN — pending HAROLD reconciliation"
+                    className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-amber-300"
+                  >
+                    <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber-400" aria-hidden="true" />
+                    Pending Sync
+                  </span>
+                )}
+              </>
+            ) : (
+              <span>{part.part_number}</span>
+            )}
+            {part.revision && <span className="text-sm font-normal text-slate-500">rev {part.revision}</span>}
           </h1>
+          {part.internal_part_number && (
+            <p className="mt-0.5 text-[11px] text-slate-500">
+              Mfr P/N <span className="font-mono text-slate-300">{part.part_number}</span>
+            </p>
+          )}
           <p className="text-sm text-slate-300">{part.name}</p>
           <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
             <span className="rounded-full px-2 py-0.5 font-semibold" style={{ background: lc.bg, color: lc.text }}>{lc.label}</span>
@@ -202,6 +285,41 @@ export default function CatalogPartDetailPage() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {part.wpn_pending_sync && (
+            <button
+              type="button"
+              onClick={handleReconcile}
+              disabled={syncing}
+              title="Re-register this fallback-issued WPN with HAROLD"
+              className="flex items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-300 hover:bg-amber-500/20 disabled:opacity-50"
+            >
+              {syncing
+                ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                : <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />}
+              {syncing ? 'Syncing…' : 'Sync with HAROLD'}
+            </button>
+          )}
+          {/* CLEANUP-002 Phase 4 (AD-8): proactive usage badge so the
+              operator sees deletability before clicking. The same
+              report drives the disabled/enabled state of the Delete
+              button below. */}
+          {usageReport && (
+            usageReport.deletable ? (
+              <span
+                className="rounded-full bg-emerald-500/15 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-emerald-400"
+                title="No downstream references — safe to delete"
+              >
+                Unused
+              </span>
+            ) : (
+              <span
+                className="rounded-full bg-amber-500/15 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-amber-300"
+                title={`${usageReport.total_references} reference(s) across ${usageReport.projects.length} project(s)`}
+              >
+                Used in {usageReport.projects.length} project{usageReport.projects.length === 1 ? '' : 's'}
+              </span>
+            )
+          )}
           {canDelete && (
             <button type="button" onClick={() => setConfirmDelete(true)}
               className="flex items-center gap-1 rounded-lg border border-red-500/30 px-3 py-1.5 text-xs text-red-400 hover:bg-red-500/10">
@@ -210,6 +328,17 @@ export default function CatalogPartDetailPage() {
           )}
         </div>
       </div>
+
+      {syncMessage && (
+        <div role="status" className="mb-3 flex items-center gap-2 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">
+          <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" /> {syncMessage}
+        </div>
+      )}
+      {syncError && (
+        <div role="alert" className="mb-3 flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+          <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" /> Sync skipped: {syncError}
+        </div>
+      )}
 
       {error && (
         <div role="alert" className="mb-3 rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-400 flex items-center gap-2">
@@ -423,19 +552,98 @@ export default function CatalogPartDetailPage() {
         </section>
       </div>
 
-      <ConfirmDialog
-        open={confirmDelete}
-        title={`Delete catalog part "${part.part_number}"?`}
-        message={
-          usage.length > 0
-            ? `This part is placed in ${usage.length} project unit${usage.length !== 1 ? 's' : ''}. Deletion will fail unless an admin force-cascades.`
-            : 'This action cannot be undone.'
-        }
-        confirmLabel="Delete"
-        destructive
-        onCancel={() => setConfirmDelete(false)}
-        onConfirm={handleDelete}
-      />
+      {/* CLEANUP-002 Phase 4 (AD-7 + AD-8): structured delete modal
+          driven by the usage report. When `deletable` is false the
+          confirm button is hard-disabled and the modal renders the
+          full project list so the operator can go remove references
+          themselves. The 409 path overwrites usageReport with the
+          server's snapshot if state drifted between mount + click. */}
+      {confirmDelete && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="catalog-delete-title"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+          onClick={() => !deleting && setConfirmDelete(false)}
+        >
+          <div
+            className="w-full max-w-lg rounded-2xl border border-astra-border bg-astra-surface p-6 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 id="catalog-delete-title" className="text-sm font-bold text-slate-100">
+              Delete catalog part &ldquo;{part.internal_part_number || part.part_number}&rdquo;?
+            </h3>
+
+            {!usageReport || usageReport.deletable ? (
+              <p className="mt-2 text-xs text-slate-400">
+                This part has no downstream references. It will be soft-deleted
+                (the row stays for audit, but it disappears from the catalog).
+              </p>
+            ) : (
+              <>
+                <p className="mt-2 text-xs text-amber-300">
+                  Cannot delete — this part is referenced by{' '}
+                  <strong>{usageReport.total_references}</strong>{' '}
+                  {usageReport.total_references === 1 ? 'entity' : 'entities'}
+                  {usageReport.projects.length > 0
+                    ? ` across ${usageReport.projects.length} project${usageReport.projects.length === 1 ? '' : 's'}`
+                    : ''}
+                  . Remove the references first, then retry.
+                </p>
+
+                {usageReport.projects.length > 0 && (
+                  <div className="mt-3 max-h-64 overflow-auto rounded-lg border border-astra-border">
+                    <table className="w-full text-[11px]">
+                      <thead className="bg-astra-surface-alt text-slate-500">
+                        <tr>
+                          <th className="px-2 py-1 text-left font-semibold">Project</th>
+                          <th className="px-2 py-1 text-right font-semibold">BOM lines</th>
+                          <th className="px-2 py-1 text-right font-semibold">Joints</th>
+                          <th className="px-2 py-1 text-right font-semibold">Units</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {usageReport.projects.map((p) => (
+                          <tr key={p.project_id} className="border-t border-astra-border/40">
+                            <td className="px-2 py-1 text-slate-300">
+                              {p.project_code ? <span className="font-mono mr-1">{p.project_code}</span> : null}
+                              {p.project_name || `project ${p.project_id}`}
+                            </td>
+                            <td className="px-2 py-1 text-right text-slate-300">{p.project_part_count}</td>
+                            <td className="px-2 py-1 text-right text-slate-300">{p.mechanical_joint_count}</td>
+                            <td className="px-2 py-1 text-right text-slate-300">{p.unit_count}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+              </>
+            )}
+
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setConfirmDelete(false)}
+                disabled={deleting}
+                className="rounded-lg border border-astra-border px-4 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200 disabled:opacity-40"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleDelete}
+                disabled={deleting || (usageReport ? !usageReport.deletable : false)}
+                className="flex items-center gap-1.5 rounded-lg bg-red-500 px-4 py-2 text-xs font-semibold text-white outline-none focus:ring-2 focus:ring-red-500/40 hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {deleting ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : null}
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
