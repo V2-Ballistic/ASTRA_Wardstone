@@ -16,6 +16,9 @@ export interface CadportComponent {
   material: string | null;
   transform: number[][] | null; // 4x4
   part_yaml_document_id: number | null;
+  // CADPORT-REBUILD-004: per-component STL mesh doc id. null → the
+  // Three.js viewer renders a fallback box for this component.
+  stl_document_id: number | null;
   project_part_exists: boolean;
   project_part_id: number | null;
 }
@@ -58,6 +61,8 @@ export interface CadportPartLinkage {
   content_hash: string | null;
   wpn: string | null;
   yaml_document_id: number | null;
+  // CADPORT-REBUILD-004: the part's STL mesh doc id (null → no mesh).
+  stl_document_id: number | null;
   solidworks_version: string | null;
   imported_at: string | null;
   assemblies: CadportPartAssemblyRef[];
@@ -107,5 +112,17 @@ export const cadportAPI = {
     a.click();
     a.remove();
     window.URL.revokeObjectURL(url);
+  },
+
+  // CADPORT-REBUILD-004 — fetch a supplier_document's raw bytes for
+  // in-browser parsing (STL → Three.js). Same authed-axios pattern as
+  // downloadDocument, but returns the buffer instead of triggering a
+  // browser download. A raw fetch/URL would 401 (Bearer header is
+  // dropped on plain navigation); axios `api` carries the token.
+  fetchDocumentBuffer: async (docId: number): Promise<ArrayBuffer> => {
+    const res = await api.get(`/catalog/documents/${docId}/file`, {
+      responseType: 'arraybuffer',
+    });
+    return res.data as ArrayBuffer;
   },
 };

@@ -17,6 +17,7 @@ import clsx from 'clsx';
 
 import { cadportAPI, type CadportAssembly, type CadportComponent } from '@/lib/cadport-api';
 import { formatApiError } from '@/lib/errors';
+import AssemblyViewer from './AssemblyViewer';
 
 const fmt = (n: number | null | undefined, d = 4) =>
   n == null ? '—' : Number(n).toFixed(d);
@@ -298,11 +299,19 @@ function AssemblyDetail({
         </div>
       )}
 
-      {/* Schematic isometric view */}
-      <IsometricView
+      {/* Real-geometry Three.js viewer (AD-7: SVG iso view is the
+          WebGL-unavailable fallback). */}
+      <AssemblyViewer
         components={asm.components}
         selected={selectedComp}
         onSelect={setSelectedComp}
+        fallback={
+          <IsometricView
+            components={asm.components}
+            selected={selectedComp}
+            onSelect={setSelectedComp}
+          />
+        }
       />
 
       {/* Component breakdown */}

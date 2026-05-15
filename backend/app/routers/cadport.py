@@ -38,6 +38,7 @@ GET  /api/v1/cadport-assemblies/{id}
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import os
 import uuid as _uuid
@@ -108,6 +109,15 @@ class CadportPartImport(BaseModel):
     inertia: CadportInertia = Field(default_factory=CadportInertia)
     yaml_filename: str = Field(..., description="WPN-based YAML filename (AD-8)")
     yaml_content: str = Field(..., description="The full §6 part YAML text")
+    # CADPORT-REBUILD-004 (AD-5): binary STL mesh, base64, exported by
+    # the bridge during extraction. None when SW STL export failed —
+    # additive, never blocks the import (viewer falls back to a box).
+    stl_base64: Optional[str] = Field(
+        None, description="Binary STL bytes, base64 (None when no mesh)"
+    )
+    stl_filename: Optional[str] = Field(
+        None, description="WPN-based STL filename, e.g. '<wpn>.stl'"
+    )
 
 
 class CheckDuplicateRequest(BaseModel):
@@ -178,6 +188,9 @@ class CadportComponentResult(BaseModel):
     material: Optional[str] = None
     transform: Optional[List[List[float]]] = None  # 4x4, for the iso view
     part_yaml_document_id: Optional[int] = None
+    # CADPORT-REBUILD-004: per-component STL mesh doc for the Three.js
+    # viewer. None → that component renders as a fallback box (AD-7).
+    stl_document_id: Optional[int] = None
     # L8 missing-parts check: does a project_part exist for this
     # catalog_part in the assembly's project?
     project_part_exists: bool = False
@@ -260,6 +273,52 @@ def _store_yaml_document(
     return doc
 
 
+def _store_stl_document(
+    db: Session,
+    *,
+    supplier_id: int,
+    stl_filename: str,
+    stl_bytes: bytes,
+    current_user: User,
+) -> SupplierDocument:
+    """CADPORT-REBUILD-004 (AD-5): persist a binary STL as a
+    supplier_documents row (document_type='stl'), same file-storage
+    convention as the §6 YAML blob. Served back through the existing
+    /catalog/documents/{id}/file route."""
+    sha256 = hashlib.sha256(stl_bytes).hexdigest()
+    SUPPLIER_DOC_DIR.mkdir(parents=True, exist_ok=True)
+    file_uuid = _uuid.uuid4().hex
+    file_path = SUPPLIER_DOC_DIR / f"{file_uuid}.stl"
+    file_path.write_bytes(stl_bytes)
+
+    doc = SupplierDocument(
+        supplier_id=supplier_id,
+        title=stl_filename,
+        original_filename=stl_filename,
+        document_type=SupplierDocumentType.STL,
+        file_path=str(file_path),
+        file_size_bytes=len(stl_bytes),
+        sha256=sha256,
+        mime_type="model/stl",
+        uploaded_by_id=current_user.id,
+    )
+    db.add(doc)
+    db.flush()
+    return doc
+
+
+def _decode_stl(body: "CadportPartImport") -> Optional[bytes]:
+    """Decode the inline base64 STL. None (not an error) when the
+    bridge had no mesh — STL is additive and never blocks an import."""
+    if not body.stl_base64:
+        return None
+    try:
+        data = base64.b64decode(body.stl_base64)
+    except Exception:
+        return None
+    return data or None
+
+
 def _dup_payload(p: CatalogPart) -> DuplicateMatch:
     return DuplicateMatch(
         found=True,
@@ -296,6 +355,73 @@ def check_duplicate(
     return _dup_payload(p)
 
 
+class AttachStlRequest(BaseModel):
+    stl_base64: str = Field(..., description="Binary STL bytes, base64")
+    stl_filename: Optional[str] = Field(None, description="e.g. '<wpn>.stl'")
+
+
+class AttachStlResult(BaseModel):
+    catalog_part_id: int
+    stl_document_id: Optional[int]
+    created: bool
+
+
+@router.post(
+    "/catalog/parts/{catalog_part_id}/stl",
+    response_model=AttachStlResult,
+)
+def attach_stl_to_catalog_part(
+    catalog_part_id: int,
+    body: AttachStlRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> AttachStlResult:
+    """CADPORT-REBUILD-004: attach an STL mesh to an existing
+    catalog_part.
+
+    The TDD-2 import orchestrator dedups on content_hash via
+    /check-duplicate and, on a hit, links to the existing row WITHOUT
+    calling /from-cadport — so the STL backfill in that endpoint never
+    runs for already-cataloged parts (Bottom Case et al., imported
+    pre-STL). This dedicated path lets the orchestrator's dedup branch
+    still land the mesh. Idempotent: a part that already has an STL
+    keeps it (created=false)."""
+    cp = (
+        db.query(CatalogPart)
+        .filter(CatalogPart.id == catalog_part_id)
+        .first()
+    )
+    if cp is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "catalog_part not found")
+    if cp.stl_document_id is not None:
+        return AttachStlResult(
+            catalog_part_id=cp.id,
+            stl_document_id=cp.stl_document_id,
+            created=False,
+        )
+    try:
+        data = base64.b64decode(body.stl_base64)
+    except Exception:
+        data = b""
+    if not data:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "stl_base64 empty or undecodable"
+        )
+    wardstone = _wardstone(db, current_user)
+    doc = _store_stl_document(
+        db,
+        supplier_id=wardstone.id,
+        stl_filename=body.stl_filename or f"{cp.part_number}.stl",
+        stl_bytes=data,
+        current_user=current_user,
+    )
+    cp.stl_document_id = doc.id
+    db.commit()
+    return AttachStlResult(
+        catalog_part_id=cp.id, stl_document_id=doc.id, created=True
+    )
+
+
 @router.post(
     "/catalog/parts/from-cadport",
     response_model=CatalogPartImportResult,
@@ -323,6 +449,25 @@ def create_part_from_cadport(
         .first()
     )
     if existing is not None:
+        # CADPORT-REBUILD-004: backfill the STL for an already-deduped
+        # part. Bottom Case was imported pre-STL (or 3× under TDD-2's
+        # dedup proof) — a re-extraction now carries a mesh the catalog
+        # row is missing. Idempotent: only fills a NULL stl_document_id.
+        stl_bytes = _decode_stl(body)
+        if stl_bytes and existing.stl_document_id is None:
+            try:
+                stl_doc = _store_stl_document(
+                    db,
+                    supplier_id=wardstone.id,
+                    stl_filename=body.stl_filename
+                    or f"{existing.part_number}.stl",
+                    stl_bytes=stl_bytes,
+                    current_user=current_user,
+                )
+                existing.stl_document_id = stl_doc.id
+                db.commit()
+            except Exception:
+                db.rollback()
         return CatalogPartImportResult(
             catalog_part_id=existing.id,
             cadport_part_id=str(existing.cadport_part_id) if existing.cadport_part_id else body.cadport_part_id,
@@ -348,6 +493,25 @@ def create_part_from_cadport(
         title=body.yaml_filename,
         current_user=current_user,
     )
+
+    # CADPORT-REBUILD-004: store the STL mesh (if any) as a sibling
+    # supplier_document. Best-effort — a mesh failure must not block
+    # the catalog import (AD: STL is additive).
+    stl_doc_id: Optional[int] = None
+    stl_bytes = _decode_stl(body)
+    if stl_bytes:
+        try:
+            stl_doc = _store_stl_document(
+                db,
+                supplier_id=wardstone.id,
+                stl_filename=body.stl_filename
+                or f"{body.internal_part_number or Path(body.source_filename).stem}.stl",
+                stl_bytes=stl_bytes,
+                current_user=current_user,
+            )
+            stl_doc_id = stl_doc.id
+        except Exception:
+            stl_doc_id = None
 
     com = (body.center_of_mass_m + [0.0, 0.0, 0.0])[:3]
     # part_number: WPN if allocated, else the source-file stem. The
@@ -382,6 +546,7 @@ def create_part_from_cadport(
         ixy=body.inertia.ixy,
         ixz=body.inertia.ixz,
         iyz=body.inertia.iyz,
+        stl_document_id=stl_doc_id,
         created_by_id=current_user.id,
     )
     db.add(part)
@@ -521,6 +686,9 @@ class CadportPartLinkage(BaseModel):
     content_hash: Optional[str] = None
     wpn: Optional[str] = None
     yaml_document_id: Optional[int] = None
+    # CADPORT-REBUILD-004: the STL mesh document (None → no mesh, the
+    # part-detail viewer/download falls back to "no geometry").
+    stl_document_id: Optional[int] = None
     solidworks_version: Optional[str] = None
     imported_at: Optional[str] = None
     assemblies: List[CadportPartAssemblyRef] = Field(default_factory=list)
@@ -583,6 +751,7 @@ def catalog_part_cadport_linkage(
         content_hash=cp.content_hash,
         wpn=cp.internal_part_number,
         yaml_document_id=cp.source_document_id,
+        stl_document_id=cp.stl_document_id,
         solidworks_version=sw_version,
         imported_at=cp.created_at.isoformat() if cp.created_at else None,
         assemblies=refs,
@@ -898,6 +1067,7 @@ def _assembly_result(
                 material=cp.material_name if cp else None,
                 transform=transform,
                 part_yaml_document_id=cp.source_document_id if cp else None,
+                stl_document_id=cp.stl_document_id if cp else None,
                 project_part_exists=pp is not None,
                 project_part_id=pp.id if pp else None,
             )

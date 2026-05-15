@@ -155,6 +155,12 @@ class SupplierDocumentType(str, enum.Enum):
     # as supplier_documents get a truthful document_type. Added to the
     # PG enum in migration 0036 via ALTER TYPE ... ADD VALUE.
     YAML           = "yaml"
+    # CADPORT-REBUILD-004 (AD-5): binary STL meshes exported from
+    # SolidWorks during extraction, stored as supplier_documents so
+    # the Three.js assembly viewer + part-detail download can fetch
+    # them through the existing /catalog/documents/{id}/file route.
+    # Added to the PG enum in migration 0038.
+    STL            = "stl"
 
 
 class ExtractionStatus(str, enum.Enum):
@@ -434,6 +440,13 @@ class CatalogPart(Base):
     ixy                 = Column(Float, nullable=True)
     ixz                 = Column(Float, nullable=True)
     iyz                 = Column(Float, nullable=True)
+    # CADPORT-REBUILD-004 (AD-5): the binary STL mesh for this part,
+    # stored as a supplier_documents row (document_type='stl'). NULL
+    # when SW STL export failed or the part predates the STL feature —
+    # the viewer falls back to a schematic box. Migration 0038.
+    stl_document_id     = Column(
+        Integer, ForeignKey("supplier_documents.id", ondelete="SET NULL"), nullable=True
+    )
 
     deleted_at          = Column(DateTime(timezone=True), nullable=True, index=True)
 
@@ -442,7 +455,8 @@ class CatalogPart(Base):
     created_by_id       = Column(Integer, ForeignKey("users.id"), nullable=False)
 
     supplier            = relationship("Supplier", back_populates="catalog_parts")
-    source_document     = relationship("SupplierDocument")
+    source_document     = relationship("SupplierDocument", foreign_keys=[source_document_id])
+    stl_document        = relationship("SupplierDocument", foreign_keys=[stl_document_id])
     parent_part         = relationship("CatalogPart", remote_side=[id], backref="variants")
     connectors          = relationship(
         "CatalogConnector",

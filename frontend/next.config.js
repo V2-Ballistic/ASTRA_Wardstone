@@ -2,6 +2,12 @@
 const nextConfig = {
   output: 'standalone',
 
+  // CADPORT-REBUILD-004: the assembly viewer pulls three.js addons
+  // (STLLoader, OrbitControls) from `three/examples/jsm/**`, which
+  // ship as untranspiled ESM. Next 14 must transpile the `three`
+  // package for those imports to resolve under the app router.
+  transpilePackages: ['three'],
+
   // Permanent (308) redirects. Keep the SYSARCH-002 entries first;
   // CLEANUP-002 appended four /parts-library → /catalog rewrites in
   // Phase 3.

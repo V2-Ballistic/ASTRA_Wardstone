@@ -684,6 +684,23 @@ export default function CatalogPartDetailPage() {
                   <Download className="h-3.5 w-3.5" aria-hidden="true" /> CITADEL §6 YAML
                 </button>
               )}
+              {/* CADPORT-REBUILD-004 Phase 5: STL mesh download. Same
+                  authed-blob path as the YAML button. Absent when SW
+                  export failed (stl_document_id null). */}
+              {cadportLink.stl_document_id != null && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    cadportAPI.downloadDocument(
+                      cadportLink.stl_document_id as number,
+                      `${cadportLink.wpn ?? part?.part_number ?? 'part'}.stl`,
+                    )
+                  }
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-blue-500/40 bg-blue-500/10 px-3 py-1.5 text-xs font-semibold text-blue-300 hover:bg-blue-500/20"
+                >
+                  <Download className="h-3.5 w-3.5" aria-hidden="true" /> STL mesh
+                </button>
+              )}
               <span className="font-mono text-[10px] text-slate-600">
                 cadport_part_id {(cadportLink.cadport_part_id ?? '').slice(0, 8)}…
               </span>
