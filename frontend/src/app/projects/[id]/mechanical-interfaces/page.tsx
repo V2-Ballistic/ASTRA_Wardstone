@@ -41,16 +41,17 @@ import type {
 import { JOINT_TYPE_LABELS } from '@/lib/parts-types';
 import { useFormAutosave } from '@/lib/autosave';
 import RestorePromptBanner from '@/components/RestorePromptBanner';
+import AssembliesTab from '@/components/cadport/AssembliesTab';
 
 
 // ─────────────────────────────────────────────────────────────────
 //  Constants
 // ─────────────────────────────────────────────────────────────────
 
-type Tab = 'overview' | 'joints' | 'parts-with-joints';
+type Tab = 'overview' | 'joints' | 'parts-with-joints' | 'assemblies';
 
 function isTab(s: string | null | undefined): s is Tab {
-  return s === 'overview' || s === 'joints' || s === 'parts-with-joints';
+  return s === 'overview' || s === 'joints' || s === 'parts-with-joints' || s === 'assemblies';
 }
 
 const JOINT_TYPES: JointType[] = [
@@ -1089,12 +1090,13 @@ export default function MechanicalInterfacesPage() {
 
       {/* Tabs */}
       <div role="tablist" aria-label="Mechanical Interfaces sections" className="mb-4 flex gap-1 border-b border-astra-border">
-        {(['overview', 'joints', 'parts-with-joints'] as Tab[]).map((t) => {
+        {(['overview', 'joints', 'parts-with-joints', 'assemblies'] as Tab[]).map((t) => {
           const active = tab === t;
           const labels: Record<Tab, string> = {
             overview: 'Overview',
             joints: 'Joints',
             'parts-with-joints': 'Parts with Joints',
+            assemblies: 'Assemblies',
           };
           return (
             <button
@@ -1161,6 +1163,9 @@ export default function MechanicalInterfacesPage() {
               partsWithJoints={partsWithJoints}
               onPick={(ppId) => { setPartFilter(ppId); setTabPersist('joints'); }}
             />
+          )}
+          {tab === 'assemblies' && (
+            <AssembliesTab projectId={projectId} />
           )}
         </div>
       )}
