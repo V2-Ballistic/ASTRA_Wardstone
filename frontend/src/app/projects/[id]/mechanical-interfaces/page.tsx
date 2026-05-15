@@ -50,6 +50,31 @@ import AssembliesTab from '@/components/cadport/AssembliesTab';
 
 type Tab = 'overview' | 'joints' | 'parts-with-joints' | 'assemblies';
 
+// A project_part is either library-keyed (legacy fastener workflow)
+// or catalog/CADPORT-keyed (library_part === null). Every display
+// path must resolve from whichever side is present — accessing
+// `.library_part.name` directly crashes the whole page on a
+// catalog-keyed row (e.g. a CADPORT "Add to project" part).
+function ppName(p: ProjectPartResponse | null | undefined): string {
+  return p?.library_part?.name ?? p?.catalog_part_summary?.name ?? 'Unknown part';
+}
+function ppNumber(p: ProjectPartResponse | null | undefined): string {
+  return (
+    p?.library_part?.wardstone_part_number
+    ?? p?.catalog_part_summary?.part_number
+    ?? '—'
+  );
+}
+function ppType(p: ProjectPartResponse | null | undefined): string {
+  return p?.library_part?.part_type ?? p?.catalog_part_summary?.part_class ?? '—';
+}
+function ppMfrNum(p: ProjectPartResponse | null | undefined): string {
+  return p?.library_part?.manufacturer_part_number ?? '';
+}
+function ppMfrName(p: ProjectPartResponse | null | undefined): string {
+  return p?.library_part?.manufacturer_name ?? p?.catalog_part_summary?.supplier_name ?? '';
+}
+
 function isTab(s: string | null | undefined): s is Tab {
   return s === 'overview' || s === 'joints' || s === 'parts-with-joints' || s === 'assemblies';
 }
@@ -154,9 +179,9 @@ function ProjectPartPicker({
         if (!q) return true;
         const blob = [
           p.designation || '',
-          p.library_part.name,
-          p.library_part.wardstone_part_number,
-          p.library_part.manufacturer_part_number || '',
+          ppName(p),
+          ppNumber(p),
+          ppMfrNum(p),
         ].join(' ').toLowerCase();
         return blob.includes(q);
       })
@@ -169,7 +194,7 @@ function ProjectPartPicker({
   );
 
   const display = selected
-    ? `${selected.designation || selected.library_part.wardstone_part_number} — ${selected.library_part.name}`
+    ? `${selected.designation || ppNumber(selected)} — ${ppName(selected)}`
     : (placeholder || 'Pick a project part…');
 
   return (
@@ -249,17 +274,17 @@ function ProjectPartPicker({
               >
                 <div className="flex items-center gap-2 text-xs">
                   <span className="font-mono text-slate-200">
-                    {p.designation || p.library_part.wardstone_part_number}
+                    {p.designation || ppNumber(p)}
                   </span>
                   <span className="rounded-full bg-blue-500/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-blue-300">
-                    {p.library_part.part_type}
+                    {ppType(p)}
                   </span>
                 </div>
-                <div className="truncate text-[11px] text-slate-300">{p.library_part.name}</div>
-                {p.library_part.manufacturer_part_number && (
+                <div className="truncate text-[11px] text-slate-300">{ppName(p)}</div>
+                {ppMfrNum(p) && (
                   <div className="text-[10px] text-slate-500">
-                    {p.library_part.manufacturer_name || ''}{' '}
-                    {p.library_part.manufacturer_part_number}
+                    {ppMfrName(p)}{' '}
+                    {ppMfrNum(p)}
                   </div>
                 )}
               </button>
@@ -974,11 +999,11 @@ export default function MechanicalInterfacesPage() {
           j.joint_type,
           j.interface_drawing || '',
           a?.designation || '',
-          a?.library_part.name || '',
-          a?.library_part.wardstone_part_number || '',
+          a ? ppName(a) : '',
+          a ? ppNumber(a) : '',
           b?.designation || '',
-          b?.library_part.name || '',
-          b?.library_part.wardstone_part_number || '',
+          b ? ppName(b) : '',
+          b ? ppNumber(b) : '',
         ].join(' ').toLowerCase();
         if (!blob.includes(q)) return false;
       }
@@ -1261,9 +1286,9 @@ function OverviewTab({
                 <span className="font-mono text-xs text-blue-400">{j.joint_id}</span>
                 <span className="text-[11px] text-slate-300">
                   {JOINT_TYPE_LABELS[j.joint_type]} ·{' '}
-                  <span className="font-mono">{a?.designation || a?.library_part.wardstone_part_number || `#${j.part_a_id}`}</span>
+                  <span className="font-mono">{a ? (a.designation || ppNumber(a)) : `#${j.part_a_id}`}</span>
                   {' ↔ '}
-                  <span className="font-mono">{b?.designation || b?.library_part.wardstone_part_number || `#${j.part_b_id}`}</span>
+                  <span className="font-mono">{b ? (b.designation || ppNumber(b)) : `#${j.part_b_id}`}</span>
                 </span>
                 <span
                   className="ml-auto rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider"
@@ -1347,7 +1372,7 @@ function JointsTab({
           <option value="">Any part</option>
           {partOptions.map((p) => (
             <option key={p.id} value={p.id}>
-              {p.designation || p.library_part.wardstone_part_number} — {p.library_part.name}
+              {p.designation || ppNumber(p)} — {ppName(p)}
             </option>
           ))}
         </select>
@@ -1446,11 +1471,11 @@ function JointCard({
 
       <div className="mt-2 flex items-center gap-2 text-[11px] text-slate-300">
         <span className="rounded bg-astra-bg px-2 py-1 font-mono">
-          {a?.designation || a?.library_part.wardstone_part_number || `#${joint.part_a_id}`}
+          {a ? (a.designation || ppNumber(a)) : `#${joint.part_a_id}`}
         </span>
         <Link2 className="h-3 w-3 text-slate-500" aria-hidden="true" />
         <span className="rounded bg-astra-bg px-2 py-1 font-mono">
-          {b?.designation || b?.library_part.wardstone_part_number || `#${joint.part_b_id}`}
+          {b ? (b.designation || ppNumber(b)) : `#${joint.part_b_id}`}
         </span>
       </div>
 
@@ -1519,18 +1544,18 @@ function PartsWithJointsTab({
             className="flex items-center gap-3 rounded-xl border border-astra-border bg-astra-surface p-3 text-left transition hover:border-blue-500/30"
           >
             <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-blue-500 to-violet-500 text-[10px] font-bold text-white">
-              {(part.library_part.part_type || 'X').slice(0, 3).toUpperCase()}
+              {(ppType(part) || 'X').slice(0, 3).toUpperCase()}
             </div>
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2 text-xs">
                 <span className="font-mono text-slate-200">
-                  {part.designation || part.library_part.wardstone_part_number}
+                  {part.designation || ppNumber(part)}
                 </span>
                 <span className="rounded-full bg-blue-500/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-blue-300">
-                  {part.library_part.part_type}
+                  {ppType(part)}
                 </span>
               </div>
-              <div className="truncate text-[11px] text-slate-300">{part.library_part.name}</div>
+              <div className="truncate text-[11px] text-slate-300">{ppName(part)}</div>
               <div className="mt-0.5 text-[10px] text-emerald-300">
                 Used in {count} joint{count === 1 ? '' : 's'}
               </div>

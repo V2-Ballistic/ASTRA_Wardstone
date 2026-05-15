@@ -220,12 +220,18 @@ function AssemblyDetail({
             <p className="mt-1 font-mono text-xs text-slate-500">{asm.source_file}</p>
           </div>
           {asm.assembly_yaml_document_id != null && (
-            <a
-              href={cadportAPI.documentFileUrl(asm.assembly_yaml_document_id)}
+            <button
+              type="button"
+              onClick={() =>
+                cadportAPI.downloadDocument(
+                  asm.assembly_yaml_document_id as number,
+                  asm.assembly_yaml_filename ?? `${asm.display_name}.yaml`,
+                )
+              }
               className="flex items-center gap-1.5 rounded-lg border border-blue-500/40 bg-blue-500/10 px-3 py-1.5 text-xs font-semibold text-blue-300 hover:bg-blue-500/20"
             >
               <Download className="h-3.5 w-3.5" /> {asm.assembly_yaml_filename ?? 'Assembly YAML'}
-            </a>
+            </button>
           )}
         </div>
         <div className="mt-4 grid grid-cols-2 gap-x-8 gap-y-2 text-xs md:grid-cols-4">
@@ -325,12 +331,18 @@ function AssemblyDetail({
                   </td>
                   <td className="px-4 py-3 text-right">
                     {c.part_yaml_document_id != null ? (
-                      <a
-                        href={cadportAPI.documentFileUrl(c.part_yaml_document_id)}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          cadportAPI.downloadDocument(
+                            c.part_yaml_document_id as number,
+                            `${c.wpn ?? c.display_name ?? 'part'}.yaml`,
+                          )
+                        }
                         className="inline-flex items-center gap-1 text-xs text-blue-300 hover:text-blue-200"
                       >
                         <Download className="h-3 w-3" /> YAML
-                      </a>
+                      </button>
                     ) : (
                       <span className="text-xs text-slate-600">—</span>
                     )}

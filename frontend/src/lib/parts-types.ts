@@ -153,15 +153,32 @@ export interface LibraryPartCreate {
   qualification_status?: QualificationStatus;
 }
 
+// Path C / CADPORT-keyed project_parts carry a catalog summary
+// instead of a library_part. Either side may be null depending on
+// how the row was created (legacy fastener workflow → library_part;
+// catalog/CADPORT import → catalog_part_summary).
+export interface CatalogPartSummaryLite {
+  id: number;
+  part_number: string;
+  name: string;
+  part_class: string | null;
+  lifecycle_status: string | null;
+  revision: string | null;
+  supplier_name: string | null;
+  mass_kg: string | number | null;
+}
+
 export interface ProjectPartResponse {
   id: number;
   project_id: number;
-  library_part_id: number;
+  library_part_id: number | null;
+  catalog_part_id?: number | null;
   quantity: number;
   designation: string | null;
   notes: string | null;
   added_at: string;
-  library_part: LibraryPartSummary;
+  library_part: LibraryPartSummary | null;
+  catalog_part_summary?: CatalogPartSummaryLite | null;
   system_id: number | null;
 }
 

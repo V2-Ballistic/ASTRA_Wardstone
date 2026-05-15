@@ -85,7 +85,22 @@ export const cadportAPI = {
       designation: designation ?? undefined,
     }),
 
-  // AD-4 — YAML download via the existing supplier_documents file route.
-  documentFileUrl: (docId: number) =>
-    `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1'}/catalog/documents/${docId}/file`,
+  // AD-4 — YAML download via the existing supplier_documents file
+  // route. A raw <a href> 401s because the browser navigation drops
+  // the Authorization header; ASTRA's pattern (catalog-api
+  // downloadDocumentFile) is an authed axios blob fetch + an
+  // object-URL save. Mirror that here.
+  downloadDocument: async (docId: number, filename: string) => {
+    const res = await api.get(`/catalog/documents/${docId}/file`, {
+      responseType: 'blob',
+    });
+    const url = window.URL.createObjectURL(res.data as Blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
+  },
 };
