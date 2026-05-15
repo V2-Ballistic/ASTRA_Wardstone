@@ -165,6 +165,19 @@ class CadportComponentResult(BaseModel):
     instance_name: str
     quantity: int
     suppressed: bool
+    # CADPORT-REBUILD-003 Phase 1: enriched so the Assemblies-tab UI
+    # doesn't need N catalog round-trips. Sourced from the linked
+    # catalog_part (L4) when present.
+    wpn: Optional[str] = None
+    display_name: Optional[str] = None
+    mass_kg: Optional[float] = None
+    material: Optional[str] = None
+    transform: Optional[List[List[float]]] = None  # 4x4, for the iso view
+    part_yaml_document_id: Optional[int] = None
+    # L8 missing-parts check: does a project_part exist for this
+    # catalog_part in the assembly's project?
+    project_part_exists: bool = False
+    project_part_id: Optional[int] = None
 
 
 class CadportAssemblyResult(BaseModel):
@@ -172,11 +185,16 @@ class CadportAssemblyResult(BaseModel):
     assembly_id: str
     project_id: int
     project_code: Optional[str] = None
+    project_name: Optional[str] = None
     display_name: str
     source_file: str
+    content_hash: Optional[str] = None
     total_mass_kg: float
+    center_of_mass: List[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0])
+    solidworks_version: Optional[str] = None
     component_count: int
     assembly_yaml_document_id: Optional[int] = None
+    assembly_yaml_filename: Optional[str] = None
     components: List[CadportComponentResult] = Field(default_factory=list)
 
 
@@ -502,29 +520,84 @@ def get_cadport_assembly(
 def _assembly_result(
     db: Session, asm: CadportAssembly, project: Optional[Project]
 ) -> CadportAssemblyResult:
+    import json as _json
+
+    from app.models.catalog import CatalogPart
+    from app.models.parts_library import ProjectPart
+
     comps = (
         db.query(CadportAssemblyComponent)
         .filter(CadportAssemblyComponent.assembly_id == asm.id)
         .all()
     )
-    return CadportAssemblyResult(
-        id=asm.id,
-        assembly_id=str(asm.assembly_id),
-        project_id=asm.project_id,
-        project_code=project.code if project else None,
-        display_name=asm.display_name,
-        source_file=asm.source_file,
-        total_mass_kg=asm.total_mass_kg or 0.0,
-        component_count=asm.component_count,
-        assembly_yaml_document_id=asm.assembly_yaml_document_id,
-        components=[
+
+    # Batch-load the linked catalog parts + this project's project_parts
+    # so the per-component enrichment is two queries, not 2N.
+    cp_ids = [c.catalog_part_id for c in comps if c.catalog_part_id]
+    cp_by_id: dict[int, CatalogPart] = {}
+    if cp_ids:
+        for cp in db.query(CatalogPart).filter(CatalogPart.id.in_(cp_ids)).all():
+            cp_by_id[cp.id] = cp
+    pp_by_cp: dict[int, ProjectPart] = {}
+    if cp_ids:
+        for pp in (
+            db.query(ProjectPart)
+            .filter(
+                ProjectPart.project_id == asm.project_id,
+                ProjectPart.catalog_part_id.in_(cp_ids),
+            )
+            .all()
+        ):
+            pp_by_cp[pp.catalog_part_id] = pp
+
+    asm_doc = asm.assembly_yaml_document  # relationship → SupplierDocument
+
+    comp_results: List[CadportComponentResult] = []
+    for c in comps:
+        cp = cp_by_id.get(c.catalog_part_id) if c.catalog_part_id else None
+        pp = pp_by_cp.get(c.catalog_part_id) if c.catalog_part_id else None
+        transform = None
+        if c.transform_json:
+            try:
+                transform = _json.loads(c.transform_json)
+            except Exception:
+                transform = None
+        comp_results.append(
             CadportComponentResult(
                 catalog_part_id=c.catalog_part_id,
                 cadport_part_id=str(c.cadport_part_id) if c.cadport_part_id else "",
                 instance_name=c.instance_name,
                 quantity=c.quantity,
                 suppressed=c.suppressed,
+                wpn=cp.internal_part_number if cp else None,
+                display_name=cp.name if cp else c.instance_name,
+                mass_kg=float(cp.mass_kg) if cp and cp.mass_kg is not None else None,
+                material=cp.material_name if cp else None,
+                transform=transform,
+                part_yaml_document_id=cp.source_document_id if cp else None,
+                project_part_exists=pp is not None,
+                project_part_id=pp.id if pp else None,
             )
-            for c in comps
+        )
+
+    return CadportAssemblyResult(
+        id=asm.id,
+        assembly_id=str(asm.assembly_id),
+        project_id=asm.project_id,
+        project_code=project.code if project else None,
+        project_name=project.name if project else None,
+        display_name=asm.display_name,
+        source_file=asm.source_file,
+        content_hash=asm.content_hash,
+        total_mass_kg=asm.total_mass_kg or 0.0,
+        center_of_mass=[
+            asm.center_of_mass_x or 0.0,
+            asm.center_of_mass_y or 0.0,
+            asm.center_of_mass_z or 0.0,
         ],
+        solidworks_version=asm.solidworks_version,
+        component_count=asm.component_count,
+        assembly_yaml_document_id=asm.assembly_yaml_document_id,
+        assembly_yaml_filename=asm_doc.original_filename if asm_doc else None,
+        components=comp_results,
     )
