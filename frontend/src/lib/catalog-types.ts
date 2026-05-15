@@ -362,6 +362,23 @@ export interface CatalogPartDetail extends CatalogPart {
   updated_at: string;
   created_by_id: number;
   connectors: CatalogConnector[];
+  // CADPORT-REBUILD-002/003 mass-property columns (CITADEL body
+  // frame, SI). Present only for CADPORT-extracted parts.
+  cadport_part_id?: string | null;
+  content_hash?: string | null;
+  volume_m3?: number | null;
+  surface_area_m2?: number | null;
+  density_kg_m3?: number | null;
+  center_of_mass_x?: number | null;
+  center_of_mass_y?: number | null;
+  center_of_mass_z?: number | null;
+  ixx?: number | null;
+  iyy?: number | null;
+  izz?: number | null;
+  ixy?: number | null;
+  ixz?: number | null;
+  iyz?: number | null;
+  principal_moments_kg_m2?: number[];
 }
 
 

@@ -80,6 +80,13 @@ services:
       HAROLD_INTEGRATION_ENABLED: ${HAROLD_INTEGRATION_ENABLED:-false}
       HAROLD_BASE_URL: ${HAROLD_BASE_URL:-http://host.docker.internal:8030}
       HAROLD_TIMEOUT_SECONDS: ${HAROLD_TIMEOUT_SECONDS:-3.0}
+      # CADPORT-REBUILD-003 fix #1: supplier_documents blobs (incl. the
+      # §6 YAMLs TDD-2 stores) must live on a PERSISTENT volume. The
+      # code default (/data/supplier_docs) is NOT mounted here, so the
+      # blobs were ephemeral and lost on container recreate -> YAML
+      # download 500. Point it at the existing persistent upload_data
+      # volume (/app/uploads).
+      SUPPLIER_DOC_DIR: ${SUPPLIER_DOC_DIR:-/app/uploads/supplier_docs}
     ports:
       - "8000:8000"
     volumes:

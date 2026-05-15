@@ -19,7 +19,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.models.catalog import (
     ConnectorGender,
@@ -489,11 +489,41 @@ class CatalogPartResponse(CatalogPartSummary):
     cad_preview_path: Optional[str] = None
     cad_authoring_tool: Optional[str] = None
     native_units: Optional[str] = None
+    # ── CADPORT-REBUILD-002 (migration 0036) mass-property columns ──
+    # CITADEL body frame, SI units. Populated only for CADPORT-
+    # extracted parts. Surfaced so the part-detail UI can render the
+    # full Mass Properties card without opening the YAML blob.
+    cadport_part_id: Optional[str] = None
+    content_hash: Optional[str] = None
+    volume_m3: Optional[float] = None
+    surface_area_m2: Optional[float] = None
+    density_kg_m3: Optional[float] = None
+    center_of_mass_x: Optional[float] = None
+    center_of_mass_y: Optional[float] = None
+    center_of_mass_z: Optional[float] = None
+    ixx: Optional[float] = None
+    iyy: Optional[float] = None
+    izz: Optional[float] = None
+    ixy: Optional[float] = None
+    ixz: Optional[float] = None
+    iyz: Optional[float] = None
+    # Principal moments — eigenvalues of the symmetric inertia tensor,
+    # computed in the response (not stored). Empty when no tensor.
+    principal_moments_kg_m2: List[float] = Field(default_factory=list)
+
     deleted_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
     created_by_id: int
     connectors: List[CatalogConnectorResponse] = Field(default_factory=list)
+
+    @field_validator("cadport_part_id", mode="before")
+    @classmethod
+    def _uuid_to_str(cls, v):
+        # The ORM column is UUID(as_uuid=True); coerce to str so the
+        # response field stays a plain string (Pydantic v2 won't
+        # auto-cast UUID -> str).
+        return str(v) if v is not None else None
 
 
 # ══════════════════════════════════════════════════════════════

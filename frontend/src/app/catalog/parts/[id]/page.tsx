@@ -15,7 +15,7 @@
  * Phase 3 — ASTRA-TDD-INTF-002.
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, type ReactNode } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
   ChevronLeft, ChevronRight, ChevronDown, Cpu, Loader2, AlertTriangle,
@@ -63,6 +63,30 @@ function Spec({ icon: Icon, label, value, unit }: {
       </div>
     </div>
   );
+}
+
+// CADPORT-REBUILD-003 Mass-Properties helpers.
+function fmtMP(v: number | null | undefined, d = 6): string {
+  if (v == null || Number.isNaN(v)) return '—';
+  const a = Math.abs(v);
+  if (a !== 0 && (a < 1e-3 || a >= 1e6)) return v.toExponential(d);
+  return v.toFixed(d);
+}
+function MP({ label, v, unit, d = 6 }: {
+  label: string; v: number | null | undefined; unit: string; d?: number;
+}) {
+  return (
+    <>
+      <div className="text-[10px] uppercase tracking-wide text-slate-600">{label}</div>
+      <div className="font-mono tabular-nums text-slate-200">
+        {fmtMP(v, d)}
+        {v != null && <span className="ml-1 text-slate-600">{unit}</span>}
+      </div>
+    </>
+  );
+}
+function Td({ children }: { children: ReactNode }) {
+  return <td className="px-2 py-1 text-right">{children}</td>;
 }
 
 // ══════════════════════════════════════
@@ -559,6 +583,58 @@ export default function CatalogPartDetailPage() {
             </ul>
           )}
         </section>
+
+        {/* CADPORT-REBUILD-003: full mass properties (catalog columns) */}
+        {(part.mass_kg != null || part.volume_m3 != null || part.ixx != null) && (
+          <section className="rounded-xl border border-astra-border bg-astra-surface p-4 lg:col-span-2">
+            <h2 className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-400">
+              <Hash className="h-3.5 w-3.5" aria-hidden="true" />
+              Mass Properties
+              <span className="ml-1 font-mono text-[10px] normal-case text-slate-600">
+                CITADEL body frame · SI
+              </span>
+            </h2>
+            <div className="grid gap-4 lg:grid-cols-2">
+              <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs">
+                <MP label="Mass" v={part.mass_kg} unit="kg" d={6} />
+                <MP label="Volume" v={part.volume_m3} unit="m³" d={9} />
+                <MP label="Surface area" v={part.surface_area_m2} unit="m²" d={6} />
+                <MP label="Density" v={part.density_kg_m3} unit="kg/m³" d={2} />
+                <MP label="CG x" v={part.center_of_mass_x} unit="m" d={6} />
+                <MP label="CG y" v={part.center_of_mass_y} unit="m" d={6} />
+                <MP label="CG z" v={part.center_of_mass_z} unit="m" d={6} />
+              </div>
+              <div>
+                <div className="mb-1.5 text-[10px] uppercase tracking-wide text-slate-600">
+                  Inertia tensor (kg·m², about CG)
+                </div>
+                <table className="w-full font-mono text-[11px] tabular-nums text-slate-300">
+                  <tbody>
+                    <tr>
+                      <Td>{fmtMP(part.ixx, 6)}</Td><Td>{fmtMP(part.ixy, 6)}</Td><Td>{fmtMP(part.ixz, 6)}</Td>
+                    </tr>
+                    <tr>
+                      <Td>{fmtMP(part.ixy, 6)}</Td><Td>{fmtMP(part.iyy, 6)}</Td><Td>{fmtMP(part.iyz, 6)}</Td>
+                    </tr>
+                    <tr>
+                      <Td>{fmtMP(part.ixz, 6)}</Td><Td>{fmtMP(part.iyz, 6)}</Td><Td>{fmtMP(part.izz, 6)}</Td>
+                    </tr>
+                  </tbody>
+                </table>
+                {part.principal_moments_kg_m2 && part.principal_moments_kg_m2.length === 3 && (
+                  <div className="mt-3">
+                    <div className="mb-1 text-[10px] uppercase tracking-wide text-slate-600">
+                      Principal moments (kg·m²)
+                    </div>
+                    <div className="font-mono text-[11px] tabular-nums text-slate-300">
+                      {part.principal_moments_kg_m2.map((m) => m.toExponential(6)).join('  ·  ')}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </section>
+        )}
 
         {/* CADPORT-REBUILD-003 Phase 5: CADPORT extraction + linkage */}
         {cadportLink?.is_cadport && (

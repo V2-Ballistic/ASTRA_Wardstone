@@ -31,6 +31,11 @@ export interface CadportAssembly {
   content_hash: string | null;
   total_mass_kg: number;
   center_of_mass: number[];
+  inertia: {
+    ixx: number; iyy: number; izz: number;
+    ixy: number; ixz: number; iyz: number;
+  } | null;
+  principal_moments_kg_m2: number[];
   solidworks_version: string | null;
   component_count: number;
   assembly_yaml_document_id: number | null;

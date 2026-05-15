@@ -153,6 +153,10 @@ class CadportAssemblyImport(BaseModel):
     content_hash: Optional[str] = None
     total_mass_kg: float = 0.0
     center_of_mass_m: List[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0])
+    # CADPORT-REBUILD-003: rollup inertia tensor (kg·m², CITADEL body
+    # frame). {ixx,iyy,izz,ixy,ixz,iyz}. Optional for back-compat with
+    # any caller that doesn't send it yet.
+    inertia: Optional[CadportInertia] = None
     solidworks_version: Optional[str] = None
     yaml_filename: str
     yaml_content: str
@@ -191,6 +195,9 @@ class CadportAssemblyResult(BaseModel):
     content_hash: Optional[str] = None
     total_mass_kg: float
     center_of_mass: List[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0])
+    # CADPORT-REBUILD-003: rollup inertia tensor + principal moments.
+    inertia: Optional[CadportInertia] = None
+    principal_moments_kg_m2: List[float] = Field(default_factory=list)
     solidworks_version: Optional[str] = None
     component_count: int
     assembly_yaml_document_id: Optional[int] = None
@@ -449,6 +456,13 @@ def create_cadport_assembly(
     asm.center_of_mass_x = com[0]
     asm.center_of_mass_y = com[1]
     asm.center_of_mass_z = com[2]
+    if body.inertia is not None:
+        asm.ixx = body.inertia.ixx
+        asm.iyy = body.inertia.iyy
+        asm.izz = body.inertia.izz
+        asm.ixy = body.inertia.ixy
+        asm.ixz = body.inertia.ixz
+        asm.iyz = body.inertia.iyz
     asm.component_count = len(body.components)
     asm.solidworks_version = body.solidworks_version
     asm.assembly_yaml_document_id = doc.id
@@ -601,6 +615,201 @@ def project_cadport_part_ids(
     return {"catalog_part_assembly": {str(k): v for k, v in by_cp.items()}}
 
 
+# ── YAML blob backfill (CADPORT-REBUILD-003 fix #1) ─────────────────
+#
+# TDD-2 wrote §6 YAML blobs to SUPPLIER_DOC_DIR. With SUPPLIER_DOC_DIR
+# unset the default /data/supplier_docs is NOT a mounted volume in the
+# ASTRA backend container, so the blobs were ephemeral and lost on a
+# container recreate → GET /catalog/documents/{id}/file 500s. The
+# infra fix is the persistent SUPPLIER_DOC_DIR mount (docker-compose);
+# this endpoint regenerates the lost blobs from the DB columns
+# (every §6 field is a queryable column after 0036/0037), writes them
+# to the now-persistent path, and repoints supplier_documents.file_path.
+# Idempotent + self-healing: only rewrites docs whose file is missing
+# (force=true rewrites all).
+
+def _emit_part_yaml_from_db(cp: CatalogPart, db: Session) -> str:
+    import yaml as _yaml
+
+    com = {
+        "x": cp.center_of_mass_x or 0.0,
+        "y": cp.center_of_mass_y or 0.0,
+        "z": cp.center_of_mass_z or 0.0,
+    }
+    pm = []
+    try:
+        from app.routers.catalog import _principal_moments
+        pm = _principal_moments(cp.ixx, cp.iyy, cp.izz, cp.ixy, cp.ixz, cp.iyz)
+    except Exception:
+        pm = []
+    src = "unknown.SLDPRT"
+    if cp.description and "extraction from " in cp.description:
+        src = cp.description.split("extraction from ", 1)[1].strip()
+    doc = {
+        "schema_version": "1.0",
+        "kind": "part",
+        "part_id": str(cp.cadport_part_id) if cp.cadport_part_id else None,
+        "source_file": src,
+        "content_hash": cp.content_hash,
+        "extracted_at": cp.created_at.isoformat() if cp.created_at else None,
+        "extracted_by": "cadport-rebuild-003-backfill",
+        "solidworks_version": "unknown",
+        "display_name": cp.name,
+        "configuration": "Default",
+        "mass_properties": {
+            "units": "SI",
+            "coordinate_system": "body_frame",
+            "mass_kg": float(cp.mass_kg) if cp.mass_kg is not None else 0.0,
+            "volume_m3": cp.volume_m3,
+            "surface_area_m2": cp.surface_area_m2,
+            "density_kg_m3": cp.density_kg_m3,
+            "center_of_mass_m": com,
+            "inertia_tensor_kg_m2": {
+                "ixx": cp.ixx, "iyy": cp.iyy, "izz": cp.izz,
+                "ixy": cp.ixy, "ixz": cp.ixz, "iyz": cp.iyz,
+            },
+            "principal_moments_kg_m2": pm,
+            "products_of_inertia_convention": "positive",
+        },
+        "material": {
+            "name": cp.material_name,
+            "density_kg_m3": cp.density_kg_m3,
+        },
+        "wpn": cp.internal_part_number,
+        "catalog_part_id": cp.id,
+        "supplier": "Wardstone",
+    }
+    return _yaml.safe_dump(doc, sort_keys=False, allow_unicode=False)
+
+
+def _emit_assembly_yaml_from_db(asm: CadportAssembly, db: Session) -> str:
+    import json as _json
+
+    import yaml as _yaml
+
+    comps = (
+        db.query(CadportAssemblyComponent)
+        .filter(CadportAssemblyComponent.assembly_id == asm.id)
+        .all()
+    )
+    proj = db.query(Project).filter(Project.id == asm.project_id).first()
+    comp_list = []
+    for c in comps:
+        cp = (
+            db.query(CatalogPart).filter(CatalogPart.id == c.catalog_part_id).first()
+            if c.catalog_part_id
+            else None
+        )
+        tf = None
+        if c.transform_json:
+            try:
+                tf = _json.loads(c.transform_json)
+            except Exception:
+                tf = None
+        comp_list.append({
+            "part_id": str(c.cadport_part_id) if c.cadport_part_id else None,
+            "part_yaml": (f"{cp.internal_part_number}.yaml" if cp and cp.internal_part_number else None),
+            "instance_name": c.instance_name,
+            "quantity": c.quantity,
+            "transform_m": tf,
+            "suppressed": bool(c.suppressed),
+        })
+    pm = []
+    try:
+        from app.routers.catalog import _principal_moments
+        pm = _principal_moments(asm.ixx, asm.iyy, asm.izz, asm.ixy, asm.ixz, asm.iyz)
+    except Exception:
+        pm = []
+    doc = {
+        "schema_version": "1.0",
+        "kind": "assembly",
+        "assembly_id": str(asm.assembly_id),
+        "source_file": asm.source_file,
+        "content_hash": asm.content_hash,
+        "extracted_at": asm.created_at.isoformat() if asm.created_at else None,
+        "extracted_by": "cadport-rebuild-003-backfill",
+        "solidworks_version": asm.solidworks_version or "unknown",
+        "display_name": asm.display_name,
+        "configuration": "Default",
+        "components": comp_list,
+        "rollup": {
+            "units": "SI",
+            "coordinate_system": "body_frame",
+            "total_mass_kg": asm.total_mass_kg or 0.0,
+            "center_of_mass_m": {
+                "x": asm.center_of_mass_x or 0.0,
+                "y": asm.center_of_mass_y or 0.0,
+                "z": asm.center_of_mass_z or 0.0,
+            },
+            "inertia_tensor_kg_m2": {
+                "ixx": asm.ixx, "iyy": asm.iyy, "izz": asm.izz,
+                "ixy": asm.ixy, "ixz": asm.ixz, "iyz": asm.iyz,
+            },
+            "principal_moments_kg_m2": pm,
+        },
+        "project_id": asm.project_id,
+        "project_code": proj.code if proj else None,
+        "vehicle_variant": proj.code if proj else None,
+    }
+    return _yaml.safe_dump(doc, sort_keys=False, allow_unicode=False)
+
+
+@router.post("/cadport/backfill-yamls")
+def backfill_cadport_yamls(
+    force: bool = Query(False, description="Rewrite all blobs, not just missing ones"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Regenerate §6 YAML blobs for CADPORT catalog_parts + assemblies
+    from the DB columns, writing to the (persistent) SUPPLIER_DOC_DIR
+    and repointing supplier_documents.file_path. Run once after the
+    SUPPLIER_DOC_DIR persistence fix; safe + idempotent thereafter."""
+    SUPPLIER_DOC_DIR.mkdir(parents=True, exist_ok=True)
+    out = {"parts": 0, "assemblies": 0, "skipped": 0, "errors": []}
+
+    def _write(doc_id: int, text: str) -> bool:
+        sd = db.query(SupplierDocument).filter(SupplierDocument.id == doc_id).first()
+        if sd is None:
+            return False
+        p = Path(sd.file_path) if sd.file_path else None
+        if p is not None and p.exists() and not force:
+            out["skipped"] += 1
+            return False
+        content = text.encode("utf-8")
+        # Reuse the existing on-disk uuid filename if present, else mint.
+        fname = (p.name if p else None) or f"{_uuid.uuid4().hex}.yaml"
+        target = SUPPLIER_DOC_DIR / fname
+        target.write_bytes(content)
+        sd.file_path = str(target)
+        sd.file_size_bytes = len(content)
+        sd.sha256 = hashlib.sha256(content).hexdigest()
+        db.add(sd)
+        return True
+
+    for cp in (
+        db.query(CatalogPart)
+        .filter(CatalogPart.cadport_part_id.isnot(None), CatalogPart.source_document_id.isnot(None))
+        .all()
+    ):
+        try:
+            if _write(cp.source_document_id, _emit_part_yaml_from_db(cp, db)):
+                out["parts"] += 1
+        except Exception as exc:  # noqa: BLE001
+            out["errors"].append(f"part {cp.id}: {exc}")
+
+    for asm in db.query(CadportAssembly).filter(
+        CadportAssembly.assembly_yaml_document_id.isnot(None)
+    ).all():
+        try:
+            if _write(asm.assembly_yaml_document_id, _emit_assembly_yaml_from_db(asm, db)):
+                out["assemblies"] += 1
+        except Exception as exc:  # noqa: BLE001
+            out["errors"].append(f"assembly {asm.id}: {exc}")
+
+    db.commit()
+    return out
+
+
 @router.get("/cadport-assemblies", response_model=List[CadportAssemblyResult])
 def list_cadport_assemblies(
     project_id: Optional[int] = Query(None),
@@ -637,6 +846,7 @@ def _assembly_result(
 
     from app.models.catalog import CatalogPart
     from app.models.parts_library import ProjectPart
+    from app.routers.catalog import _principal_moments  # noqa: F401 (lazy, avoids circular)
 
     comps = (
         db.query(CadportAssemblyComponent)
@@ -708,6 +918,17 @@ def _assembly_result(
             asm.center_of_mass_y or 0.0,
             asm.center_of_mass_z or 0.0,
         ],
+        inertia=(
+            CadportInertia(
+                ixx=asm.ixx or 0.0, iyy=asm.iyy or 0.0, izz=asm.izz or 0.0,
+                ixy=asm.ixy or 0.0, ixz=asm.ixz or 0.0, iyz=asm.iyz or 0.0,
+            )
+            if asm.ixx is not None
+            else None
+        ),
+        principal_moments_kg_m2=_principal_moments(
+            asm.ixx, asm.iyy, asm.izz, asm.ixy, asm.ixz, asm.iyz
+        ),
         solidworks_version=asm.solidworks_version,
         component_count=asm.component_count,
         assembly_yaml_document_id=asm.assembly_yaml_document_id,

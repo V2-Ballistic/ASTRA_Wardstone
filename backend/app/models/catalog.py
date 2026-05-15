@@ -684,6 +684,13 @@ class CadportAssembly(Base):
     center_of_mass_x          = Column(Float, nullable=True)
     center_of_mass_y          = Column(Float, nullable=True)
     center_of_mass_z          = Column(Float, nullable=True)
+    # CADPORT-REBUILD-003 (migration 0037): rollup inertia tensor.
+    ixx                       = Column(Float, nullable=True)
+    iyy                       = Column(Float, nullable=True)
+    izz                       = Column(Float, nullable=True)
+    ixy                       = Column(Float, nullable=True)
+    ixz                       = Column(Float, nullable=True)
+    iyz                       = Column(Float, nullable=True)
     component_count           = Column(Integer, nullable=False, default=0)
     solidworks_version        = Column(String(64), nullable=True)
     assembly_yaml_document_id = Column(

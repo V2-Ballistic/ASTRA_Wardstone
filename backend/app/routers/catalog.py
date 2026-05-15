@@ -346,6 +346,39 @@ def _supplier_response(db: Session, s: Supplier) -> SupplierResponse:
     return resp
 
 
+def _principal_moments(ixx, iyy, izz, ixy, ixz, iyz) -> List[float]:
+    """Eigenvalues of the symmetric inertia tensor, ascending. Returns
+    [] when the tensor isn't fully populated. numpy-free (closed-form
+    symmetric-3x3 eigenvalues) so it never adds a dependency."""
+    vals = [ixx, iyy, izz, ixy, ixz, iyz]
+    if any(v is None for v in vals):
+        return []
+    import math
+
+    a, b, c, d, e, f = (float(x) for x in vals)  # d=ixy, e=ixz, f=iyz
+    # Symmetric matrix [[a,d,e],[d,b,f],[e,f,c]] — analytic eigenvalues.
+    p1 = d * d + e * e + f * f
+    if p1 == 0.0:  # already diagonal
+        return sorted([a, b, c])
+    q = (a + b + c) / 3.0
+    p2 = (a - q) ** 2 + (b - q) ** 2 + (c - q) ** 2 + 2.0 * p1
+    p = math.sqrt(p2 / 6.0)
+    # B = (1/p)(A - qI)
+    ba, bb, bc = (a - q) / p, (b - q) / p, (c - q) / p
+    bd, be, bf = d / p, e / p, f / p
+    detB = (
+        ba * (bb * bc - bf * bf)
+        - bd * (bd * bc - bf * be)
+        + be * (bd * bf - bb * be)
+    )
+    r = max(-1.0, min(1.0, detB / 2.0))
+    phi = math.acos(r) / 3.0
+    eig1 = q + 2.0 * p * math.cos(phi)
+    eig3 = q + 2.0 * p * math.cos(phi + 2.0 * math.pi / 3.0)
+    eig2 = 3.0 * q - eig1 - eig3
+    return sorted([eig1, eig2, eig3])
+
+
 def _catalog_part_response(db: Session, p: CatalogPart) -> CatalogPartResponse:
     """Detail response with eager connectors/pins + supplier + usage count."""
     supplier_name = (
@@ -384,6 +417,9 @@ def _catalog_part_response(db: Session, p: CatalogPart) -> CatalogPartResponse:
     resp.supplier_name = supplier_name
     resp.used_in_project_count = used_in
     resp.connectors = conn_responses
+    resp.principal_moments_kg_m2 = _principal_moments(
+        p.ixx, p.iyy, p.izz, p.ixy, p.ixz, p.iyz
+    )
     return resp
 
 
