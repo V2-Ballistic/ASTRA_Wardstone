@@ -93,6 +93,8 @@ for _mod, _attr in [
     ("app.routers.system_architecture", "router"),
     # HAROLD nomenclature integration (TDD-HAROLD-001)
     ("app.routers.harold", "router"),
+    # CADPORT integration (CADPORT-REBUILD-002)
+    ("app.routers.cadport", "router"),
 ]:
     try:
         _m = __import__(_mod, fromlist=[_attr])
