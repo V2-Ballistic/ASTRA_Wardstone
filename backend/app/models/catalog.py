@@ -25,9 +25,9 @@ import enum
 
 from sqlalchemy import (
     Column, Integer, String, Text, DateTime, Date, Boolean, Numeric, BigInteger,
-    ForeignKey, Enum as SQLEnum, Index, JSON, UniqueConstraint,
+    Float, ForeignKey, Enum as SQLEnum, Index, JSON, UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -151,6 +151,10 @@ class SupplierDocumentType(str, enum.Enum):
     APP_NOTE       = "app_note"
     USER_MANUAL    = "user_manual"
     OTHER          = "other"
+    # CADPORT-REBUILD-002 (AD-5): §6 CITADEL mass-property YAMLs stored
+    # as supplier_documents get a truthful document_type. Added to the
+    # PG enum in migration 0036 via ALTER TYPE ... ADD VALUE.
+    YAML           = "yaml"
 
 
 class ExtractionStatus(str, enum.Enum):
@@ -405,6 +409,32 @@ class CatalogPart(Base):
     internal_part_number = Column(String(32), nullable=True, index=True)
     wpn_pending_sync     = Column(Boolean, nullable=False, default=False)
 
+    # ════════════════════════════════════════════════════════════
+    # CADPORT-REBUILD-002 (L4 + AD-2/AD-6): CADPORT extraction
+    # linkage spine + mass properties parsed out of the §6 part
+    # YAML (CITADEL body frame, SI units). All nullable — only
+    # populated for parts that originated from a CADPORT SolidWorks
+    # extraction. `cadport_part_id` is the immutable §5 spine key
+    # (L4: Part ↔ catalog_part). `content_hash` drives the AD-2
+    # dedup gate. mass_kg lives above (Numeric, INTF-002); the new
+    # physics columns are DOUBLE PRECISION for full precision.
+    # Migration 0036 adds the columns.
+    # ════════════════════════════════════════════════════════════
+    cadport_part_id     = Column(UUID(as_uuid=True), nullable=True, unique=True, index=True)
+    content_hash        = Column(String(256), nullable=True, index=True)
+    volume_m3           = Column(Float, nullable=True)
+    surface_area_m2     = Column(Float, nullable=True)
+    density_kg_m3       = Column(Float, nullable=True)
+    center_of_mass_x    = Column(Float, nullable=True)
+    center_of_mass_y    = Column(Float, nullable=True)
+    center_of_mass_z    = Column(Float, nullable=True)
+    ixx                 = Column(Float, nullable=True)
+    iyy                 = Column(Float, nullable=True)
+    izz                 = Column(Float, nullable=True)
+    ixy                 = Column(Float, nullable=True)
+    ixz                 = Column(Float, nullable=True)
+    iyz                 = Column(Float, nullable=True)
+
     deleted_at          = Column(DateTime(timezone=True), nullable=True, index=True)
 
     created_at          = Column(DateTime(timezone=True), server_default=func.now())
@@ -626,3 +656,75 @@ class SupplierAlias(Base):
     created_at  = Column(DateTime(timezone=True), server_default=func.now())
 
     supplier    = relationship("Supplier", back_populates="aliases")
+
+
+# ══════════════════════════════════════════════════════════════
+#  CADPORT-REBUILD-002 — Assembly ↔ Project linkage (L7)
+# ══════════════════════════════════════════════════════════════
+#
+#  An assembly extracted through CADPORT attaches to exactly one
+#  ASTRA project (vehicle variant). The assembly_id UUID is the
+#  immutable §5 spine key assigned in TDD-1. Component parts are
+#  mapped via CadportAssemblyComponent — each row points at the
+#  catalog_part that L4 created for that component (NULL until the
+#  part is imported / deduped). Migration 0036 creates both tables.
+
+class CadportAssembly(Base):
+    __tablename__ = "cadport_assemblies"
+
+    id                        = Column(Integer, primary_key=True)
+    assembly_id               = Column(UUID(as_uuid=True), nullable=False, unique=True, index=True)
+    project_id                = Column(
+        Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    display_name              = Column(String(500), nullable=False)
+    source_file               = Column(String(500), nullable=False)
+    content_hash              = Column(String(256), nullable=True, index=True)
+    total_mass_kg             = Column(Float, nullable=True)
+    center_of_mass_x          = Column(Float, nullable=True)
+    center_of_mass_y          = Column(Float, nullable=True)
+    center_of_mass_z          = Column(Float, nullable=True)
+    component_count           = Column(Integer, nullable=False, default=0)
+    solidworks_version        = Column(String(64), nullable=True)
+    assembly_yaml_document_id = Column(
+        Integer, ForeignKey("supplier_documents.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at                = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at                = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    components = relationship(
+        "CadportAssemblyComponent",
+        back_populates="assembly",
+        cascade="all, delete-orphan",
+    )
+    assembly_yaml_document = relationship("SupplierDocument")
+
+
+class CadportAssemblyComponent(Base):
+    __tablename__ = "cadport_assembly_components"
+
+    id              = Column(Integer, primary_key=True)
+    assembly_id     = Column(
+        Integer,
+        ForeignKey("cadport_assemblies.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    catalog_part_id = Column(
+        Integer,
+        ForeignKey("catalog_parts.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    # The §5 spine key for the component part — survives even if the
+    # catalog_part link is later nulled.
+    cadport_part_id = Column(UUID(as_uuid=True), nullable=True)
+    instance_name   = Column(String(500), nullable=False)
+    quantity        = Column(Integer, nullable=False, default=1)
+    transform_json  = Column(Text, nullable=True)  # 4x4 matrix as JSON
+    suppressed      = Column(Boolean, nullable=False, default=False)
+
+    assembly        = relationship("CadportAssembly", back_populates="components")
+    catalog_part    = relationship("CatalogPart")
