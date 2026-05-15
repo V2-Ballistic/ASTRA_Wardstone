@@ -65,15 +65,18 @@ function Spec({ icon: Icon, label, value, unit }: {
   );
 }
 
-// CADPORT-REBUILD-003 Mass-Properties helpers.
-function fmtMP(v: number | null | undefined, d = 6): string {
-  if (v == null || Number.isNaN(v)) return '—';
-  const a = Math.abs(v);
-  if (a !== 0 && (a < 1e-3 || a >= 1e6)) return v.toExponential(d);
-  return v.toFixed(d);
+// CADPORT-REBUILD-003 Mass-Properties helpers. Accepts string|number
+// because some catalog columns serialize as Decimal strings.
+function fmtMP(v: number | string | null | undefined, d = 6): string {
+  if (v == null || v === '') return '—';
+  const n = typeof v === 'string' ? Number(v) : v;
+  if (Number.isNaN(n)) return '—';
+  const a = Math.abs(n);
+  if (a !== 0 && (a < 1e-3 || a >= 1e6)) return n.toExponential(d);
+  return n.toFixed(d);
 }
 function MP({ label, v, unit, d = 6 }: {
-  label: string; v: number | null | undefined; unit: string; d?: number;
+  label: string; v: number | string | null | undefined; unit: string; d?: number;
 }) {
   return (
     <>
