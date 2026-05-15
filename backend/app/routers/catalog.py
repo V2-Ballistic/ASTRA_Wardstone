@@ -985,6 +985,50 @@ def update_catalog_part(
     return _catalog_part_response(db, p)
 
 
+def _cascade_wpn_delete_to_harold(wpn: Optional[str], part_id: int) -> None:
+    """When a catalog_part with a WPN is deleted, ask HAROLD to
+    hard-delete the WPN so the number can be reclaimed for reuse.
+
+    Best-effort and fully non-blocking: HAROLD being unreachable or
+    erroring NEVER blocks the ASTRA deletion (the catalog row is
+    already gone by the time this runs). Inside the WRENCH chassis,
+    host.docker.internal:8030 routes to the HAROLD plugin.
+    """
+    if not wpn:
+        return
+    try:
+        import httpx
+
+        resp = httpx.request(
+            "DELETE",
+            f"http://host.docker.internal:8030/api/tools/wardstone-harold/wpn/{wpn}",
+            json={"reason": f"catalog_part {part_id} deleted from ASTRA",
+                  "actor": "astra"},
+            timeout=3.0,
+        )
+        if resp.status_code == 200:
+            logger.info(
+                "HAROLD WPN %s hard-deleted on catalog_part %s deletion "
+                "(reclaimed=%s)",
+                wpn, part_id, resp.json().get("reclaimed"),
+            )
+        elif resp.status_code == 404:
+            logger.info(
+                "HAROLD WPN %s not in ledger (already gone) for "
+                "catalog_part %s", wpn, part_id,
+            )
+        else:
+            logger.warning(
+                "HAROLD returned %s for WPN %s deletion",
+                resp.status_code, wpn,
+            )
+    except Exception as e:  # noqa: BLE001 - cascade is advisory
+        logger.warning(
+            "Failed to delete WPN %s in HAROLD: %s — ASTRA deletion "
+            "proceeding", wpn, e,
+        )
+
+
 @router.delete("/parts/{part_id}", status_code=200)
 def delete_catalog_part(
     part_id: int,
@@ -1030,8 +1074,10 @@ def delete_catalog_part(
             },
             request=request,
         )
+        _wpn = p.internal_part_number
         db.delete(p)
         db.commit()
+        _cascade_wpn_delete_to_harold(_wpn, part_id)
         return {
             "status": "deleted", "id": part_id,
             "units_unlinked": usage_count, "admin_force": True,
@@ -1073,6 +1119,7 @@ def delete_catalog_part(
         )
 
     p.deleted_at = datetime.utcnow()
+    _wpn = p.internal_part_number
     _audit(
         db, "catalog.part.deleted", "catalog_part", p.id, current_user.id,
         {
@@ -1083,6 +1130,7 @@ def delete_catalog_part(
         request=request,
     )
     db.commit()
+    _cascade_wpn_delete_to_harold(_wpn, part_id)
     return {"status": "deleted", "id": part_id, "soft_delete": True}
 
 
