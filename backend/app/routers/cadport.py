@@ -488,6 +488,119 @@ def create_cadport_assembly(
     return _assembly_result(db, asm, project)
 
 
+# ── Phase 5: linkage visibility ─────────────────────────────────────
+
+
+class CadportPartAssemblyRef(BaseModel):
+    cadport_assembly_pk: int
+    assembly_id: str
+    display_name: str
+    project_id: int
+    project_code: Optional[str] = None
+    instance_name: str
+    quantity: int
+
+
+class CadportPartLinkage(BaseModel):
+    is_cadport: bool
+    cadport_part_id: Optional[str] = None
+    content_hash: Optional[str] = None
+    wpn: Optional[str] = None
+    yaml_document_id: Optional[int] = None
+    solidworks_version: Optional[str] = None
+    imported_at: Optional[str] = None
+    assemblies: List[CadportPartAssemblyRef] = Field(default_factory=list)
+
+
+@router.get(
+    "/catalog/parts/{catalog_part_id}/cadport",
+    response_model=CadportPartLinkage,
+)
+def catalog_part_cadport_linkage(
+    catalog_part_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> CadportPartLinkage:
+    """Phase 5: the CADPORT linkage for a catalog part — its
+    cadport_part_id / content_hash / WPN / YAML doc + every CADPORT
+    assembly it appears in. Powers the catalog-part-detail CADPORT
+    section. Returns is_cadport=false for non-CADPORT parts."""
+    cp = (
+        db.query(CatalogPart)
+        .filter(CatalogPart.id == catalog_part_id)
+        .first()
+    )
+    if cp is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "catalog_part not found")
+    if cp.cadport_part_id is None:
+        return CadportPartLinkage(is_cadport=False)
+
+    refs: List[CadportPartAssemblyRef] = []
+    comps = (
+        db.query(CadportAssemblyComponent)
+        .filter(CadportAssemblyComponent.catalog_part_id == catalog_part_id)
+        .all()
+    )
+    sw_version: Optional[str] = None
+    for c in comps:
+        asm = (
+            db.query(CadportAssembly)
+            .filter(CadportAssembly.id == c.assembly_id)
+            .first()
+        )
+        if asm is None:
+            continue
+        sw_version = sw_version or asm.solidworks_version
+        proj = db.query(Project).filter(Project.id == asm.project_id).first()
+        refs.append(
+            CadportPartAssemblyRef(
+                cadport_assembly_pk=asm.id,
+                assembly_id=str(asm.assembly_id),
+                display_name=asm.display_name,
+                project_id=asm.project_id,
+                project_code=proj.code if proj else None,
+                instance_name=c.instance_name,
+                quantity=c.quantity,
+            )
+        )
+    return CadportPartLinkage(
+        is_cadport=True,
+        cadport_part_id=str(cp.cadport_part_id),
+        content_hash=cp.content_hash,
+        wpn=cp.internal_part_number,
+        yaml_document_id=cp.source_document_id,
+        solidworks_version=sw_version,
+        imported_at=cp.created_at.isoformat() if cp.created_at else None,
+        assemblies=refs,
+    )
+
+
+@router.get("/projects/{project_id}/cadport-part-ids")
+def project_cadport_part_ids(
+    project_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Phase 5: the set of catalog_part_ids in this project that came
+    from a CADPORT assembly (i.e. appear in cadport_assembly_components
+    for an assembly linked to this project AND have a cadport_part_id).
+    The project-parts page badges these rows. One cheap query; no
+    shared-schema change."""
+    rows = (
+        db.query(CadportAssemblyComponent.catalog_part_id, CadportAssembly.display_name)
+        .join(CadportAssembly, CadportAssemblyComponent.assembly_id == CadportAssembly.id)
+        .filter(
+            CadportAssembly.project_id == project_id,
+            CadportAssemblyComponent.catalog_part_id.isnot(None),
+        )
+        .all()
+    )
+    by_cp: dict[int, str] = {}
+    for cp_id, asm_name in rows:
+        by_cp.setdefault(cp_id, asm_name)
+    return {"catalog_part_assembly": {str(k): v for k, v in by_cp.items()}}
+
+
 @router.get("/cadport-assemblies", response_model=List[CadportAssemblyResult])
 def list_cadport_assemblies(
     project_id: Optional[int] = Query(None),

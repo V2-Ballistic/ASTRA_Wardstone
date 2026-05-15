@@ -38,7 +38,35 @@ export interface CadportAssembly {
   components: CadportComponent[];
 }
 
+export interface CadportPartAssemblyRef {
+  cadport_assembly_pk: number;
+  assembly_id: string;
+  display_name: string;
+  project_id: number;
+  project_code: string | null;
+  instance_name: string;
+  quantity: number;
+}
+export interface CadportPartLinkage {
+  is_cadport: boolean;
+  cadport_part_id: string | null;
+  content_hash: string | null;
+  wpn: string | null;
+  yaml_document_id: number | null;
+  solidworks_version: string | null;
+  imported_at: string | null;
+  assemblies: CadportPartAssemblyRef[];
+}
+
 export const cadportAPI = {
+  partLinkage: (catalogPartId: number) =>
+    api.get<CadportPartLinkage>(`/catalog/parts/${catalogPartId}/cadport`),
+
+  projectCadportPartIds: (projectId: number) =>
+    api.get<{ catalog_part_assembly: Record<string, string> }>(
+      `/projects/${projectId}/cadport-part-ids`,
+    ),
+
   listAssemblies: (projectId: number) =>
     api.get<CadportAssembly[]>('/cadport-assemblies', {
       params: { project_id: projectId },

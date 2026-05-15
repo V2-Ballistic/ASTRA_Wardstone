@@ -20,11 +20,12 @@ import { useParams, useRouter } from 'next/navigation';
 import {
   ChevronLeft, ChevronRight, ChevronDown, Cpu, Loader2, AlertTriangle,
   Trash2, Plug, Building2, MapPin, GitBranch, Clock, Zap, Thermometer,
-  ShieldCheck, Hash, RefreshCw, CheckCircle2,
+  ShieldCheck, Hash, RefreshCw, CheckCircle2, Layers, Download,
 } from 'lucide-react';
 import clsx from 'clsx';
 
 import { catalogAPI } from '@/lib/catalog-api';
+import { cadportAPI, type CadportPartLinkage } from '@/lib/cadport-api';
 import { haroldAPI } from '@/lib/harold-api';
 import { formatApiError, parseStructuredApiError } from '@/lib/errors';
 import {
@@ -84,6 +85,14 @@ export default function CatalogPartDetailPage() {
   const [expandedConn, setExpandedConn] = useState<Set<number>>(new Set());
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  // CADPORT-REBUILD-003 Phase 5: linkage visibility.
+  const [cadportLink, setCadportLink] = useState<CadportPartLinkage | null>(null);
+  useEffect(() => {
+    if (!partId) return;
+    cadportAPI.partLinkage(partId)
+      .then((r) => setCadportLink(r.data))
+      .catch(() => setCadportLink(null));
+  }, [partId]);
   // ── Phase 4: manual HAROLD reconcile state ──
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
@@ -550,6 +559,91 @@ export default function CatalogPartDetailPage() {
             </ul>
           )}
         </section>
+
+        {/* CADPORT-REBUILD-003 Phase 5: CADPORT extraction + linkage */}
+        {cadportLink?.is_cadport && (
+          <section className="rounded-xl border border-astra-border bg-astra-surface p-4 lg:col-span-2">
+            <h2 className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-400">
+              <Layers className="h-3.5 w-3.5" aria-hidden="true" />
+              CADPORT extraction
+            </h2>
+            <div className="grid grid-cols-2 gap-x-8 gap-y-2 text-xs md:grid-cols-4">
+              <div>
+                <div className="text-[10px] uppercase tracking-wide text-slate-600">WPN</div>
+                <div className="mt-0.5 font-mono text-slate-200">{cadportLink.wpn ?? '—'}</div>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-wide text-slate-600">SolidWorks</div>
+                <div className="mt-0.5 text-slate-200">{cadportLink.solidworks_version ?? '—'}</div>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-wide text-slate-600">Imported</div>
+                <div className="mt-0.5 text-slate-200">
+                  {cadportLink.imported_at ? new Date(cadportLink.imported_at).toLocaleString() : '—'}
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-wide text-slate-600">content_hash</div>
+                <div className="mt-0.5 font-mono text-slate-300">
+                  {(cadportLink.content_hash ?? '—').replace('sha256:', '').slice(0, 16)}…
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              {cadportLink.yaml_document_id != null && (
+                <a
+                  href={cadportAPI.documentFileUrl(cadportLink.yaml_document_id)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-blue-500/40 bg-blue-500/10 px-3 py-1.5 text-xs font-semibold text-blue-300 hover:bg-blue-500/20"
+                >
+                  <Download className="h-3.5 w-3.5" aria-hidden="true" /> CITADEL §6 YAML
+                </a>
+              )}
+              <span className="font-mono text-[10px] text-slate-600">
+                cadport_part_id {(cadportLink.cadport_part_id ?? '').slice(0, 8)}…
+              </span>
+            </div>
+
+            <div className="mt-4">
+              <div className="mb-1.5 text-[10px] uppercase tracking-wide text-slate-600">
+                Appears in assemblies ({cadportLink.assemblies.length})
+              </div>
+              {cadportLink.assemblies.length === 0 ? (
+                <div className="py-2 text-xs text-slate-500">Not used in any assembly yet.</div>
+              ) : (
+                <ul className="divide-y divide-astra-border">
+                  {cadportLink.assemblies.map((a) => (
+                    <li key={a.cadport_assembly_pk}>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          router.push(
+                            `/projects/${a.project_id}/mechanical-interfaces?tab=assemblies`,
+                          )
+                        }
+                        className="flex w-full items-center justify-between px-1 py-2 text-left text-xs hover:bg-astra-surface-alt"
+                      >
+                        <div className="flex items-center gap-2">
+                          <Layers className="h-3.5 w-3.5 text-blue-400" aria-hidden="true" />
+                          <span className="font-semibold text-slate-200">{a.display_name}</span>
+                          <span className="text-slate-500">
+                            · {a.instance_name} ×{a.quantity}
+                          </span>
+                          {a.project_code && (
+                            <span className="rounded-full bg-slate-700/40 px-2 py-0.5 text-[10px] text-slate-300">
+                              {a.project_code}
+                            </span>
+                          )}
+                        </div>
+                        <ChevronRight className="h-3.5 w-3.5 text-slate-500" aria-hidden="true" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </section>
+        )}
       </div>
 
       {/* CLEANUP-002 Phase 4 (AD-7 + AD-8): structured delete modal

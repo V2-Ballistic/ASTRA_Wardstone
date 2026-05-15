@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 
 import { projectsAPI } from '@/lib/api';
+import { cadportAPI } from '@/lib/cadport-api';
 import { formatApiError } from '@/lib/errors';
 import { interfaceAPI } from '@/lib/interface-api';
 import { projectPartsBomAPI } from '@/lib/projparts-api';
@@ -67,6 +68,15 @@ export default function ProjectBomPage() {
   // Modals
   const [addOpen, setAddOpen] = useState(false);
   const [editRow, setEditRow] = useState<ProjectPartBom | null>(null);
+  // CADPORT-REBUILD-003 Phase 5: catalog_part_id → CADPORT assembly
+  // name, for the "from CADPORT assembly" badge.
+  const [cadportMap, setCadportMap] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (Number.isNaN(projectId)) return;
+    cadportAPI.projectCadportPartIds(projectId)
+      .then((r) => setCadportMap(r.data.catalog_part_assembly || {}))
+      .catch(() => setCadportMap({}));
+  }, [projectId]);
 
   // Debounce typed search → server-side filter.
   useEffect(() => {
@@ -251,6 +261,11 @@ export default function ProjectBomPage() {
               key={row.id}
               projectId={projectId}
               row={row}
+              cadportAssembly={
+                row.catalog_part_summary?.id != null
+                  ? cadportMap[String(row.catalog_part_summary.id)] ?? null
+                  : null
+              }
               onEdit={() => setEditRow(row)}
               onRemove={() => onRemove(row)}
             />
@@ -323,9 +338,10 @@ function Chip({ active, onClick, label, count }: {
 //  BOM line card
 // ═══════════════════════════════════════════════════════════════
 
-function BomLineCard({ projectId, row, onEdit, onRemove }: {
+function BomLineCard({ projectId, row, cadportAssembly, onEdit, onRemove }: {
   projectId: number;
   row: ProjectPartBom;
+  cadportAssembly: string | null;
   onEdit: () => void;
   onRemove: () => void;
 }) {
@@ -404,6 +420,16 @@ function BomLineCard({ projectId, row, onEdit, onRemove }: {
           </h3>
           {row.designation && row.designation !== name && (
             <div className="truncate text-[11px] text-slate-500">{name}</div>
+          )}
+          {cadportAssembly && (
+            <Link
+              href={`/projects/${projectId}/mechanical-interfaces?tab=assemblies`}
+              className="mt-1 inline-flex max-w-full items-center gap-1 truncate rounded-full border border-blue-500/30 bg-blue-500/10 px-2 py-0.5 text-[10px] font-medium text-blue-300 hover:bg-blue-500/20"
+              title={`From CADPORT assembly: ${cadportAssembly}`}
+            >
+              <Boxes className="h-3 w-3 shrink-0" aria-hidden="true" />
+              <span className="truncate">CADPORT: {cadportAssembly}</span>
+            </Link>
           )}
         </div>
         <div className="flex-shrink-0 text-right">
