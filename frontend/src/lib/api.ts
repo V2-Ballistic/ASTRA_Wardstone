@@ -241,3 +241,18 @@ export const devAPI = {
   seed: () => api.post('/dev/seed'),
   seedProject: (projectId: number) => api.post(`/admin/seed-project/${projectId}`),
 };
+
+// Master Schedule (WRENCH master-schedule plugin proxy).
+// v2 — automatic by ``project_id``; no manual "link" step.
+export const masterScheduleAPI = {
+  program: (projectId: number) =>
+    api.get(`/projects/${projectId}/schedule/program`),
+  overview: (projectId: number) =>
+    api.get(`/projects/${projectId}/schedule/overview`),
+  gantt: (projectId: number) =>
+    api.get(`/projects/${projectId}/schedule/gantt`),
+  criticalPath: (projectId: number) =>
+    api.get(`/projects/${projectId}/schedule/critical-path`),
+  dcma: (projectId: number) =>
+    api.get(`/projects/${projectId}/schedule/dcma`),
+};

@@ -19,7 +19,7 @@ import {
   ChevronDown, ChevronRight, LogOut, Shield, FolderOpen,
   Sparkles, Search, Zap, CheckSquare, FileBarChart, Upload,
   Users, Home, ChevronLeft, Loader2, Cable, Package, RefreshCw,
-  ShieldCheck, Boxes, Wrench, CircuitBoard,
+  ShieldCheck, Boxes, Wrench, CircuitBoard, CalendarClock,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useAuth } from '@/lib/auth';
@@ -86,6 +86,11 @@ function getProjectNav(projectId: number): NavGroup[] {
         // backward compatibility with existing bookmarks / API contracts.
         { href: `${p}/interfaces`, label: 'Electrical Interfaces', icon: Cable },
         { href: `${p}/mechanical-interfaces`, label: 'Mechanical Interfaces', icon: Wrench },
+        // WRENCH master-schedule integration — read-only view of the
+        // project's IMS. v2: connection is automatic by project_id (no
+        // manual link step). "Edit in WRENCH →" deep-links into the
+        // master-schedule workspace with this project pre-selected.
+        { href: `${p}/schedule`, label: 'Schedule', icon: CalendarClock },
       ],
     },
     {
