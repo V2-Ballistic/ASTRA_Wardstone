@@ -20,14 +20,16 @@ import { useParams } from 'next/navigation';
 import {
   CalendarClock, ExternalLink, Loader2, AlertTriangle,
   LayoutDashboard, GanttChart, GitBranch, ShieldCheck,
-  CalendarPlus,
+  CalendarPlus, Target,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { masterScheduleAPI } from '@/lib/api';
+import { GanttView } from './GanttView';
+import { MilestoneOutline } from './MilestoneOutline';
 
 const WRENCH_BASE_URL = process.env.NEXT_PUBLIC_WRENCH_URL || 'http://192.168.1.74:3030';
 
-type Tab = 'overview' | 'gantt' | 'critical' | 'health';
+type Tab = 'overview' | 'gantt' | 'milestones' | 'critical' | 'health';
 
 interface ProgramResp {
   available: boolean;
@@ -109,6 +111,7 @@ export default function SchedulePage() {
           {([
             { k: 'overview', label: 'Overview', icon: LayoutDashboard },
             { k: 'gantt', label: 'Gantt', icon: GanttChart },
+            { k: 'milestones', label: 'Milestones', icon: Target },
             { k: 'critical', label: 'Critical Path', icon: GitBranch },
             { k: 'health', label: 'Health', icon: ShieldCheck },
           ] as { k: Tab; label: string; icon: any }[]).map((t) => {
@@ -131,9 +134,14 @@ export default function SchedulePage() {
           })}
         </div>
       </div>
-      <div className="flex-1 overflow-auto p-6">
+      <div className={clsx(
+        'flex-1 overflow-auto',
+        // Gantt manages its own scroll; other tabs use page padding.
+        tab === 'gantt' ? '' : 'p-6',
+      )}>
         {tab === 'overview' && <Overview projectId={projectId} />}
         {tab === 'gantt' && <Gantt projectId={projectId} />}
+        {tab === 'milestones' && <MilestoneOutline projectId={projectId} />}
         {tab === 'critical' && <CriticalPath projectId={projectId} />}
         {tab === 'health' && <Health projectId={projectId} />}
       </div>
@@ -228,63 +236,14 @@ function Overview({ projectId }: { projectId: number }) {
   );
 }
 
-// ── Gantt (read-only) ───────────────────────────────────────────────────
+// ── Gantt (read-only, real visual) ──────────────────────────────────────
 
 function Gantt({ projectId }: { projectId: number }) {
   const q = useFetch<any>(() => masterScheduleAPI.gantt(projectId), [projectId]);
-  if (q.loading) return <Loader2 className="h-5 w-5 animate-spin text-slate-500" />;
-  if (!q.data?.available) return <Unavailable reason={q.data?.reason} />;
-  if (!q.data?.has_schedule) return <NoSchedule projectId={projectId} />;
-  const d = q.data.data;
-  const tasks = (d.tasks ?? []) as any[];
-  const byLine = new Map<number, any>();
-  for (const l of d.dev_lines ?? []) byLine.set(l.id, l);
-
-  return (
-    <div className="space-y-3">
-      <div className="text-[11px] text-slate-500">
-        {tasks.length} tasks across {(d.dev_lines ?? []).length} development lines.
-        For the interactive Gantt with dependency arrows + drag-to-reschedule, open in WRENCH.
-      </div>
-      <div className="rounded-xl border border-astra-border bg-astra-surface overflow-hidden">
-        <div className="grid grid-cols-12 gap-2 px-4 py-2 text-[10px] uppercase tracking-wider text-slate-500 bg-astra-surface-alt border-b border-astra-border">
-          <div className="col-span-2">Task ID</div>
-          <div className="col-span-4">Name</div>
-          <div className="col-span-1">Team</div>
-          <div className="col-span-2">Start</div>
-          <div className="col-span-2">Finish</div>
-          <div className="col-span-1 text-right">Float</div>
-        </div>
-        <div className="max-h-[600px] overflow-auto">
-          {tasks.map((t: any) => {
-            const line = byLine.get(t.dev_line_id);
-            return (
-              <div key={t.task_id} className="grid grid-cols-12 gap-2 px-4 py-1.5 text-xs border-b border-astra-border/30 hover:bg-astra-surface-alt">
-                <div className="col-span-2 font-mono text-[10px] text-slate-400 flex items-center gap-1.5">
-                  {t.is_critical && <span className="inline-block w-1.5 h-1.5 rounded-full bg-red-500"></span>}
-                  {t.task_id}
-                </div>
-                <div className="col-span-4 text-slate-200">{t.name}</div>
-                <div className="col-span-1">
-                  <span style={{ background: (line?.color ?? '#666') + '24', color: line?.color, border: `1px solid ${line?.color}40` }}
-                        className="px-1.5 py-0.5 rounded text-[10px] font-mono">
-                    {line?.code}
-                  </span>
-                </div>
-                <div className="col-span-2 tabular-nums text-slate-400">{t.start_date ?? '—'}</div>
-                <div className="col-span-2 tabular-nums text-slate-400">{t.finish_date ?? '—'}</div>
-                <div className="col-span-1 text-right tabular-nums">
-                  <span className={t.total_float_days === 0 ? 'text-red-400' : t.total_float_days! < 0 ? 'text-red-500' : 'text-slate-400'}>
-                    {t.total_float_days ?? '—'}d
-                  </span>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    </div>
-  );
+  if (q.loading) return <div className="p-6"><Loader2 className="h-5 w-5 animate-spin text-slate-500" /></div>;
+  if (!q.data?.available) return <div className="p-6"><Unavailable reason={q.data?.reason} /></div>;
+  if (!q.data?.has_schedule) return <div className="p-6"><NoSchedule projectId={projectId} /></div>;
+  return <GanttView data={q.data.data} projectId={projectId} wrenchUrl={WRENCH_BASE_URL} />;
 }
 
 // ── Critical Path ───────────────────────────────────────────────────────

@@ -255,4 +255,6 @@ export const masterScheduleAPI = {
     api.get(`/projects/${projectId}/schedule/critical-path`),
   dcma: (projectId: number) =>
     api.get(`/projects/${projectId}/schedule/dcma`),
+  imp: (projectId: number) =>
+    api.get(`/projects/${projectId}/schedule/imp`),
 };

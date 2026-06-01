@@ -154,3 +154,14 @@ def dcma(
 ):
     _ensure_project_exists(db, project_id)
     return _proxy_get(f"/projects/{project_id}/schedule/dcma")
+
+
+@router.get("/projects/{project_id}/schedule/imp")
+def imp_tree(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_current_user),
+):
+    """IMP hierarchy for the Milestones outline tab."""
+    _ensure_project_exists(db, project_id)
+    return _proxy_get(f"/projects/{project_id}/imp")
