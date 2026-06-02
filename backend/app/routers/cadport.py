@@ -118,6 +118,31 @@ class CadportPartImport(BaseModel):
     stl_filename: Optional[str] = Field(
         None, description="WPN-based STL filename, e.g. '<wpn>.stl'"
     )
+    # CADPORT-TDD-STEP-001 §7.1.2: STEP / mass-source provenance.
+    # Default 'sldprt' / 'cad' so legacy callers that don't send these
+    # fields still get the historical SolidWorks-row shape.
+    source_format: str = Field(
+        "sldprt",
+        description="'sldprt' | 'step'. Stored verbatim on catalog_parts.",
+    )
+    step_material_key: Optional[str] = Field(
+        None,
+        description=(
+            "CADPORT materials.json key the density came from when "
+            "mass_source='material'. NULL otherwise."
+        ),
+    )
+    mass_source: str = Field(
+        "cad",
+        description="'cad' | 'material' | 'user_override' — how mass was determined.",
+    )
+    inertia_revised_via_uniform_scaling: bool = Field(
+        False,
+        description=(
+            "True iff this row's inertia tensor was produced by linear "
+            "mass-scaling rather than re-derived from geometry."
+        ),
+    )
 
 
 class CheckDuplicateRequest(BaseModel):
@@ -547,6 +572,11 @@ def create_part_from_cadport(
         ixz=body.inertia.ixz,
         iyz=body.inertia.iyz,
         stl_document_id=stl_doc_id,
+        # CADPORT-TDD-STEP-001 §7.1.2 provenance.
+        source_format=body.source_format,
+        step_material_key=body.step_material_key,
+        mass_source=body.mass_source,
+        inertia_revised_via_uniform_scaling=body.inertia_revised_via_uniform_scaling,
         created_by_id=current_user.id,
     )
     db.add(part)

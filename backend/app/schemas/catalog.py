@@ -510,6 +510,14 @@ class CatalogPartResponse(CatalogPartSummary):
     # Principal moments — eigenvalues of the symmetric inertia tensor,
     # computed in the response (not stored). Empty when no tensor.
     principal_moments_kg_m2: List[float] = Field(default_factory=list)
+    # ── CADPORT-TDD-STEP-001 (migration 0040) provenance ──
+    # The ASTRA Edit-mass affordance gates on these: a part with
+    # source_format='sldprt' AND mass_source='cad' is SW-imported and
+    # carries SW-side mass; PATCH /mass returns 409 in that case.
+    source_format: str = "sldprt"
+    step_material_key: Optional[str] = None
+    mass_source: str = "cad"
+    inertia_revised_via_uniform_scaling: bool = False
 
     deleted_at: Optional[datetime] = None
     created_at: datetime

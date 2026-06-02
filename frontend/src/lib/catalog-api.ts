@@ -15,6 +15,7 @@ import type {
   CatalogPart,
   CatalogPartDetail,
   CatalogPartCreatePayload,
+  CatalogPartMassUpdateResult,
   CatalogPartPlacementRequest,
   CatalogPartUsage,
   CatalogPartUsageReport,
@@ -127,6 +128,15 @@ export const catalogAPI = {
 
   updatePart: (id: number, data: Partial<CatalogPartCreatePayload>) =>
     api.patch<CatalogPartDetail>(`${BASE}/parts/${id}`, data),
+
+  /**
+   * CADPORT-TDD-STEP-001 §7.1.3: PATCH the mass on a STEP-sourced or
+   * material-derived part. ``mass_kg = null`` clears mass + inertia
+   * back to the geometric-only ("cad") state. SolidWorks-imported
+   * rows return 409 — their mass is owned upstream by CADPORT.
+   */
+  updatePartMass: (id: number, mass_kg: number | null) =>
+    api.patch<CatalogPartMassUpdateResult>(`${BASE}/parts/${id}/mass`, { mass_kg }),
 
   /**
    * Delete a catalog part. CLEANUP-002 Phase 4 (AD-7): default path

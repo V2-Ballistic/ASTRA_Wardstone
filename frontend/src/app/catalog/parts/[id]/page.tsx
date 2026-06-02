@@ -38,6 +38,7 @@ import {
   LIFECYCLE_COLORS,
 } from '@/lib/catalog-types';
 import { useAuth } from '@/lib/auth';
+import { EditMassModal, shouldShowEditMass } from './EditMassModal';
 
 // ══════════════════════════════════════
 //  Helpers
@@ -126,6 +127,9 @@ export default function CatalogPartDetailPage() {
   const [syncError, setSyncError] = useState<string | null>(null);
 
   const canDelete = user?.role === 'admin';
+
+  // CADPORT-TDD-STEP-001 §7.2 — Edit mass modal state.
+  const [editMassOpen, setEditMassOpen] = useState(false);
 
   const refresh = useCallback(() => {
     if (!Number.isFinite(partId)) return;
@@ -385,9 +389,49 @@ export default function CatalogPartDetailPage() {
       <div className="grid gap-4 lg:grid-cols-2">
         {/* Physical specs */}
         <section className="rounded-xl border border-astra-border bg-astra-surface p-4">
-          <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Physical</h2>
+          <h2 className="mb-3 flex items-center justify-between text-xs font-semibold uppercase tracking-wider text-slate-400">
+            <span>Physical</span>
+            {part.source_format === 'step' && (
+              <span
+                className="rounded-md border border-blue-500/30 bg-blue-500/10 px-2 py-0.5 font-mono text-[10px] text-blue-300"
+                title="Part originated from a STEP file via CADPORT's OpenCASCADE pipeline."
+              >
+                STEP
+              </span>
+            )}
+          </h2>
           <div className="grid grid-cols-2 gap-3">
-            <Spec icon={Hash}    label="Mass" value={part.mass_kg} unit="kg" />
+            <div className="flex items-start gap-2 text-xs">
+              <Hash className="h-3.5 w-3.5 mt-0.5 text-slate-500 flex-shrink-0" aria-hidden="true" />
+              <div className="flex-1">
+                <div className="text-[10px] uppercase tracking-wider text-slate-500">Mass</div>
+                <div className="flex items-center gap-2 text-slate-200">
+                  <span>{fmtNum(part.mass_kg)}{part.mass_kg !== null && part.mass_kg !== undefined && part.mass_kg !== '' ? ' kg' : ''}</span>
+                  {shouldShowEditMass(part) && (
+                    <button
+                      type="button"
+                      onClick={() => setEditMassOpen(true)}
+                      className="rounded border border-astra-border bg-astra-bg px-1.5 py-0.5 text-[10px] text-blue-400 hover:bg-blue-500/10 hover:text-blue-300"
+                      title="Edit mass — recomputes inertia and re-rolls assemblies"
+                    >
+                      Edit
+                    </button>
+                  )}
+                </div>
+                {part.mass_source && part.mass_source !== 'cad' && (
+                  <div className="mt-0.5 font-mono text-[10px] text-slate-500">
+                    {part.mass_source === 'material'
+                      ? (part.step_material_key ? `computed from material: ${part.step_material_key}` : 'computed from material')
+                      : 'mass entered at upload'}
+                  </div>
+                )}
+                {part.inertia_revised_via_uniform_scaling && (
+                  <div className="mt-0.5 inline-block rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider text-amber-300" title="Inertia tensor was produced by linear mass-scaling rather than re-derived from geometry.">
+                    scaled inertia
+                  </div>
+                )}
+              </div>
+            </div>
             <Spec icon={Hash}    label="L × W × H" value={[part.dim_length_mm, part.dim_width_mm, part.dim_height_mm].some((v) => v) ? `${fmtNum(part.dim_length_mm)} × ${fmtNum(part.dim_width_mm)} × ${fmtNum(part.dim_height_mm)}` : null} unit="mm" />
           </div>
         </section>
@@ -747,6 +791,15 @@ export default function CatalogPartDetailPage() {
           </section>
         )}
       </div>
+
+      {/* CADPORT-TDD-STEP-001 §7.2 — Edit mass affordance. */}
+      {editMassOpen && (
+        <EditMassModal
+          part={part}
+          onClose={() => setEditMassOpen(false)}
+          onSaved={() => refresh()}
+        />
+      )}
 
       {/* CLEANUP-002 Phase 4 (AD-7 + AD-8): structured delete modal
           driven by the usage report. When `deletable` is false the

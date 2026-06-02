@@ -985,6 +985,256 @@ def update_catalog_part(
     return _catalog_part_response(db, p)
 
 
+# ══════════════════════════════════════════════════════════════
+#  CADPORT-TDD-STEP-001 §7.1.3 — PATCH mass + recompute
+# ══════════════════════════════════════════════════════════════
+
+class CatalogPartMassUpdate(BaseModel):
+    """Body for PATCH /api/v1/catalog/parts/{id}/mass.
+
+    ``mass_kg = null`` clears mass + inertia (returns the row to the
+    'cad' / geometric-only state). A positive float sets the new mass
+    and triggers the linear inertia scaling identity + assembly
+    re-rollup cascade.
+    """
+    mass_kg: Optional[float] = Field(
+        None,
+        description=(
+            "Positive float to set; null to clear. Edits are blocked on "
+            "rows with source_format='sldprt' AND mass_source='cad' — "
+            "those carry SolidWorks-side mass and must be edited upstream "
+            "in CADPORT (409 Conflict)."
+        ),
+    )
+
+
+class CatalogPartMassUpdateResult(BaseModel):
+    """Response payload — mirrors the part's pre/post mass + flagged
+    side effects so the UI can render the new state without a refresh."""
+    part_id: int
+    mass_kg: Optional[float]
+    mass_source: str
+    inertia_revised_via_uniform_scaling: bool
+    inertia: Dict[str, Optional[float]]
+    center_of_mass: Dict[str, Optional[float]]
+    density_kg_m3: Optional[float]
+    assemblies_rerolled: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+def _rewrite_yaml_blob_for_mass(
+    p: CatalogPart,
+    *,
+    new_mass_kg: Optional[float],
+) -> Optional[tuple[bytes, str]]:
+    """Read the §6 YAML blob, apply the mass-scaling identity, write it
+    back to disk. Returns (new_bytes, new_sha256) on success, None when
+    there is no YAML doc to refresh (e.g. legacy rows without
+    source_document_id). Failures here NEVER block the column-level
+    update — the audit log captures the column change either way.
+    """
+    if not p.source_document_id:
+        return None
+    doc = (
+        # local import keeps this function reusable from tests that don't
+        # set up the full router import graph.
+        __import__(
+            "app.models.catalog", fromlist=["SupplierDocument"]
+        ).SupplierDocument
+    )
+    yaml_doc = (
+        # quick re-fetch using the same Session-bound DB used by
+        # SQLAlchemy via the part instance.
+        None
+    )
+    try:
+        yaml_doc = p.source_document
+    except Exception:
+        yaml_doc = None
+    if yaml_doc is None:
+        return None
+    path = Path(yaml_doc.file_path) if yaml_doc.file_path else None
+    if not path or not path.exists():
+        return None
+    try:
+        import yaml
+        from app.services.cadport.mass_recompute import (
+            clear_mass_dependent_fields,
+            recompute_mass_dependent_fields,
+        )
+
+        text = path.read_text(encoding="utf-8")
+        blob = yaml.safe_load(text)
+        if not isinstance(blob, dict):
+            return None
+        if new_mass_kg is None:
+            new_blob = clear_mass_dependent_fields(blob)
+        else:
+            new_blob = recompute_mass_dependent_fields(
+                blob, new_mass_kg=float(new_mass_kg)
+            )
+        new_text = yaml.safe_dump(new_blob, sort_keys=False, allow_unicode=False)
+        new_bytes = new_text.encode("utf-8")
+        path.write_bytes(new_bytes)
+        new_sha = hashlib.sha256(new_bytes).hexdigest()
+        yaml_doc.file_size_bytes = len(new_bytes)
+        yaml_doc.sha256 = new_sha
+        return (new_bytes, new_sha)
+    except Exception:  # noqa: BLE001 - YAML refresh is best-effort
+        logger.exception(
+            "yaml-blob refresh failed for catalog_part %s after mass edit", p.id
+        )
+        return None
+    # Avoid unused-variable lint for the local doc binding (kept for
+    # clarity in the function flow above).
+    del doc
+
+
+@router.patch(
+    "/parts/{part_id}/mass",
+    response_model=CatalogPartMassUpdateResult,
+)
+def patch_catalog_part_mass(
+    part_id: int,
+    data: CatalogPartMassUpdate,
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> CatalogPartMassUpdateResult:
+    """Edit the mass on a STEP-sourced or material-derived catalog part.
+
+    Behaviour (CADPORT-TDD-STEP-001 §7.1.3):
+      * mass_kg = positive float → set mass, set mass_source =
+        'user_override', clear step_material_key, scale inertia by
+        m_new / m_old, refresh density = m_new / V (when V > 0), flip
+        ``inertia_revised_via_uniform_scaling``. Trigger an assembly
+        re-rollup for every assembly the part participates in.
+      * mass_kg = null → clear mass + inertia, reset mass_source to
+        'cad', clear step_material_key, clear scaling flag, preserve
+        geometry. ("Back to skip" — useful when the user typed a wrong
+        number and wants to start over.)
+      * SW-imported rows (source_format='sldprt' AND mass_source='cad')
+        → 409 Conflict. Their mass is owned upstream by CADPORT.
+    """
+    _require_req_eng_plus(current_user)
+    p = _get_catalog_part_or_404(db, part_id)
+
+    if (p.source_format or "sldprt") == "sldprt" and (p.mass_source or "cad") == "cad":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "SolidWorks-imported parts carry their own mass. "
+                "Edit upstream in CADPORT instead."
+            ),
+        )
+
+    from app.services.cadport.mass_recompute import scaled_inertia_components
+    from app.services.cadport.assembly_rerollup import (
+        rerollup_assemblies_containing_part,
+    )
+
+    old_mass = float(p.mass_kg) if p.mass_kg is not None else 0.0
+    new_mass = data.mass_kg
+
+    if new_mass is None:
+        # Clear mass + inertia, preserve geometry.
+        p.mass_kg = None
+        p.mass_source = "cad"
+        p.step_material_key = None
+        p.ixx = None
+        p.iyy = None
+        p.izz = None
+        p.ixy = None
+        p.ixz = None
+        p.iyz = None
+        # density tracks mass; clear it for consistency.
+        if p.volume_m3 is not None and float(p.volume_m3 or 0.0) > 0.0:
+            p.density_kg_m3 = None
+        p.inertia_revised_via_uniform_scaling = False
+        _rewrite_yaml_blob_for_mass(p, new_mass_kg=None)
+    else:
+        if not isinstance(new_mass, (int, float)) or float(new_mass) <= 0.0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="mass_kg must be a positive number (use null to clear).",
+            )
+        new_mass = float(new_mass)
+        p.mass_kg = new_mass
+        p.mass_source = "user_override"
+        p.step_material_key = None
+        scaled = scaled_inertia_components(
+            old_mass_kg=old_mass,
+            new_mass_kg=new_mass,
+            ixx=p.ixx, iyy=p.iyy, izz=p.izz,
+            ixy=p.ixy, ixz=p.ixz, iyz=p.iyz,
+        )
+        for k in ("ixx", "iyy", "izz", "ixy", "ixz", "iyz"):
+            setattr(p, k, scaled[k])
+        if p.volume_m3 is not None and float(p.volume_m3 or 0.0) > 0.0:
+            p.density_kg_m3 = new_mass / float(p.volume_m3)
+        p.inertia_revised_via_uniform_scaling = True
+        _rewrite_yaml_blob_for_mass(p, new_mass_kg=new_mass)
+
+    # Cascade to any assemblies containing this part.
+    rollups = rerollup_assemblies_containing_part(
+        db, catalog_part_id=p.id, triggered_by_scaling=(new_mass is not None)
+    )
+
+    db.commit()
+    db.refresh(p)
+
+    _audit(
+        db,
+        "catalog_part.mass_updated",
+        "catalog_part",
+        p.id,
+        current_user.id,
+        {
+            "old_mass_kg": old_mass,
+            "new_mass_kg": new_mass,
+            "mass_source": p.mass_source,
+            "assemblies_rerolled": [r.assembly_pk for r in rollups],
+        },
+        request=request,
+    )
+
+    return CatalogPartMassUpdateResult(
+        part_id=p.id,
+        mass_kg=float(p.mass_kg) if p.mass_kg is not None else None,
+        mass_source=p.mass_source or "cad",
+        inertia_revised_via_uniform_scaling=bool(
+            p.inertia_revised_via_uniform_scaling
+        ),
+        inertia={
+            "ixx": float(p.ixx) if p.ixx is not None else None,
+            "iyy": float(p.iyy) if p.iyy is not None else None,
+            "izz": float(p.izz) if p.izz is not None else None,
+            "ixy": float(p.ixy) if p.ixy is not None else None,
+            "ixz": float(p.ixz) if p.ixz is not None else None,
+            "iyz": float(p.iyz) if p.iyz is not None else None,
+        },
+        center_of_mass={
+            "x": float(p.center_of_mass_x) if p.center_of_mass_x is not None else None,
+            "y": float(p.center_of_mass_y) if p.center_of_mass_y is not None else None,
+            "z": float(p.center_of_mass_z) if p.center_of_mass_z is not None else None,
+        },
+        density_kg_m3=(
+            float(p.density_kg_m3) if p.density_kg_m3 is not None else None
+        ),
+        assemblies_rerolled=[
+            {
+                "assembly_pk": r.assembly_pk,
+                "total_mass_kg": r.total_mass_kg,
+                "center_of_mass": list(r.center_of_mass),
+                "inertia": r.inertia,
+                "inertia_revised_via_uniform_scaling": r.inertia_revised_via_uniform_scaling,
+                "component_count": r.component_count,
+                "skipped": r.skipped,
+            }
+            for r in rollups
+        ],
+    )
+
+
 def _cascade_wpn_delete_to_harold(wpn: Optional[str], part_id: int) -> None:
     """When a catalog_part with a WPN is deleted, ask HAROLD to
     hard-delete the WPN so the number can be reclaimed for reuse.
