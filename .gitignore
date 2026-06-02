@@ -17,6 +17,9 @@ uploads/
 *.sql.dump
 *.pgdump
 [0-9]*_SQL_*.sql
+# CADPORT-TDD-STEP-001: pre-migration pg_dump backups land here.
+backups/
+
 
 # Stale backup files (AUDIT_FINDINGS F-023).
 *.bak
