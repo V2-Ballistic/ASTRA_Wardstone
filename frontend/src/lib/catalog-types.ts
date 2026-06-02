@@ -379,6 +379,39 @@ export interface CatalogPartDetail extends CatalogPart {
   ixz?: number | null;
   iyz?: number | null;
   principal_moments_kg_m2?: number[];
+  // CADPORT-TDD-STEP-001 (migration 0040) provenance — gates the
+  // Edit-mass affordance on the part detail page.
+  source_format?: 'sldprt' | 'step';
+  step_material_key?: string | null;
+  mass_source?: 'cad' | 'material' | 'user_override';
+  inertia_revised_via_uniform_scaling?: boolean;
+}
+
+/** PATCH /api/v1/catalog/parts/{id}/mass response shape. */
+export interface CatalogPartMassUpdateResult {
+  part_id: number;
+  mass_kg: number | null;
+  mass_source: 'cad' | 'material' | 'user_override';
+  inertia_revised_via_uniform_scaling: boolean;
+  inertia: {
+    ixx: number | null;
+    iyy: number | null;
+    izz: number | null;
+    ixy: number | null;
+    ixz: number | null;
+    iyz: number | null;
+  };
+  center_of_mass: { x: number | null; y: number | null; z: number | null };
+  density_kg_m3: number | null;
+  assemblies_rerolled: Array<{
+    assembly_pk: number;
+    total_mass_kg: number;
+    center_of_mass: number[];
+    inertia: Record<string, number>;
+    inertia_revised_via_uniform_scaling: boolean;
+    component_count: number;
+    skipped: string[];
+  }>;
 }
 
 

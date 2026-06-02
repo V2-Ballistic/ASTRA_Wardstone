@@ -440,6 +440,20 @@ class CatalogPart(Base):
     ixy                 = Column(Float, nullable=True)
     ixz                 = Column(Float, nullable=True)
     iyz                 = Column(Float, nullable=True)
+    # ════════════════════════════════════════════════════════════
+    # CADPORT-TDD-STEP-001: STEP / mass-source provenance. The PATCH
+    # /api/v1/catalog/parts/{id}/mass endpoint gates on these so a
+    # SolidWorks-imported row (source_format='sldprt', mass_source=
+    # 'cad') returns 409 — its mass is owned upstream by SW.
+    # Defaults match the historical SolidWorks rows: source_format
+    # 'sldprt', mass_source 'cad', scaling flag false. Migration 0040.
+    # ════════════════════════════════════════════════════════════
+    source_format       = Column(String(16), nullable=False, server_default="sldprt", default="sldprt")
+    step_material_key   = Column(String(64), nullable=True)
+    mass_source         = Column(String(16), nullable=False, server_default="cad", default="cad")
+    inertia_revised_via_uniform_scaling = Column(
+        Boolean, nullable=False, server_default="false", default=False
+    )
     # CADPORT-REBUILD-004 (AD-5): the binary STL mesh for this part,
     # stored as a supplier_documents row (document_type='stl'). NULL
     # when SW STL export failed or the part predates the STL feature —
@@ -709,6 +723,13 @@ class CadportAssembly(Base):
     solidworks_version        = Column(String(64), nullable=True)
     assembly_yaml_document_id = Column(
         Integer, ForeignKey("supplier_documents.id", ondelete="SET NULL"), nullable=True
+    )
+    # CADPORT-TDD-STEP-001 §7.1.4: True iff this assembly's rollup
+    # inertia involves at least one mass-scaling step somewhere in the
+    # chain (a constituent part has the flag set, or the rollup itself
+    # was triggered by a part-mass edit). Migration 0040.
+    inertia_revised_via_uniform_scaling = Column(
+        Boolean, nullable=False, server_default="false", default=False
     )
     created_at                = Column(DateTime(timezone=True), server_default=func.now())
     updated_at                = Column(
