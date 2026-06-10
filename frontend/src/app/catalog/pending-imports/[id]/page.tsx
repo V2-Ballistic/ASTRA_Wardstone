@@ -32,6 +32,7 @@ import type {
   Supplier,
   SupplierDocument,
 } from '@/lib/catalog-types';
+import { CadportPendingSummary } from './CadportPendingSummary';
 
 // React-hooks rule: ALL hooks before any conditional `return`. The few
 // fields below are derived from `pendingImport`, which may be null
@@ -120,14 +121,19 @@ export default function PendingImportReviewPage() {
       setWpnInput(typeof seedWpn === 'string' ? seedWpn : '');
       setWpnValidation(null);
       setWpnValidationError(null);
-      // Best-effort fetch of related supplier + source document
+      // Best-effort fetch of related supplier + source document.
+      // CADPORT-TDD-ASTRA-BRIDGE-001 Phase 1: supplier_id is nullable
+      // for CADPORT-created pending rows (the supplier is materialized
+      // at approve time); fetching only fires when it's set.
       try {
-        const [supRes, docRes] = await Promise.all([
-          catalogAPI.getSupplier(r.data.supplier_id),
-          catalogAPI.getDocument(r.data.source_document_id),
-        ]);
-        setSupplier(supRes.data);
+        const docRes = await catalogAPI.getDocument(r.data.source_document_id);
         setSourceDoc(docRes.data);
+        if (r.data.supplier_id != null) {
+          const supRes = await catalogAPI.getSupplier(r.data.supplier_id);
+          setSupplier(supRes.data);
+        } else {
+          setSupplier(null);
+        }
       } catch {
         // Non-fatal — banner falls back to the IDs.
       }
@@ -338,11 +344,20 @@ export default function PendingImportReviewPage() {
   }
 
   const isPending = pendingImport.status === 'pending';
-  const supplierBanner = supplier && supplier.is_in_house
-    ? { tone: 'emerald', label: `Linked to in-house supplier ${supplier.name}.` }
-    : supplierWasAutoCreated
-      ? { tone: 'blue', label: `Auto-created and linked to new supplier ${supplier?.name ?? '?'}.` }
-      : { tone: 'blue', label: `Linked to supplier ${supplier?.name ?? `#${pendingImport.supplier_id}`}.` };
+  const supplierBanner =
+    pendingImport.supplier_id == null
+      ? {
+          tone: 'blue' as const,
+          label:
+            pendingImport.proposed_supplier_name
+              ? `Proposed supplier: "${pendingImport.proposed_supplier_name}" — will be created on approval.`
+              : 'No supplier set yet — pick one before approving.',
+        }
+      : supplier && supplier.is_in_house
+        ? { tone: 'emerald', label: `Linked to in-house supplier ${supplier.name}.` }
+        : supplierWasAutoCreated
+          ? { tone: 'blue', label: `Auto-created and linked to new supplier ${supplier?.name ?? '?'}.` }
+          : { tone: 'blue', label: `Linked to supplier ${supplier?.name ?? `#${pendingImport.supplier_id}`}.` };
 
   return (
     <div className="mx-auto max-w-5xl">
@@ -428,6 +443,18 @@ export default function PendingImportReviewPage() {
         <ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />
         <span>{supplierBanner.label}</span>
       </div>
+
+      {/* CADPORT-TDD-ASTRA-BRIDGE-001 Phase 1: CADPORT extraction
+          summary + editable proposed-supplier-name field. Only renders
+          when the row came from the CADPORT bridge — leaves the PDF
+          flow's UI untouched. */}
+      {pendingImport.source_kind === 'cadport' && (
+        <CadportPendingSummary
+          row={pendingImport}
+          onSupplierUpdated={refresh}
+          setError={setError}
+        />
+      )}
 
       {error && (
         <div role="alert" className="mb-4 rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-400">

@@ -628,7 +628,20 @@ class PendingCatalogImport(Base):
         nullable=False,
         index=True,
     )
-    supplier_id              = Column(Integer, ForeignKey("suppliers.id"), nullable=False)
+    # CADPORT-TDD-ASTRA-BRIDGE-001 Phase 1: nullable for cadport uploads
+    # that propose a NEW supplier — resolved at approve time.
+    supplier_id              = Column(Integer, ForeignKey("suppliers.id"), nullable=True)
+    # CADPORT-TDD-ASTRA-BRIDGE-001 Phase 1: 'create-on-approval' name.
+    # Set when the cadport upload's supplier picker chose a not-yet-
+    # existing supplier; the supplier row is materialized at approve.
+    proposed_supplier_name   = Column(String(200), nullable=True)
+    # CADPORT-TDD-ASTRA-BRIDGE-001 Phase 1: discriminator for the
+    # approve handler. 'pdf' = existing PDF-extraction path.
+    # 'cadport' = the new CADPORT bridge path. Defaults to 'pdf' so the
+    # legacy column-level default applies to any seeded/historical row.
+    source_kind              = Column(
+        String(32), nullable=False, server_default="pdf", default="pdf",
+    )
 
     extracted_data           = Column(_JSON, nullable=False)
     extraction_warnings      = Column(_JSON, nullable=True)

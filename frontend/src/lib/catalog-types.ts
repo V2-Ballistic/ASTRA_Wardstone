@@ -566,7 +566,13 @@ export interface CatalogPartVariantRequest {
 export interface PendingCatalogImport {
   id: number;
   source_document_id: number;
-  supplier_id: number;
+  // CADPORT-TDD-ASTRA-BRIDGE-001 Phase 1: supplier_id is now NULLABLE
+  // (CADPORT uploads proposing a new supplier leave it null until
+  // approve resolves it).
+  supplier_id: number | null;
+  proposed_supplier_name?: string | null;
+  /** 'pdf' (legacy PDF extraction) or 'cadport' (CADPORT bridge). */
+  source_kind?: string;
   extracted_data: Record<string, unknown>;
   extraction_warnings?: Record<string, unknown> | null;
   /** Decimal serialised as string. */
@@ -586,6 +592,10 @@ export interface PendingCatalogImportUpdate {
   extraction_confidence?: string | number;
   rejection_reason?: string;
   reviewer_notes?: string;
+  // CADPORT-TDD-ASTRA-BRIDGE-001 Phase 1: operator can change the
+  // supplier choice before approving.
+  supplier_id?: number | null;
+  proposed_supplier_name?: string | null;
 }
 
 

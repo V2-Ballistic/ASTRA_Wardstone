@@ -545,12 +545,21 @@ class PendingCatalogImportUpdate(BaseModel):
     extraction_confidence: Optional[Decimal] = None
     rejection_reason: Optional[str] = None
     reviewer_notes: Optional[str] = None
+    # CADPORT-TDD-ASTRA-BRIDGE-001 Phase 1: operator can change the
+    # supplier choice before approving. Setting supplier_id to a real
+    # id wins; setting proposed_supplier_name carries the create-on-
+    # approval intent forward. Sending both → 400 at approve time.
+    supplier_id: Optional[int] = None
+    proposed_supplier_name: Optional[str] = None
 
 
 class PendingCatalogImportResponse(BaseModel):
     id: int
     source_document_id: int
-    supplier_id: int
+    # CADPORT-TDD-ASTRA-BRIDGE-001 Phase 1: nullable for cadport.
+    supplier_id: Optional[int] = None
+    proposed_supplier_name: Optional[str] = None
+    source_kind: str = "pdf"
     extracted_data: Dict[str, Any] = Field(default_factory=dict)
     extraction_warnings: Optional[Dict[str, Any]] = None
     extraction_confidence: Optional[Decimal] = None
