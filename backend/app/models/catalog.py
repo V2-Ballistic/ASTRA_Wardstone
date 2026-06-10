@@ -484,6 +484,15 @@ class CatalogPart(Base):
         Integer, ForeignKey("supplier_documents.id", ondelete="SET NULL"), nullable=True
     )
 
+    # CADPORT-TDD-ASTRA-BRIDGE-001 Phase 3: bidirectional mass/material sync.
+    # ``last_sync_origin`` records who last wrote the row — 'astra' (public
+    # PATCH from the ASTRA UI; the handler then propagates to CADPORT) or
+    # 'cadport' (internal /sync-from-cadport endpoint, no outgoing call —
+    # the loop-breaker). Both columns NULL on legacy rows that pre-date
+    # the bidirectional flow. Migration 0043.
+    last_sync_origin    = Column(String, nullable=True)
+    last_sync_at        = Column(DateTime(timezone=True), nullable=True)
+
     deleted_at          = Column(DateTime(timezone=True), nullable=True, index=True)
 
     created_at          = Column(DateTime(timezone=True), server_default=func.now())

@@ -1062,8 +1062,25 @@ def update_catalog_part(
         _get_supplier_or_404(db, data.supplier_id)
 
     updates = data.model_dump(exclude_unset=True)
+    material_touched = "step_material_key" in updates
     for field, value in updates.items():
         setattr(p, field, value)
+
+    # CADPORT-TDD-ASTRA-BRIDGE-001 Phase 3 §3.4: propagate a material
+    # change to CADPORT when this is a public PATCH that touched
+    # step_material_key. Mass edits go through the dedicated
+    # PATCH /mass handler — that path has its own propagation hook.
+    if material_touched:
+        p.last_sync_origin = "astra"
+        p.last_sync_at = datetime.utcnow()
+    cadport_uuid_to_sync = (
+        str(p.cadport_part_id)
+        if material_touched and p.cadport_part_id is not None
+        else None
+    )
+    new_material = p.step_material_key if material_touched else None
+    new_density = float(p.density_kg_m3) if (material_touched and p.density_kg_m3 is not None) else None
+
     db.commit()
     db.refresh(p)
 
@@ -1072,6 +1089,15 @@ def update_catalog_part(
         {"fields": list(updates.keys())},
         request=request,
     )
+
+    if cadport_uuid_to_sync is not None:
+        from app.services import cadport_outbound
+        cadport_outbound.sync_material_to_cadport(
+            cadport_uuid_to_sync,
+            material=new_material,
+            density_kg_m3=new_density,
+        )
+
     return _catalog_part_response(db, p)
 
 
@@ -1269,6 +1295,18 @@ def patch_catalog_part_mass(
         db, catalog_part_id=p.id, triggered_by_scaling=(new_mass is not None)
     )
 
+    # CADPORT-TDD-ASTRA-BRIDGE-001 Phase 3 §3.4: this PATCH is the
+    # PUBLIC mass-edit handler — it always propagates to CADPORT when
+    # a back-link exists. Stamp the origin BEFORE commit so the row
+    # carries the right last_sync_origin on read. The /sync-from-cadport
+    # endpoint sets origin='cadport' and SKIPS the outgoing call —
+    # that asymmetry is the loop-breaker.
+    p.last_sync_origin = "astra"
+    p.last_sync_at = datetime.utcnow()
+    cadport_uuid_to_sync = (
+        str(p.cadport_part_id) if p.cadport_part_id is not None else None
+    )
+
     db.commit()
     db.refresh(p)
 
@@ -1286,6 +1324,13 @@ def patch_catalog_part_mass(
         },
         request=request,
     )
+
+    if cadport_uuid_to_sync is not None:
+        from app.services import cadport_outbound
+        cadport_outbound.sync_mass_to_cadport(
+            cadport_uuid_to_sync,
+            float(p.mass_kg) if p.mass_kg is not None else None,
+        )
 
     return CatalogPartMassUpdateResult(
         part_id=p.id,
@@ -1323,6 +1368,128 @@ def patch_catalog_part_mass(
             for r in rollups
         ],
     )
+
+
+# ══════════════════════════════════════════════════════════════
+#  CADPORT-TDD-ASTRA-BRIDGE-001 Phase 3 §3.4
+#  Internal sync endpoint — CADPORT calls this after a local edit.
+#  Loop-breaker: this handler updates the row but does NOT call back
+#  to CADPORT, so propagation can't bounce.
+# ══════════════════════════════════════════════════════════════
+
+class _SyncFromCadportRequest(BaseModel):
+    """Body for POST /catalog/parts/{id}/sync-from-cadport.
+
+    Either field may be omitted (None) to leave the existing value in
+    place. ``mass_kg = null`` is NOT a clear signal here — the public
+    PATCH /mass keeps its "null clears" semantics, but the sync
+    endpoint omits the field instead. That keeps the wire format
+    unambiguous for the propagation direction.
+    """
+    mass_kg: Optional[float] = Field(
+        None,
+        description=(
+            "When set, propagated to catalog_parts.mass_kg. Omit to "
+            "leave existing mass untouched."
+        ),
+    )
+    material: Optional[str] = Field(
+        None,
+        description=(
+            "When set, propagated to catalog_parts.step_material_key. "
+            "Omit to leave material untouched."
+        ),
+    )
+    density_kg_m3: Optional[float] = Field(
+        None,
+        description=(
+            "Optional density override. When omitted and a material is "
+            "set, ASTRA's density lookup stays as-is."
+        ),
+    )
+
+
+@router.post("/parts/{part_id}/sync-from-cadport")
+def sync_catalog_part_from_cadport(
+    part_id: int,
+    data: _SyncFromCadportRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Update a catalog_part with values propagated FROM CADPORT.
+
+    Loop prevention: this endpoint never calls CADPORT back — that is
+    the rule that lets the bidirectional sync converge. The local
+    mass-rescaling cascade (inertia + assembly re-rollup) still runs
+    here, so the ASTRA-side numbers stay self-consistent.
+
+    Auth: req_eng+ — same gate as the public PATCH /mass. CADPORT
+    authenticates as the mason admin user (gotcha #2 carried over
+    from CADPORT-REBUILD-002).
+    """
+    _require_req_eng_plus(current_user)
+    p = _get_catalog_part_or_404(db, part_id)
+
+    updated_fields: List[str] = []
+
+    if data.mass_kg is not None:
+        from app.services.cadport.mass_recompute import scaled_inertia_components
+        from app.services.cadport.assembly_rerollup import (
+            rerollup_assemblies_containing_part,
+        )
+        old_mass = float(p.mass_kg) if p.mass_kg is not None else 0.0
+        new_mass = float(data.mass_kg)
+        if new_mass <= 0.0:
+            raise HTTPException(
+                status_code=400,
+                detail="mass_kg must be a positive number.",
+            )
+        p.mass_kg = new_mass
+        p.mass_source = "user_override"
+        p.step_material_key = None
+        scaled = scaled_inertia_components(
+            old_mass_kg=old_mass,
+            new_mass_kg=new_mass,
+            ixx=p.ixx, iyy=p.iyy, izz=p.izz,
+            ixy=p.ixy, ixz=p.ixz, iyz=p.iyz,
+        )
+        for k in ("ixx", "iyy", "izz", "ixy", "ixz", "iyz"):
+            setattr(p, k, scaled[k])
+        if p.volume_m3 is not None and float(p.volume_m3 or 0.0) > 0.0:
+            p.density_kg_m3 = new_mass / float(p.volume_m3)
+        p.inertia_revised_via_uniform_scaling = True
+        _rewrite_yaml_blob_for_mass(p, new_mass_kg=new_mass)
+        # Re-rollup any assembly that contains this part. The CADPORT
+        # caller will not re-fire this — they pushed a column-level
+        # update; ASTRA owns the assembly cascade.
+        rerollup_assemblies_containing_part(
+            db, catalog_part_id=p.id, triggered_by_scaling=True,
+        )
+        updated_fields.append("mass_kg")
+
+    if data.material is not None:
+        p.step_material_key = data.material
+        updated_fields.append("material")
+        if data.density_kg_m3 is not None:
+            p.density_kg_m3 = float(data.density_kg_m3)
+            updated_fields.append("density_kg_m3")
+
+    p.last_sync_origin = "cadport"
+    p.last_sync_at = datetime.utcnow()
+    db.commit()
+    db.refresh(p)
+
+    return {
+        "part_id": p.id,
+        "updated_fields": updated_fields,
+        "mass_kg": float(p.mass_kg) if p.mass_kg is not None else None,
+        "step_material_key": p.step_material_key,
+        "density_kg_m3": (
+            float(p.density_kg_m3) if p.density_kg_m3 is not None else None
+        ),
+        "last_sync_origin": p.last_sync_origin,
+        "last_sync_at": p.last_sync_at.isoformat() if p.last_sync_at else None,
+    }
 
 
 def _cascade_wpn_delete_to_harold(wpn: Optional[str], part_id: int) -> None:
@@ -2116,6 +2283,25 @@ def _approve_cadport_pending_import(
     if pending.source_document is not None:
         pending.source_document.extraction_status = ExtractionStatus.APPROVED
     db.flush()
+
+    # CADPORT-TDD-ASTRA-BRIDGE-001 Phase 3 §3.4: after the catalog_part
+    # commits, tell CADPORT to backfill its cadport_parts.catalog_part_id
+    # so subsequent CADPORT-side mass / material edits know where to
+    # propagate. Best-effort — a failure here logs but doesn't block
+    # the approval.
+    if cadport_uuid is not None:
+        try:
+            from app.services import cadport_outbound
+            cadport_outbound.link_catalog_part(
+                cadport_part_id=str(cadport_uuid),
+                catalog_part_id=part.id,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to link catalog_part %s back to CADPORT %s (continuing)",
+                part.id, cadport_uuid,
+            )
+
     return part
 
 

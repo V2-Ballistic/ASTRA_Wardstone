@@ -422,6 +422,12 @@ class CatalogPartUpdate(BaseModel):
     cad_preview_path: Optional[str] = None
     cad_authoring_tool: Optional[str] = Field(None, max_length=64)
     native_units: Optional[str] = Field(None, max_length=16)
+    # CADPORT-TDD-ASTRA-BRIDGE-001 Phase 3 §3.4: material edits made
+    # via the public PATCH propagate to CADPORT. Without this field,
+    # `step_material_key` was being silently dropped from the request
+    # body before the handler could detect the change.
+    step_material_key: Optional[str] = Field(None, max_length=128)
+    density_kg_m3: Optional[Decimal] = None
 
 
 class CatalogPartSummary(BaseModel):
