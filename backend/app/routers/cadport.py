@@ -75,7 +75,10 @@ router = APIRouter(tags=["CADPORT"])
 # live in one place regardless of which router created them.
 SUPPLIER_DOC_DIR = Path(os.environ.get("SUPPLIER_DOC_DIR", "/data/supplier_docs"))
 
-WARDSTONE_NAME = "Wardstone"
+# CADPORT-TDD-SUPPLIER-001 removed the hardcoded ``WARDSTONE_NAME``
+# constant and the ``_wardstone()`` default-supplier fallback. Every
+# CADPORT upload now carries an explicit supplier via
+# ``supplier_id`` or ``supplier_name`` (see _resolve_supplier).
 
 
 # ── Request / response models ───────────────────────────────────────
@@ -143,6 +146,23 @@ class CadportPartImport(BaseModel):
             "mass-scaling rather than re-derived from geometry."
         ),
     )
+    # CADPORT-TDD-SUPPLIER-001 §3.3: explicit supplier choice. Exactly
+    # one of these must be set — the handler returns 400 otherwise.
+    # ``supplier_id`` selects an existing row (404 if missing);
+    # ``supplier_name`` creates a new row when no case-insensitive
+    # match exists, or reuses one when it does.
+    supplier_id: Optional[int] = Field(
+        None,
+        description="Existing supplier id. Mutually exclusive with supplier_name.",
+    )
+    supplier_name: Optional[str] = Field(
+        None,
+        description=(
+            "Supplier name. Creates a new row on first sight (case-"
+            "insensitive match against existing). Mutually exclusive "
+            "with supplier_id."
+        ),
+    )
 
 
 class CheckDuplicateRequest(BaseModel):
@@ -169,6 +189,10 @@ class CatalogPartImportResult(BaseModel):
     source_document_id: Optional[int] = None
     deduped: bool = False
     warning: Optional[str] = None
+    # CADPORT-TDD-SUPPLIER-001 §5.4: True when this upload created the
+    # supplier row (used by the UI to render "New supplier: VectorNav"
+    # in the result panel).
+    supplier_created: bool = False
 
 
 class CadportComponentImport(BaseModel):
@@ -196,6 +220,18 @@ class CadportAssemblyImport(BaseModel):
     yaml_filename: str
     yaml_content: str
     components: List[CadportComponentImport] = Field(default_factory=list)
+    # CADPORT-TDD-SUPPLIER-001 §3.3 — see CadportPartImport.
+    supplier_id: Optional[int] = Field(
+        None,
+        description="Existing supplier id. Mutually exclusive with supplier_name.",
+    )
+    supplier_name: Optional[str] = Field(
+        None,
+        description=(
+            "Supplier name; created on first sight (case-insensitive). "
+            "Mutually exclusive with supplier_id."
+        ),
+    )
 
 
 class CadportComponentResult(BaseModel):
@@ -246,22 +282,40 @@ class CadportAssemblyResult(BaseModel):
 # ── Helpers ─────────────────────────────────────────────────────────
 
 
-def _wardstone(db: Session, current_user: User) -> Supplier:
-    """AD-1: the in-house supplier. Seeded by migration 0029 — look up
-    by name; create defensively if a fresh DB ever lacks it."""
-    s = db.query(Supplier).filter(Supplier.name == WARDSTONE_NAME).first()
-    if s is not None:
-        return s
-    s = Supplier(
-        name=WARDSTONE_NAME,
-        short_name="WS",
-        is_in_house=True,
-        is_active=True,
-        created_by_id=current_user.id,
-    )
-    db.add(s)
-    db.flush()
-    return s
+def _resolve_supplier(
+    db: Session,
+    *,
+    supplier_id: int | None,
+    supplier_name: str | None,
+    current_user: User,
+    request=None,
+) -> tuple[Supplier, bool]:
+    """CADPORT-TDD-SUPPLIER-001 §3.3: surface the spec's exactly-one
+    constraint as 400 / 404 errors. Returns (supplier, created)."""
+    from app.services.supplier_service import resolve_supplier_choice
+
+    try:
+        return resolve_supplier_choice(
+            db,
+            supplier_id=supplier_id,
+            supplier_name=supplier_name,
+            current_user_id=current_user.id,
+            request=request,
+        )
+    except ValueError as exc:
+        if str(exc) == "both":
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "Send either supplier_id or supplier_name, not both.",
+            ) from exc
+        if str(exc) == "neither":
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "supplier_id or supplier_name is required.",
+            ) from exc
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
 
 
 def _store_yaml_document(
@@ -432,10 +486,12 @@ def attach_stl_to_catalog_part(
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, "stl_base64 empty or undecodable"
         )
-    wardstone = _wardstone(db, current_user)
+    # CADPORT-TDD-SUPPLIER-001: the STL is a sibling document to the
+    # part — store it under the part's existing supplier rather than
+    # the deleted Wardstone default.
     doc = _store_stl_document(
         db,
-        supplier_id=wardstone.id,
+        supplier_id=cp.supplier_id,
         stl_filename=body.stl_filename or f"{cp.part_number}.stl",
         stl_bytes=data,
         current_user=current_user,
@@ -460,9 +516,12 @@ def create_part_from_cadport(
 ) -> CatalogPartImportResult:
     """Create a catalog_part from a CADPORT extraction. Idempotent on
     content_hash (AD-2): a repeat call returns the existing row with
-    deduped=true instead of creating a duplicate."""
-    wardstone = _wardstone(db, current_user)
+    deduped=true instead of creating a duplicate.
 
+    CADPORT-TDD-SUPPLIER-001 §3.3: supplier comes from ``body.supplier_id``
+    OR ``body.supplier_name`` (exactly one required) — no more silent
+    Wardstone default.
+    """
     # AD-2: dedup BEFORE creating. Handles "Bottom Case extracted 3×".
     existing = (
         db.query(CatalogPart)
@@ -474,6 +533,13 @@ def create_part_from_cadport(
         .first()
     )
     if existing is not None:
+        # Dedup hit: do NOT resolve a fresh supplier (would 400 the
+        # repeat upload if a name wasn't passed). Reuse the existing
+        # row's supplier — the repeat is essentially a no-op.
+        existing_supplier = (
+            db.query(Supplier).filter(Supplier.id == existing.supplier_id).first()
+        )
+        existing_supplier_name = existing_supplier.name if existing_supplier else "?"
         # CADPORT-REBUILD-004: backfill the STL for an already-deduped
         # part. Bottom Case was imported pre-STL (or 3× under TDD-2's
         # dedup proof) — a re-extraction now carries a mesh the catalog
@@ -483,7 +549,7 @@ def create_part_from_cadport(
             try:
                 stl_doc = _store_stl_document(
                     db,
-                    supplier_id=wardstone.id,
+                    supplier_id=existing.supplier_id,
                     stl_filename=body.stl_filename
                     or f"{existing.part_number}.stl",
                     stl_bytes=stl_bytes,
@@ -499,7 +565,7 @@ def create_part_from_cadport(
             part_number=existing.part_number,
             name=existing.name,
             supplier_id=existing.supplier_id,
-            supplier_name=wardstone.name,
+            supplier_name=existing_supplier_name,
             internal_part_number=existing.internal_part_number,
             source_document_id=existing.source_document_id,
             deduped=True,
@@ -507,12 +573,22 @@ def create_part_from_cadport(
                 f"content_hash already in catalog as part #{existing.id} "
                 f"({existing.part_number}); linked to existing, not duplicated."
             ),
+            supplier_created=False,
         )
+
+    # Resolve the upload's supplier choice. 400 if neither/both, 404 if id missing.
+    supplier, supplier_created = _resolve_supplier(
+        db,
+        supplier_id=body.supplier_id,
+        supplier_name=body.supplier_name,
+        current_user=current_user,
+        request=request,
+    )
 
     # Store the §6 YAML blob (AD-5).
     doc = _store_yaml_document(
         db,
-        supplier_id=wardstone.id,
+        supplier_id=supplier.id,
         yaml_filename=body.yaml_filename,
         yaml_content=body.yaml_content,
         title=body.yaml_filename,
@@ -528,7 +604,7 @@ def create_part_from_cadport(
         try:
             stl_doc = _store_stl_document(
                 db,
-                supplier_id=wardstone.id,
+                supplier_id=supplier.id,
                 stl_filename=body.stl_filename
                 or f"{body.internal_part_number or Path(body.source_filename).stem}.stl",
                 stl_bytes=stl_bytes,
@@ -545,8 +621,16 @@ def create_part_from_cadport(
     # content_hashes (already deduped above).
     part_number = body.internal_part_number or Path(body.source_filename).stem
 
+    # CADPORT-TDD-SUPPLIER-001: coerce cadport_part_id at the handler
+    # boundary. Postgres' UUID column auto-coerces strings; SQLite (used
+    # by the test suite) doesn't, so do it explicitly here.
+    _cadport_uuid = (
+        _uuid.UUID(body.cadport_part_id)
+        if body.cadport_part_id and not isinstance(body.cadport_part_id, _uuid.UUID)
+        else body.cadport_part_id
+    )
     part = CatalogPart(
-        supplier_id=wardstone.id,
+        supplier_id=supplier.id,
         part_number=part_number,
         revision=None,
         name=body.display_name,
@@ -557,7 +641,7 @@ def create_part_from_cadport(
         material_name=body.material,
         source_document_id=doc.id,
         internal_part_number=body.internal_part_number,
-        cadport_part_id=body.cadport_part_id,
+        cadport_part_id=_cadport_uuid,
         content_hash=body.content_hash,
         volume_m3=body.volume_m3,
         surface_area_m2=body.surface_area_m2,
@@ -589,7 +673,9 @@ def create_part_from_cadport(
             "cadport_part_id": body.cadport_part_id,
             "content_hash": body.content_hash,
             "wpn": body.internal_part_number,
-            "supplier_id": wardstone.id,
+            "supplier_id": supplier.id,
+            "supplier_name": supplier.name,
+            "supplier_created": supplier_created,
         },
         request=request,
     )
@@ -599,11 +685,12 @@ def create_part_from_cadport(
         cadport_part_id=body.cadport_part_id,
         part_number=part.part_number,
         name=part.name,
-        supplier_id=wardstone.id,
-        supplier_name=wardstone.name,
+        supplier_id=supplier.id,
+        supplier_name=supplier.name,
         internal_part_number=part.internal_part_number,
         source_document_id=doc.id,
         deduped=False,
+        supplier_created=supplier_created,
     )
 
 
@@ -624,10 +711,17 @@ def create_cadport_assembly(
             f"Project {body.project_id} not found — pick an existing project",
         )
 
-    wardstone = _wardstone(db, current_user)
+    # CADPORT-TDD-SUPPLIER-001 §3.3: explicit supplier required.
+    supplier, _supplier_created = _resolve_supplier(
+        db,
+        supplier_id=body.supplier_id,
+        supplier_name=body.supplier_name,
+        current_user=current_user,
+        request=request,
+    )
     doc = _store_yaml_document(
         db,
-        supplier_id=wardstone.id,
+        supplier_id=supplier.id,
         yaml_filename=body.yaml_filename,
         yaml_content=body.yaml_content,
         title=body.yaml_filename,
@@ -876,7 +970,10 @@ def _emit_part_yaml_from_db(cp: CatalogPart, db: Session) -> str:
         },
         "wpn": cp.internal_part_number,
         "catalog_part_id": cp.id,
-        "supplier": "Wardstone",
+        # CADPORT-TDD-SUPPLIER-001: read from the part's row, not a
+        # hardcoded literal. Falls back to None when the supplier
+        # relationship isn't loaded (shouldn't happen in practice).
+        "supplier": cp.supplier.name if cp.supplier is not None else None,
     }
     return _yaml.safe_dump(doc, sort_keys=False, allow_unicode=False)
 
