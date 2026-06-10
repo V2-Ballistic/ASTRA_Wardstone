@@ -126,6 +126,17 @@ export const catalogAPI = {
   getPart: (id: number) =>
     api.get<CatalogPartDetail>(`${BASE}/parts/${id}`),
 
+  // CADPORT-TDD-ASTRA-BRIDGE-001 Phase 2: source CAD files.
+  listPartSourceFiles: (id: number) =>
+    api.get<Array<{
+      kind: 'sldprt' | 'sldasm' | 'step';
+      filename: string;
+      size_bytes: number;
+      sha256: string;
+      mime_type: string;
+      download_url: string;
+    }>>(`${BASE}/parts/${id}/source-files`),
+
   updatePart: (id: number, data: Partial<CatalogPartCreatePayload>) =>
     api.patch<CatalogPartDetail>(`${BASE}/parts/${id}`, data),
 

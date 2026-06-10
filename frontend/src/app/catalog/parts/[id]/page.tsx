@@ -39,6 +39,7 @@ import {
 } from '@/lib/catalog-types';
 import { useAuth } from '@/lib/auth';
 import { EditMassModal, shouldShowEditMass } from './EditMassModal';
+import { SourceFilesSection } from './SourceFilesSection';
 
 // ══════════════════════════════════════
 //  Helpers
@@ -500,6 +501,9 @@ export default function CatalogPartDetailPage() {
             )}
           </div>
         </section>
+
+        {/* CADPORT-TDD-ASTRA-BRIDGE-001 Phase 2: Source CAD files. */}
+        <SourceFilesSection partId={partId} />
 
         {/* Connectors + Pins */}
         <section className="rounded-xl border border-astra-border bg-astra-surface p-4 lg:col-span-2">

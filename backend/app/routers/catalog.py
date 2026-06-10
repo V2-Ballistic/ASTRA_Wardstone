@@ -958,6 +958,96 @@ def get_catalog_part(
     return _catalog_part_response(db, p)
 
 
+# ══════════════════════════════════════════════════════════════
+#  CADPORT-TDD-ASTRA-BRIDGE-001 Phase 2 — Source CAD file download
+# ══════════════════════════════════════════════════════════════
+
+
+_SOURCE_FILE_KIND_TO_FK = {
+    "sldprt": "sldprt_document_id",
+    "sldasm": "sldasm_document_id",
+    "step":   "step_document_id",
+}
+
+
+class _SourceFileEntry(BaseModel):
+    kind: str
+    filename: str
+    size_bytes: int
+    sha256: str
+    mime_type: str
+    download_url: str
+
+
+@router.get("/parts/{part_id}/source-files", response_model=List[_SourceFileEntry])
+def list_part_source_files(
+    part_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return the source CAD files attached to this catalog_part.
+    Empty list when none are attached (legacy rows / pre-Phase-2)."""
+    p = _get_catalog_part_or_404(db, part_id)
+    out: List[_SourceFileEntry] = []
+    for kind, fk_col in _SOURCE_FILE_KIND_TO_FK.items():
+        doc_id = getattr(p, fk_col, None)
+        if doc_id is None:
+            continue
+        doc = db.query(SupplierDocument).filter(SupplierDocument.id == doc_id).first()
+        if doc is None:
+            continue
+        out.append(
+            _SourceFileEntry(
+                kind=kind,
+                filename=doc.original_filename or doc.title or f"{kind}.bin",
+                size_bytes=int(doc.file_size_bytes or 0),
+                sha256=doc.sha256 or "",
+                mime_type=doc.mime_type or "application/octet-stream",
+                download_url=f"/api/v1/catalog/parts/{p.id}/source-files/{kind}",
+            )
+        )
+    return out
+
+
+@router.get("/parts/{part_id}/source-files/{kind}")
+def download_part_source_file(
+    part_id: int,
+    kind: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Stream the named source CAD file as an attachment."""
+    kind_lower = (kind or "").lower()
+    fk_col = _SOURCE_FILE_KIND_TO_FK.get(kind_lower)
+    if fk_col is None:
+        raise HTTPException(
+            400,
+            f"Unknown source-file kind {kind!r}; expected one of {list(_SOURCE_FILE_KIND_TO_FK)}",
+        )
+    p = _get_catalog_part_or_404(db, part_id)
+    doc_id = getattr(p, fk_col, None)
+    if doc_id is None:
+        raise HTTPException(
+            404, f"Part {p.id} has no source file of kind {kind_lower!r}",
+        )
+    doc = db.query(SupplierDocument).filter(SupplierDocument.id == doc_id).first()
+    if doc is None:
+        raise HTTPException(
+            404, f"SupplierDocument {doc_id} (linked from part {p.id}) not found",
+        )
+    file_path = Path(doc.file_path)
+    if not file_path.exists():
+        raise HTTPException(
+            500,
+            f"Document {doc.id} metadata exists but file missing on disk ({doc.file_path})",
+        )
+    return FileResponse(
+        path=str(file_path),
+        media_type=doc.mime_type or "application/octet-stream",
+        filename=doc.original_filename or doc.title or f"{kind_lower}.bin",
+    )
+
+
 @router.patch("/parts/{part_id}", response_model=CatalogPartResponse)
 def update_catalog_part(
     part_id: int,
@@ -1999,6 +2089,25 @@ def _approve_cadport_pending_import(
     # supplier_id wasn't known yet).
     if pending.source_document is not None and pending.source_document.supplier_id != supplier.id:
         pending.source_document.supplier_id = supplier.id
+
+    # CADPORT-TDD-ASTRA-BRIDGE-001 Phase 2: persist source CAD files
+    # carried by the pending payload as supplier_documents rows + FK
+    # links on catalog_parts. Failures here log + continue (additive).
+    raw_source_files = data.get("source_files") or []
+    if isinstance(raw_source_files, list) and raw_source_files:
+        try:
+            from app.routers.cadport import _attach_source_files
+            _attach_source_files(
+                db, part=part, source_files=raw_source_files,
+                current_user=current_user,
+            )
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception(
+                "Failed to attach source files for catalog_part %s (continuing)",
+                part.id,
+            )
 
     pending.status = PendingImportStatus.APPROVED
     pending.committed_catalog_part_id = part.id
