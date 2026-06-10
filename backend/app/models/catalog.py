@@ -161,6 +161,15 @@ class SupplierDocumentType(str, enum.Enum):
     # them through the existing /catalog/documents/{id}/file route.
     # Added to the PG enum in migration 0038.
     STL            = "stl"
+    # CADPORT-TDD-ASTRA-BRIDGE-001 Phase 2: source CAD files retained
+    # for re-download. ``step`` ships for every CADPORT upload (the
+    # original STEP file, or — for SolidWorks uploads — the STEP
+    # auto-exported via SaveAs3); ``sldprt`` / ``sldasm`` only ship
+    # when the user originally uploaded a SolidWorks file. Added to
+    # the PG enum in migration 0042.
+    SLDPRT         = "sldprt"
+    SLDASM         = "sldasm"
+    STEP           = "step"
 
 
 class ExtractionStatus(str, enum.Enum):
@@ -461,6 +470,19 @@ class CatalogPart(Base):
     stl_document_id     = Column(
         Integer, ForeignKey("supplier_documents.id", ondelete="SET NULL"), nullable=True
     )
+    # CADPORT-TDD-ASTRA-BRIDGE-001 Phase 2: source-CAD-file links. STEP
+    # ships for every CADPORT upload (the file as uploaded, OR the
+    # SaveAs3 export from a SolidWorks upload); SLDPRT / SLDASM only
+    # ship when SW was the source. NULL otherwise. Migration 0042.
+    sldprt_document_id  = Column(
+        Integer, ForeignKey("supplier_documents.id", ondelete="SET NULL"), nullable=True
+    )
+    sldasm_document_id  = Column(
+        Integer, ForeignKey("supplier_documents.id", ondelete="SET NULL"), nullable=True
+    )
+    step_document_id    = Column(
+        Integer, ForeignKey("supplier_documents.id", ondelete="SET NULL"), nullable=True
+    )
 
     deleted_at          = Column(DateTime(timezone=True), nullable=True, index=True)
 
@@ -471,6 +493,10 @@ class CatalogPart(Base):
     supplier            = relationship("Supplier", back_populates="catalog_parts")
     source_document     = relationship("SupplierDocument", foreign_keys=[source_document_id])
     stl_document        = relationship("SupplierDocument", foreign_keys=[stl_document_id])
+    # CADPORT-TDD-ASTRA-BRIDGE-001 Phase 2 — source-file relationships.
+    sldprt_document     = relationship("SupplierDocument", foreign_keys=[sldprt_document_id])
+    sldasm_document     = relationship("SupplierDocument", foreign_keys=[sldasm_document_id])
+    step_document       = relationship("SupplierDocument", foreign_keys=[step_document_id])
     parent_part         = relationship("CatalogPart", remote_side=[id], backref="variants")
     connectors          = relationship(
         "CatalogConnector",

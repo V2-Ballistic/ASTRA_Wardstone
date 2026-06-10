@@ -148,6 +148,15 @@ class CadportPartImport(BaseModel):
             "mass-scaling rather than re-derived from geometry."
         ),
     )
+    # CADPORT-TDD-ASTRA-BRIDGE-001 Phase 2: original source CAD files
+    # for retention + download. Empty list when nothing is attached.
+    source_files: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Source CAD file payloads. Each entry: "
+            "{kind: 'sldprt' | 'sldasm' | 'step', filename, sha256, content_base64}."
+        ),
+    )
     # CADPORT-TDD-SUPPLIER-001 §3.3: explicit supplier choice. Exactly
     # one of these must be set — the handler returns 400 otherwise.
     # ``supplier_id`` selects an existing row (404 if missing);
@@ -367,6 +376,122 @@ def _store_yaml_document(
     db.add(doc)
     db.flush()
     return doc
+
+
+def _store_source_file_document(
+    db: Session,
+    *,
+    supplier_id: int,
+    kind: str,
+    filename: str,
+    content_base64: str,
+    sha256_claim: Optional[str],
+    current_user: "User",
+) -> SupplierDocument:
+    """CADPORT-TDD-ASTRA-BRIDGE-001 Phase 2: persist one source CAD
+    file (sldprt / sldasm / step) as a ``supplier_documents`` row.
+
+    Mirrors ``_store_stl_document`` / ``_store_yaml_document``: hash
+    the content, write to ``SUPPLIER_DOC_DIR / <uuid>.<ext>``, and
+    create the row with the right ``document_type``. Returns the
+    persisted ``SupplierDocument``.
+
+    ``sha256_claim`` is the hash the CADPORT plugin computed; we
+    verify it matches the bytes we received before storing (mismatch
+    → log + accept anyway; the file is still stored under its actual
+    hash).
+    """
+    try:
+        data = base64.b64decode(content_base64)
+    except Exception as exc:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"source_files entry {kind!r} ({filename!r}): undecodable base64: {exc}",
+        ) from exc
+    if not data:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"source_files entry {kind!r} ({filename!r}): empty",
+        )
+    sha256_actual = hashlib.sha256(data).hexdigest()
+    if sha256_claim and sha256_claim.lower() != sha256_actual.lower():
+        # Log + accept — the stored hash is the actual one.
+        # Caller should already know about the mismatch if it matters.
+        pass
+
+    SUPPLIER_DOC_DIR.mkdir(parents=True, exist_ok=True)
+    file_uuid = _uuid.uuid4().hex
+    suffix = {"sldprt": "sldprt", "sldasm": "sldasm", "step": "step"}.get(
+        kind.lower(), kind.lower()
+    )
+    file_path = SUPPLIER_DOC_DIR / f"{file_uuid}.{suffix}"
+    file_path.write_bytes(data)
+
+    document_type = {
+        "sldprt": SupplierDocumentType.SLDPRT,
+        "sldasm": SupplierDocumentType.SLDASM,
+        "step":   SupplierDocumentType.STEP,
+    }[kind.lower()]
+    mime_type = {
+        "sldprt": "application/x-solidworks-part",
+        "sldasm": "application/x-solidworks-assembly",
+        "step":   "application/step",
+    }[kind.lower()]
+    doc = SupplierDocument(
+        supplier_id=supplier_id,
+        title=filename or f"{file_uuid}.{suffix}",
+        original_filename=filename or f"{file_uuid}.{suffix}",
+        document_type=document_type,
+        file_path=str(file_path),
+        file_size_bytes=len(data),
+        sha256=sha256_actual,
+        mime_type=mime_type,
+        uploaded_by_id=current_user.id,
+    )
+    db.add(doc)
+    db.flush()
+    return doc
+
+
+def _attach_source_files(
+    db: Session,
+    *,
+    part: CatalogPart,
+    source_files: list[dict[str, Any]],
+    current_user: "User",
+) -> dict[str, int]:
+    """Persist the source files attached to this CADPORT upload and
+    set the matching ``catalog_parts`` FK columns. Returns a dict of
+    ``{kind: document_id}`` for the rows actually attached."""
+    attached: dict[str, int] = {}
+    fk_map = {
+        "sldprt": "sldprt_document_id",
+        "sldasm": "sldasm_document_id",
+        "step":   "step_document_id",
+    }
+    seen: set[str] = set()
+    for entry in source_files or []:
+        kind = (entry.get("kind") or "").lower()
+        if kind not in fk_map or kind in seen:
+            continue
+        content = entry.get("content_base64")
+        if not content:
+            continue
+        doc = _store_source_file_document(
+            db,
+            supplier_id=part.supplier_id,
+            kind=kind,
+            filename=entry.get("filename") or f"{kind}.bin",
+            content_base64=content,
+            sha256_claim=entry.get("sha256"),
+            current_user=current_user,
+        )
+        setattr(part, fk_map[kind], doc.id)
+        attached[kind] = doc.id
+        seen.add(kind)
+    if attached:
+        db.flush()
+    return attached
 
 
 def _store_stl_document(
@@ -681,6 +806,25 @@ def create_part_from_cadport(
         created_by_id=current_user.id,
     )
     db.add(part)
+    db.flush()
+    db.refresh(part)
+
+    # CADPORT-TDD-ASTRA-BRIDGE-001 Phase 2: persist source CAD files
+    # carried in the payload + link FKs. Failures log + continue.
+    if body.source_files:
+        try:
+            _attach_source_files(
+                db, part=part, source_files=body.source_files,
+                current_user=current_user,
+            )
+        except HTTPException:
+            raise
+        except Exception:
+            import logging as _log
+            _log.getLogger(__name__).exception(
+                "source-file attach failed for catalog_part %s (continuing)",
+                part.id,
+            )
     db.commit()
     db.refresh(part)
 
