@@ -1407,6 +1407,25 @@ class _SyncFromCadportRequest(BaseModel):
             "set, ASTRA's density lookup stays as-is."
         ),
     )
+    # CADPORT-TDD-LIFECYCLE-001 Phase 2: supplier + name sync-in.
+    supplier_id: Optional[int] = Field(
+        None,
+        description=(
+            "When set, propagated to catalog_parts.supplier_id. "
+            "Mutually exclusive with proposed_supplier_name."
+        ),
+    )
+    proposed_supplier_name: Optional[str] = Field(
+        None,
+        description=(
+            "When set, ASTRA resolves it (create-or-reuse) and writes "
+            "the resolved id onto catalog_parts.supplier_id."
+        ),
+    )
+    display_name: Optional[str] = Field(
+        None,
+        description="When set, propagated to catalog_parts.name.",
+    )
 
 
 @router.post("/parts/{part_id}/sync-from-cadport")
@@ -1474,6 +1493,27 @@ def sync_catalog_part_from_cadport(
             p.density_kg_m3 = float(data.density_kg_m3)
             updated_fields.append("density_kg_m3")
 
+    # CADPORT-TDD-LIFECYCLE-001 Phase 2: supplier + name sync-in.
+    if data.supplier_id is not None or (data.proposed_supplier_name or "").strip():
+        from app.routers.cadport import _resolve_supplier
+        supplier, _created = _resolve_supplier(
+            db,
+            supplier_id=data.supplier_id,
+            supplier_name=(
+                data.proposed_supplier_name.strip()
+                if data.proposed_supplier_name else None
+            ),
+            current_user=current_user,
+        )
+        p.supplier_id = supplier.id
+        updated_fields.append("supplier_id")
+
+    if data.display_name is not None:
+        new_name = data.display_name.strip()
+        if new_name:
+            p.name = new_name
+            updated_fields.append("name")
+
     p.last_sync_origin = "cadport"
     p.last_sync_at = datetime.utcnow()
     db.commit()
@@ -1490,6 +1530,135 @@ def sync_catalog_part_from_cadport(
         "last_sync_origin": p.last_sync_origin,
         "last_sync_at": p.last_sync_at.isoformat() if p.last_sync_at else None,
     }
+
+
+# ══════════════════════════════════════════════════════════════
+#  CADPORT-TDD-LIFECYCLE-001 Phase 2 — supplier + name PATCHes
+#  Public endpoints (the ASTRA UI calls these). Both propagate to
+#  CADPORT on a successful commit when the row carries a back-link.
+# ══════════════════════════════════════════════════════════════
+
+class _SupplierPatch(BaseModel):
+    """Body for PATCH /catalog/parts/{id}/supplier — exactly-one rule."""
+    supplier_id: Optional[int] = Field(
+        None,
+        description="Existing ASTRA suppliers.id. XOR proposed_supplier_name.",
+    )
+    proposed_supplier_name: Optional[str] = Field(
+        None,
+        description=(
+            "Name to create-or-reuse on the suppliers table. XOR "
+            "supplier_id."
+        ),
+    )
+
+
+@router.patch("/parts/{part_id}/supplier", response_model=CatalogPartResponse)
+def patch_catalog_part_supplier(
+    part_id: int,
+    data: _SupplierPatch,
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Edit the supplier on a catalog_part. Mirrors the cadport
+    /supplier-from-file picker pattern: existing supplier_id OR a
+    proposed name (create-or-reuse).
+
+    Propagates to CADPORT after commit when the row carries a
+    cadport_part_id back-link. The CADPORT side's /sync-from-astra
+    endpoint is the loop-breaker — it stamps last_sync_origin='astra'
+    and skips the outgoing call.
+    """
+    _require_req_eng_plus(current_user)
+    p = _get_catalog_part_or_404(db, part_id)
+    if p.deleted_at is not None:
+        raise HTTPException(404, f"CatalogPart {part_id} not found")
+
+    from app.routers.cadport import _resolve_supplier
+    supplier, created = _resolve_supplier(
+        db,
+        supplier_id=data.supplier_id,
+        supplier_name=(
+            data.proposed_supplier_name.strip()
+            if data.proposed_supplier_name else None
+        ),
+        current_user=current_user,
+        request=request,
+    )
+    old_supplier_id = p.supplier_id
+    p.supplier_id = supplier.id
+    p.last_sync_origin = "astra"
+    p.last_sync_at = datetime.utcnow()
+    cadport_uuid = (
+        str(p.cadport_part_id) if p.cadport_part_id is not None else None
+    )
+    db.commit()
+    db.refresh(p)
+
+    _audit(
+        db, "catalog_part.supplier_updated", "catalog_part", p.id, current_user.id,
+        {
+            "old_supplier_id": old_supplier_id,
+            "new_supplier_id": supplier.id,
+            "supplier_name": supplier.name,
+            "supplier_created": created,
+        },
+        request=request,
+    )
+
+    if cadport_uuid is not None:
+        from app.services import cadport_outbound
+        cadport_outbound.sync_supplier_to_cadport(
+            cadport_uuid, supplier_id=supplier.id, supplier_name=supplier.name,
+        )
+
+    return _catalog_part_response(db, p)
+
+
+class _NamePatch(BaseModel):
+    display_name: str = Field(..., min_length=1, max_length=500)
+
+
+@router.patch("/parts/{part_id}/name", response_model=CatalogPartResponse)
+def patch_catalog_part_name(
+    part_id: int,
+    data: _NamePatch,
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Edit the display name on a catalog_part. Same propagation
+    pattern as PATCH /supplier."""
+    _require_req_eng_plus(current_user)
+    p = _get_catalog_part_or_404(db, part_id)
+    if p.deleted_at is not None:
+        raise HTTPException(404, f"CatalogPart {part_id} not found")
+
+    new_name = data.display_name.strip()
+    if not new_name:
+        raise HTTPException(400, "display_name cannot be empty")
+    old_name = p.name
+    p.name = new_name
+    p.last_sync_origin = "astra"
+    p.last_sync_at = datetime.utcnow()
+    cadport_uuid = (
+        str(p.cadport_part_id) if p.cadport_part_id is not None else None
+    )
+    db.commit()
+    db.refresh(p)
+
+    _audit(
+        db, "catalog_part.name_updated", "catalog_part", p.id, current_user.id,
+        {"old_name": old_name, "new_name": new_name},
+        request=request,
+    )
+
+    if cadport_uuid is not None:
+        from app.services import cadport_outbound
+        cadport_outbound.sync_name_to_cadport(cadport_uuid, display_name=new_name)
+
+    return _catalog_part_response(db, p)
 
 
 def _cascade_wpn_delete_to_harold(wpn: Optional[str], part_id: int) -> None:

@@ -126,3 +126,31 @@ def sync_material_to_cadport(
         f"/parts/{cadport_part_id}/sync-from-astra",
         body,
     )
+
+
+def sync_supplier_to_cadport(
+    cadport_part_id: str,
+    *,
+    supplier_id: int,
+    supplier_name: str,
+) -> Optional[dict]:
+    """CADPORT-TDD-LIFECYCLE-001 Phase 2: propagate an ASTRA-side
+    supplier change into CADPORT. CADPORT stores the resolved id
+    (and clears the proposed_supplier_name)."""
+    return _post_json(
+        f"/parts/{cadport_part_id}/sync-from-astra",
+        {"supplier_id": int(supplier_id), "supplier_name": supplier_name},
+    )
+
+
+def sync_name_to_cadport(
+    cadport_part_id: str, *, display_name: str,
+) -> Optional[dict]:
+    """CADPORT-TDD-LIFECYCLE-001 Phase 2: propagate a public name
+    edit from ASTRA into CADPORT. The CADPORT row's display_name
+    is the human-facing name; it also drives the §6 YAML's source_file
+    re-emit."""
+    return _post_json(
+        f"/parts/{cadport_part_id}/sync-from-astra",
+        {"display_name": display_name},
+    )

@@ -149,6 +149,17 @@ export const catalogAPI = {
   updatePartMass: (id: number, mass_kg: number | null) =>
     api.patch<CatalogPartMassUpdateResult>(`${BASE}/parts/${id}/mass`, { mass_kg }),
 
+  // CADPORT-TDD-LIFECYCLE-001 Phase 2: edit supplier + name on
+  // existing parts, with propagation to CADPORT.
+  updatePartSupplier: (
+    id: number,
+    body: { supplier_id?: number | null; proposed_supplier_name?: string | null },
+  ) =>
+    api.patch<CatalogPartDetail>(`${BASE}/parts/${id}/supplier`, body),
+
+  updatePartName: (id: number, display_name: string) =>
+    api.patch<CatalogPartDetail>(`${BASE}/parts/${id}/name`, { display_name }),
+
   /**
    * Delete a catalog part. CLEANUP-002 Phase 4 (AD-7): default path
    * is soft-delete and 409s with a structured usage report when any
