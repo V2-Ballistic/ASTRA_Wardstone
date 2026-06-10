@@ -57,6 +57,8 @@ from app.models.catalog import (
     CatalogPart,
     LRUClass,
     PartClass,
+    PendingCatalogImport,
+    PendingImportStatus,
     Supplier,
     SupplierDocument,
     SupplierDocumentType,
@@ -193,6 +195,21 @@ class CatalogPartImportResult(BaseModel):
     # supplier row (used by the UI to render "New supplier: VectorNav"
     # in the result panel).
     supplier_created: bool = False
+
+
+class CadportPendingImportResult(BaseModel):
+    """CADPORT-TDD-ASTRA-BRIDGE-001 Phase 1: response for the new
+    ``/pending-imports/from-cadport`` endpoint. ``review_url`` is a
+    relative frontend path the CADPORT UI surfaces as a toast link."""
+    id: int
+    status: str = "pending"
+    review_url: str
+    source_document_id: int
+    # Echo the supplier picker so the CADPORT UI can re-render the
+    # ('proposed: X — will be created on approval') hint without a
+    # second round-trip.
+    supplier_id: Optional[int] = None
+    proposed_supplier_name: Optional[str] = None
 
 
 class CadportComponentImport(BaseModel):
@@ -691,6 +708,140 @@ def create_part_from_cadport(
         source_document_id=doc.id,
         deduped=False,
         supplier_created=supplier_created,
+    )
+
+
+# ══════════════════════════════════════════════════════════════
+#  CADPORT-TDD-ASTRA-BRIDGE-001 Phase 1 — Pending Imports
+# ══════════════════════════════════════════════════════════════
+
+
+@router.post(
+    "/catalog/pending-imports/from-cadport",
+    response_model=CadportPendingImportResult,
+    status_code=201,
+)
+def create_pending_import_from_cadport(
+    body: CadportPartImport,
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> CadportPendingImportResult:
+    """CADPORT upload → pending review queue (CADPORT-TDD-ASTRA-BRIDGE-001
+    Phase 1).
+
+    Same body shape as ``create_part_from_cadport``: the supplier
+    picker's ``supplier_id`` XOR ``supplier_name`` rule still holds,
+    enforced exactly the same way. Difference: the row lands in
+    ``pending_catalog_imports`` with ``source_kind='cadport'`` instead
+    of in ``catalog_parts`` directly. The §6 YAML is stored as a
+    ``supplier_documents`` row (under the proposed/picked supplier when
+    one resolves, else under an arbitrary holder; final wiring happens
+    at approve time).
+
+    The operator then reviews via the ASTRA pending-imports UI and
+    clicks Approve to commit. On approve, supplier resolution runs
+    (lookup-or-create) and the catalog_part row is created — see the
+    ``approve_pending_import`` handler.
+    """
+    has_id = body.supplier_id is not None
+    has_name = bool((body.supplier_name or "").strip())
+    if has_id and has_name:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Send either supplier_id or supplier_name, not both.",
+        )
+    if not has_id and not has_name:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "supplier_id or supplier_name is required.",
+        )
+
+    # If supplier_id was picked, verify it exists (404 is friendlier
+    # than waiting until approve).
+    resolved_supplier_id: Optional[int] = None
+    if has_id:
+        s = db.query(Supplier).filter(Supplier.id == body.supplier_id).first()
+        if s is None:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                f"supplier_id={body.supplier_id} not found",
+            )
+        resolved_supplier_id = s.id
+        yaml_owner_supplier_id = s.id
+    else:
+        # Park the YAML under a stable placeholder — we'll re-link it
+        # to the (possibly new) supplier at approve time. The simplest
+        # placeholder: the first in-house supplier, falling back to
+        # whatever supplier exists; the supplier_documents.supplier_id
+        # is required NOT NULL so we need *some* id.
+        holder = (
+            db.query(Supplier)
+            .filter(Supplier.is_in_house.is_(True))
+            .order_by(Supplier.id.asc())
+            .first()
+        )
+        if holder is None:
+            holder = db.query(Supplier).order_by(Supplier.id.asc()).first()
+        if holder is None:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "Cannot create pending import — no suppliers exist to hold "
+                "the YAML document. Create at least one supplier first.",
+            )
+        yaml_owner_supplier_id = holder.id
+
+    # Store the §6 YAML as a supplier_documents row (mirrors the live
+    # from-cadport flow exactly).
+    doc = _store_yaml_document(
+        db,
+        supplier_id=yaml_owner_supplier_id,
+        yaml_filename=body.yaml_filename,
+        yaml_content=body.yaml_content,
+        title=body.yaml_filename,
+        current_user=current_user,
+    )
+
+    # Stuff the full payload into extracted_data so the approve handler
+    # has everything it needs without re-parsing the YAML. The body's
+    # cadport_part_id is a string at the wire; coerce to str for jsonb.
+    extracted_data: Dict[str, Any] = body.model_dump(mode="json")
+    # Annotate so the approve handler can branch cleanly.
+    extracted_data["_source_kind"] = "cadport"
+
+    pending = PendingCatalogImport(
+        source_document_id=doc.id,
+        supplier_id=resolved_supplier_id,
+        proposed_supplier_name=(body.supplier_name or "").strip() or None,
+        source_kind="cadport",
+        extracted_data=extracted_data,
+        extraction_confidence=1.0,  # CADPORT extraction is deterministic.
+        status=PendingImportStatus.PENDING,
+    )
+    db.add(pending)
+    db.commit()
+    db.refresh(pending)
+
+    _audit(
+        db, "cadport.pending_import_created", "pending_catalog_import",
+        pending.id, current_user.id,
+        {
+            "cadport_part_id": body.cadport_part_id,
+            "content_hash": body.content_hash,
+            "supplier_id": resolved_supplier_id,
+            "proposed_supplier_name": pending.proposed_supplier_name,
+            "source_document_id": doc.id,
+        },
+        request=request,
+    )
+
+    return CadportPendingImportResult(
+        id=pending.id,
+        status=pending.status.value if hasattr(pending.status, "value") else str(pending.status),
+        review_url=f"/catalog/pending-imports/{pending.id}",
+        source_document_id=doc.id,
+        supplier_id=resolved_supplier_id,
+        proposed_supplier_name=pending.proposed_supplier_name,
     )
 
 

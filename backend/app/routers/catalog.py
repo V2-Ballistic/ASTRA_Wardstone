@@ -1856,6 +1856,160 @@ def trigger_document_extraction(
     )
 
 
+def _approve_cadport_pending_import(
+    db: Session,
+    pending: PendingCatalogImport,
+    current_user: User,
+) -> CatalogPart:
+    """CADPORT-TDD-ASTRA-BRIDGE-001 Phase 1: commit a CADPORT-shaped
+    pending import to ``catalog_parts``.
+
+    Mirrors what ``app/routers/cadport.py:create_part_from_cadport``
+    used to do at upload time — but the supplier resolution runs HERE
+    (lookup ``supplier_id`` if set, else ``get_or_create_supplier`` on
+    ``proposed_supplier_name``), so the operator can change the supplier
+    pick in the review UI before approval. Returns the new
+    ``CatalogPart``; sets ``pending.committed_catalog_part_id`` +
+    ``status=APPROVED``.
+
+    Idempotent on ``content_hash``: if a catalog_part with the same
+    content_hash already exists (a prior approve, or a stray legacy
+    from-cadport call), reuse the existing row.
+    """
+    from app.services.supplier_service import resolve_supplier_choice
+    from app.models.catalog import (
+        CatalogPart as _CP, LRUClass as _LRU, PartClass as _PC,
+    )
+
+    data = pending.extracted_data or {}
+    if not isinstance(data, dict):
+        raise HTTPException(
+            422,
+            f"PendingCatalogImport {pending.id} has invalid extracted_data "
+            f"(expected object, got {type(data).__name__})",
+        )
+
+    # Resolve the supplier. Pending row carries either supplier_id or
+    # proposed_supplier_name (post-0041 schema). The operator may have
+    # edited these via PATCH /pending-imports/{id} before approve.
+    try:
+        supplier, _supplier_created = resolve_supplier_choice(
+            db,
+            supplier_id=pending.supplier_id,
+            supplier_name=pending.proposed_supplier_name,
+            current_user_id=current_user.id,
+        )
+    except ValueError as exc:
+        if str(exc) == "both":
+            raise HTTPException(
+                400,
+                "Pending import has both supplier_id and proposed_supplier_name set — clear one before approving.",
+            )
+        if str(exc) == "neither":
+            raise HTTPException(
+                400,
+                "Pending import has no supplier — set supplier_id or proposed_supplier_name before approving.",
+            )
+        raise HTTPException(400, str(exc))
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+
+    # Idempotency: an existing catalog_part with the same content_hash
+    # wins (rare — usually a second approve attempt or a race between
+    # legacy from-cadport and the new pending flow).
+    content_hash = data.get("content_hash")
+    if content_hash:
+        existing = (
+            db.query(_CP)
+            .filter(
+                _CP.content_hash == content_hash,
+                _CP.deleted_at.is_(None),
+            )
+            .order_by(_CP.id.asc())
+            .first()
+        )
+        if existing is not None:
+            pending.status = PendingImportStatus.APPROVED
+            pending.committed_catalog_part_id = existing.id
+            pending.reviewed_at = datetime.utcnow()
+            pending.reviewed_by_id = current_user.id
+            db.flush()
+            return existing
+
+    # Build the catalog part. The CADPORT payload uses ``display_name``
+    # as the human-facing name; ``cadport_part_id`` is the UUID spine
+    # (coerce to uuid.UUID at the Postgres boundary). Mirror every
+    # column ``create_part_from_cadport`` would have set.
+    import uuid as _u
+    cadport_uuid = None
+    raw_uuid = data.get("cadport_part_id")
+    if raw_uuid:
+        try:
+            cadport_uuid = _u.UUID(str(raw_uuid))
+        except (ValueError, TypeError):
+            cadport_uuid = None
+
+    inertia_block = data.get("inertia") or {}
+    com_list = (data.get("center_of_mass_m") or [0.0, 0.0, 0.0]) + [0.0, 0.0, 0.0]
+    com = com_list[:3]
+    part_number = (
+        data.get("internal_part_number")
+        or Path(data.get("source_filename") or "part").stem
+    )
+
+    part = _CP(
+        supplier_id=supplier.id,
+        part_number=part_number,
+        revision=None,
+        name=data.get("display_name") or part_number,
+        description=f"CADPORT extraction from {data.get('source_filename', '<unknown>')}",
+        part_class=_PC.MECHANICAL_OTHER,
+        lru_classification=_LRU.COMPONENT,
+        mass_kg=data.get("mass_kg") or 0.0,
+        material_name=data.get("material"),
+        source_document_id=pending.source_document_id,
+        internal_part_number=data.get("internal_part_number"),
+        cadport_part_id=cadport_uuid,
+        content_hash=content_hash,
+        volume_m3=data.get("volume_m3"),
+        surface_area_m2=data.get("surface_area_m2"),
+        density_kg_m3=data.get("density_kg_m3"),
+        center_of_mass_x=com[0],
+        center_of_mass_y=com[1],
+        center_of_mass_z=com[2],
+        ixx=inertia_block.get("ixx"),
+        iyy=inertia_block.get("iyy"),
+        izz=inertia_block.get("izz"),
+        ixy=inertia_block.get("ixy"),
+        ixz=inertia_block.get("ixz"),
+        iyz=inertia_block.get("iyz"),
+        source_format=data.get("source_format") or "step",
+        step_material_key=data.get("step_material_key"),
+        mass_source=data.get("mass_source") or "cad",
+        inertia_revised_via_uniform_scaling=bool(
+            data.get("inertia_revised_via_uniform_scaling", False)
+        ),
+        created_by_id=current_user.id,
+    )
+    db.add(part)
+    db.flush()
+
+    # Re-link the YAML supplier_document to the resolved supplier (the
+    # cadport-from-cadport endpoint parked it under a placeholder when
+    # supplier_id wasn't known yet).
+    if pending.source_document is not None and pending.source_document.supplier_id != supplier.id:
+        pending.source_document.supplier_id = supplier.id
+
+    pending.status = PendingImportStatus.APPROVED
+    pending.committed_catalog_part_id = part.id
+    pending.reviewed_at = datetime.utcnow()
+    pending.reviewed_by_id = current_user.id
+    if pending.source_document is not None:
+        pending.source_document.extraction_status = ExtractionStatus.APPROVED
+    db.flush()
+    return part
+
+
 def _approve_pending_import(
     db: Session,
     pending_id: int,
@@ -1878,6 +2032,13 @@ def _approve_pending_import(
         current = pending.status.value if hasattr(pending.status, "value") else str(pending.status)
         raise HTTPException(409, f"Cannot approve PendingCatalogImport {pending_id} in status '{current}'")
 
+    # CADPORT-TDD-ASTRA-BRIDGE-001 Phase 1: branch by source_kind. The
+    # PDF path keeps validating via IcdExtractionResultSchema below;
+    # the cadport path has its own resolver + payload shape.
+    if (pending.source_kind or "pdf") == "cadport":
+        return _approve_cadport_pending_import(db, pending, current_user)
+
+    # ── Legacy PDF approval path (untouched) ──
     # Re-validate the extracted blob — reviewers may have edited it via PATCH.
     try:
         extracted = IcdExtractionResultSchema.model_validate(pending.extracted_data or {})
