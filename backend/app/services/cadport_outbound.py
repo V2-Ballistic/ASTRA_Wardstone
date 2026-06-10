@@ -154,3 +154,17 @@ def sync_name_to_cadport(
         f"/parts/{cadport_part_id}/sync-from-astra",
         {"display_name": display_name},
     )
+
+
+def sync_delete_to_cadport(cadport_part_id: str) -> Optional[dict]:
+    """CADPORT-TDD-LIFECYCLE-001 Phase 3 §3.2: propagate an ASTRA-side
+    delete into CADPORT. The CADPORT handler removes the
+    cadport_parts row + its on-disk sources + its YAML blob, and
+    does NOT call ASTRA back (loop-breaker).
+
+    Best-effort: failure here logs at WARNING and does not roll back
+    the ASTRA-side soft-delete."""
+    return _post_json(
+        f"/parts/{cadport_part_id}/sync-delete-from-astra",
+        {},
+    )

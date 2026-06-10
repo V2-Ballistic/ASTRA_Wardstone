@@ -222,8 +222,23 @@ def _get_supplier_or_404(db: Session, supplier_id: int) -> Supplier:
     return s
 
 
-def _get_catalog_part_or_404(db: Session, part_id: int) -> CatalogPart:
-    p = db.query(CatalogPart).filter(CatalogPart.id == part_id).first()
+def _get_catalog_part_or_404(
+    db: Session,
+    part_id: int,
+    *,
+    include_deleted: bool = False,
+) -> CatalogPart:
+    """Look up a catalog_part by id. Returns 404 when missing OR when
+    soft-deleted (CADPORT-TDD-LIFECYCLE-001 Phase 3 §3.1 fix). Internal
+    callers that need to inspect or undelete a soft-deleted row pass
+    ``include_deleted=True`` — by default the row is treated as gone
+    from the read path's perspective, which is what the UI expects:
+    once the user trashes the part, GET /parts/{id} should 404, not
+    return the ghost row."""
+    q = db.query(CatalogPart).filter(CatalogPart.id == part_id)
+    if not include_deleted:
+        q = q.filter(CatalogPart.deleted_at.is_(None))
+    p = q.first()
     if p is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -853,7 +868,11 @@ def list_catalog_parts(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    query = db.query(CatalogPart)
+    # CADPORT-TDD-LIFECYCLE-001 Phase 3 §3.1 fix: hide soft-deleted
+    # rows from the public list. The delete handler sets deleted_at
+    # successfully, but until now the list query ignored it — making
+    # the trash icon look like a no-op from the user's perspective.
+    query = db.query(CatalogPart).filter(CatalogPart.deleted_at.is_(None))
     if q:
         like = f"%{q}%"
         query = query.filter(
@@ -1661,6 +1680,47 @@ def patch_catalog_part_name(
     return _catalog_part_response(db, p)
 
 
+# ══════════════════════════════════════════════════════════════
+#  CADPORT-TDD-LIFECYCLE-001 Phase 3 §3.2 — sync-delete-from-cadport
+#  Internal endpoint — CADPORT calls this after a CADPORT-side
+#  delete. Loop-breaker: soft-deletes the ASTRA row but does NOT
+#  call CADPORT back.
+# ══════════════════════════════════════════════════════════════
+
+@router.post("/parts/{part_id}/sync-delete-from-cadport", status_code=200)
+def sync_delete_from_cadport(
+    part_id: int,
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Soft-delete a catalog_part because the matching cadport_parts
+    row was deleted upstream. No outbound call — that is the
+    loop-breaker. Idempotent: re-posting on an already-deleted row
+    returns the same 200 (no second delete fires)."""
+    _require_req_eng_plus(current_user)
+    p = _get_catalog_part_or_404(db, part_id, include_deleted=True)
+    if p.deleted_at is not None:
+        return {
+            "status": "already_deleted", "id": part_id,
+            "soft_delete": True,
+        }
+    p.deleted_at = datetime.utcnow()
+    p.last_sync_origin = "cadport"
+    p.last_sync_at = datetime.utcnow()
+    _audit(
+        db, "catalog.part.deleted", "catalog_part", p.id, current_user.id,
+        {
+            "part_number": p.part_number,
+            "supplier_id": p.supplier_id,
+            "source": "cadport_sync",
+        },
+        request=request,
+    )
+    db.commit()
+    return {"status": "deleted", "id": part_id, "soft_delete": True}
+
+
 def _cascade_wpn_delete_to_harold(wpn: Optional[str], part_id: int) -> None:
     """When a catalog_part with a WPN is deleted, ask HAROLD to
     hard-delete the WPN so the number can be reclaimed for reuse.
@@ -1727,7 +1787,12 @@ def delete_catalog_part(
     cascade override; this one already exists).
     """
     _require_admin(current_user)
-    p = _get_catalog_part_or_404(db, part_id)
+    # Look at the row INCLUDING soft-deleted state so we can return a
+    # specific "already deleted" 404 if the user retries the trash
+    # click. _get_catalog_part_or_404 + include_deleted=True bypasses
+    # the read-path filter; the explicit deleted_at check below
+    # short-circuits the second delete.
+    p = _get_catalog_part_or_404(db, part_id, include_deleted=True)
 
     if admin_force:
         # Legacy hard-delete escape. Pre-CLEANUP-002 behaviour: rows
@@ -1796,6 +1861,9 @@ def delete_catalog_part(
 
     p.deleted_at = datetime.utcnow()
     _wpn = p.internal_part_number
+    cadport_uuid = (
+        str(p.cadport_part_id) if p.cadport_part_id is not None else None
+    )
     _audit(
         db, "catalog.part.deleted", "catalog_part", p.id, current_user.id,
         {
@@ -1807,6 +1875,13 @@ def delete_catalog_part(
     )
     db.commit()
     _cascade_wpn_delete_to_harold(_wpn, part_id)
+    # CADPORT-TDD-LIFECYCLE-001 Phase 3 §3.2: propagate the delete to
+    # CADPORT after the local commit. Best-effort — a failure here
+    # logs but does NOT roll back the ASTRA-side soft-delete (the
+    # operator already saw the row disappear from the catalog).
+    if cadport_uuid is not None:
+        from app.services import cadport_outbound
+        cadport_outbound.sync_delete_to_cadport(cadport_uuid)
     return {"status": "deleted", "id": part_id, "soft_delete": True}
 
 
