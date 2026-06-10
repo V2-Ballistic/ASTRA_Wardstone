@@ -99,6 +99,20 @@ class Settings(BaseSettings):
     HAROLD_BASE_URL: str = "http://host.docker.internal:8030"
     HAROLD_TIMEOUT_SECONDS: float = 3.0
 
+    # CADPORT-TDD-ASTRA-BRIDGE-001 Phase 3: ASTRA -> CADPORT outbound
+    # base URL. Used for two reverse calls:
+    #   * pending-import approve → link the catalog_part back onto the
+    #     cadport_parts row (so propagation can find it later)
+    #   * /catalog/parts/{id}/mass + /material PATCH → propagate the
+    #     edit to the matching cadport_parts row
+    # Optional — when CADPORT_INTEGRATION_ENABLED=false or the URL is
+    # unreachable, the local update still commits and propagation is
+    # logged as a soft failure. The CADPORT plugin lives in the same
+    # WRENCH chassis at :8030; same host.docker.internal hop as HAROLD.
+    CADPORT_INTEGRATION_ENABLED: bool = True
+    CADPORT_BASE_URL: str = "http://host.docker.internal:8030/api/tools/cadport"
+    CADPORT_TIMEOUT_SECONDS: float = 5.0
+
     # ── Derived helpers ──
 
     @property
