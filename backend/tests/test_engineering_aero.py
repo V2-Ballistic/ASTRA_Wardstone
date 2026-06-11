@@ -99,12 +99,24 @@ def _mock_syscode():
     )
 
 
-def _mock_precheck(canonical_name=None, existing_wpn=None):
+def _mock_precheck(iteration_stem=None):
+    """HAROLD's real /filename-precheck shape (see wardstone-harold
+    precheck router): it returns ``iteration_stem`` — never
+    ``canonical_name``/``canonical_stem`` and no WPN key. A None stem
+    exercises the router's filename-stem fallback."""
     return respx.post(f"{_PREFIX}/filename-precheck").mock(
         return_value=httpx.Response(200, json={
-            "verdict": "ok",
-            "canonical_name": canonical_name,
-            "existing_wpn": existing_wpn,
+            "filename": f"{iteration_stem or 'upload'}.csv",
+            "astra_available": True,
+            "is_collision": False,
+            "iteration_stem": iteration_stem,
+            "iteration_count": None,
+            "existing_iterations": [],
+            "next_available_iteration": 1,
+            "suggested_filename": None,
+            "wpn_suggestion": None,
+            "warnings": [],
+            "errors": [],
         }),
     )
 
@@ -239,6 +251,37 @@ def test_ingest_reupload_same_name_creates_revision_not_new_deck(
     assert body["is_new_deck"] is False
     assert body["wpn"] == "WS-AER-P000042-B"
     assert body["deck_wpn"] == "WS-AER-P000042"  # index kept
+
+
+@respx.mock
+def test_ingest_iteration_stem_lineage_match_creates_revision(
+    client, auth_headers,
+):
+    """HAROLD's precheck returns ``iteration_stem`` (its filename
+    parse). When that stem equals an existing deck's canonical name —
+    e.g. uploading ``fin_can_aero_v2.csv`` after ``fin_can_aero.csv``
+    — the ingest must land as the next revision of that deck
+    (issue_revision), NOT a fresh allocation."""
+    resp, issue, _ = _standard_ingest(client, auth_headers, index=42)
+    assert resp.status_code == 201
+    assert resp.json()["name"] == "fin_can_aero"
+    assert issue.call_count == 1
+
+    # New upload, different filename, but HAROLD's iteration_stem
+    # matches the existing deck's canonical name.
+    _mock_precheck(iteration_stem="fin_can_aero")
+    revise = _mock_revise("WS-AER-P000042-A", 42, "B")
+    resp2 = _ingest(
+        client, auth_headers, [_upload("fin_can_aero_v2.csv", CSV_MAIN)],
+    )
+    assert resp2.status_code == 201, resp2.text
+    body = resp2.json()
+    assert revise.called
+    assert issue.call_count == 1          # no second allocation
+    assert body["is_new_deck"] is False
+    assert body["wpn"] == "WS-AER-P000042-B"
+    assert body["deck_wpn"] == "WS-AER-P000042"  # index kept
+    assert body["name"] == "fin_can_aero"
 
 
 @respx.mock

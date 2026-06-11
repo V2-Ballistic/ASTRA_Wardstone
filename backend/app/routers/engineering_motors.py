@@ -129,11 +129,39 @@ def _harold_503(exc: HaroldUnavailableError) -> HTTPException:
     )
 
 
+def _strip_rev_suffix(wpn: str) -> str:
+    """Strip a trailing revision-letter token off a WPN (pure string
+    surgery — ``WS-MTR-P000003-A`` → ``WS-MTR-P000003``). A WPN whose
+    last token is not purely alphabetic (e.g. ``...-P000003``) is
+    already a base WPN and comes back unchanged."""
+    head, sep, tail = wpn.rpartition("-")
+    if sep and tail.isalpha():
+        return head
+    return wpn
+
+
 def _get_motor_or_404(db: Session, wpn: str) -> Motor:
+    """Resolve a motor by exact stored WPN, by base WPN (no revision
+    letter), or by any-revision WPN sharing the same system code +
+    index. ``Motor.wpn`` stores HAROLD's first-issued WPN verbatim
+    (e.g. ``WS-MTR-P000003-A``), so ``WS-MTR-P000003`` and a stale
+    ``WS-MTR-P000003-C`` both resolve to that motor. Storage is never
+    changed here — this is lookup-side normalization only."""
     m = db.query(Motor).filter(Motor.wpn == wpn).first()
-    if m is None:
-        raise HTTPException(404, f"Motor {wpn} not found")
-    return m
+    if m is not None:
+        return m
+    base = _strip_rev_suffix(wpn)
+    if base:
+        candidates = (
+            db.query(Motor)
+            .filter(or_(Motor.wpn == base, Motor.wpn.like(f"{base}-%")))
+            .order_by(Motor.id)
+            .all()
+        )
+        for c in candidates:
+            if c.wpn == base or _strip_rev_suffix(c.wpn) == base:
+                return c
+    raise HTTPException(404, f"Motor {wpn} not found")
 
 
 def _get_revision_or_404(db: Session, motor: Motor, rev: str) -> MotorRevision:

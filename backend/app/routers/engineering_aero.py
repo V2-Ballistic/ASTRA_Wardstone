@@ -518,24 +518,24 @@ async def ingest_aero_source(
     except HaroldUnavailableError as exc:
         raise _503(exc)
 
+    # HAROLD's precheck verdict carries ``iteration_stem`` (its parse
+    # of the filename); ``canonical_name``/``canonicalName`` are kept
+    # first for forward compatibility — same chain as the motors
+    # router's ``_canonical_name_from_precheck``. The form ``name`` is
+    # only a fallback hint when HAROLD's verdict carries no name.
     canonical_name = (
         verdict.get("canonical_name")
-        or verdict.get("canonical_stem")
+        or verdict.get("canonicalName")
+        or verdict.get("iteration_stem")
         or name
         or Path(first_filename).stem
     )
-    matched_wpn = verdict.get("existing_wpn") or verdict.get("matched_wpn")
 
     # ── lineage match → revision of the existing deck ──────────────
+    # (HAROLD's precheck returns no WPN key — lineage matching is by
+    # canonical name only, mirroring the motors router.)
     existing: Optional[AeroDeck] = None
-    if matched_wpn:
-        existing = db.query(AeroDeck).filter(
-            AeroDeck.wpn == matched_wpn).first()
-        if existing is None:
-            rev = db.query(AeroDeckRevision).filter(
-                AeroDeckRevision.wpn == matched_wpn).first()
-            existing = rev.deck_parent if rev is not None else None
-    if existing is None and canonical_name:
+    if canonical_name:
         existing = db.query(AeroDeck).filter(
             AeroDeck.name == canonical_name).first()
 

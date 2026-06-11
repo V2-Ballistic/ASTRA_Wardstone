@@ -366,6 +366,56 @@ def test_read_endpoints_and_artifact_schema(client, auth_headers):
     ).status_code == 404
 
 
+@respx.mock
+def test_motor_resolved_by_base_and_stale_rev_wpn(client, auth_headers):
+    """Motor.wpn stores HAROLD's first-issued WPN verbatim
+    (WS-MTR-P000001-A); path lookups must also resolve the base WPN
+    (WS-MTR-P000001) and any-revision WPNs (e.g. a stale
+    WS-MTR-P000001-C) to the same motor."""
+    _mock_system_code()
+    _mock_issue(1)
+    _mock_precheck("WS01_curve")
+    _mock_record_use("WS-MTR-P000001-A")
+    assert _upload(client, auth_headers).status_code == 201
+
+    # Base WPN (no revision letter).
+    r = client.get(f"{MOTORS}/WS-MTR-P000001", headers=auth_headers)
+    assert r.status_code == 200, r.text
+    assert r.json()["wpn"] == "WS-MTR-P000001-A"  # stored value untouched
+
+    # Stale / any-revision WPN sharing the same system code + index.
+    r = client.get(f"{MOTORS}/WS-MTR-P000001-C", headers=auth_headers)
+    assert r.status_code == 200, r.text
+    assert r.json()["wpn"] == "WS-MTR-P000001-A"
+
+    # Sub-resources resolve the same way.
+    r = client.get(
+        f"{MOTORS}/WS-MTR-P000001/revisions/A", headers=auth_headers,
+    )
+    assert r.status_code == 200
+    assert r.json()["wpn"] == "WS-MTR-P000001-A"
+    r = client.get(f"{MOTORS}/WS-MTR-P000001-C/summary", headers=auth_headers)
+    assert r.status_code == 200
+    assert r.json()["wpn"] == "WS-MTR-P000001-A"
+
+    # PUT paths resolve too (no HAROLD call on selection).
+    r = client.put(
+        f"{MOTORS}/WS-MTR-P000001/active-revision",
+        json={"rev_letter": "A"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["wpn"] == "WS-MTR-P000001-A"
+
+    # True misses still 404 (different index, base or revved).
+    assert client.get(
+        f"{MOTORS}/WS-MTR-P000099", headers=auth_headers,
+    ).status_code == 404
+    assert client.get(
+        f"{MOTORS}/WS-MTR-P000099-C", headers=auth_headers,
+    ).status_code == 404
+
+
 # ═════════════════════════════════════════════════════════════════
 #  Immutability — no mutation routes on revisions
 # ═════════════════════════════════════════════════════════════════
