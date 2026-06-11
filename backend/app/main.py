@@ -97,6 +97,12 @@ for _mod, _attr in [
     ("app.routers.cadport", "router"),
     # Master Schedule integration (WRENCH master-schedule plugin)
     ("app.routers.master_schedule", "router"),
+    # Engineering hub: motors / aero / configs / frame ICD
+    # (ASTRA_CONFIG_ECOSYSTEM_BUILD_SPEC §3–§9)
+    ("app.routers.engineering_frame", "router"),
+    ("app.routers.engineering_motors", "router"),
+    ("app.routers.engineering_aero", "router"),
+    ("app.routers.engineering_configs", "router"),
 ]:
     try:
         _m = __import__(_mod, fromlist=[_attr])
@@ -142,6 +148,11 @@ for _model_path in [
     "app.models.catalog",
     "app.models.req_sync",
     "app.models.coverage_exception",
+    # Engineering hub (ASTRA_CONFIG_ECOSYSTEM_BUILD_SPEC §3–§9)
+    "app.models.engineering_frame",
+    "app.models.engineering_motor",
+    "app.models.engineering_aero",
+    "app.models.engineering_config",
 ]:
     try:
         __import__(_model_path)
