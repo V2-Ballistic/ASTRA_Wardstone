@@ -10,6 +10,8 @@ entry's mass.
 """
 from __future__ import annotations
 
+import hashlib
+
 import httpx
 import pytest
 import respx
@@ -364,6 +366,64 @@ def test_read_endpoints_and_artifact_schema(client, auth_headers):
     assert client.get(
         f"{MOTORS}/WS-MTR-P000001-A/revisions/Z", headers=auth_headers,
     ).status_code == 404
+
+
+@respx.mock
+def test_source_csv_stored_and_retrievable(client, auth_headers):
+    """§5.2: the source CSV is stored with its hash AND retrievable —
+    GET .../revisions/{rev}/source returns the uploaded bytes verbatim
+    with text/csv + the original filename + the stored sha256."""
+    _mock_system_code()
+    _mock_issue(1)
+    _mock_precheck("WS01_curve")
+    _mock_record_use("WS-MTR-P000001-A")
+    raw = _csv_bytes()
+    r = client.post(
+        f"{MOTORS}:ingestCsv",
+        files={"file": ("WS01_curve.csv", raw, "text/csv")},
+        headers=auth_headers,
+    )
+    assert r.status_code == 201, r.text
+
+    r = client.get(
+        f"{MOTORS}/WS-MTR-P000001-A/revisions/A/source", headers=auth_headers,
+    )
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"].startswith("text/csv")
+    assert 'filename="WS01_curve.csv"' in r.headers["content-disposition"]
+    assert r.content == raw  # byte-for-byte the uploaded source
+    assert r.headers["x-source-sha256"] == hashlib.sha256(raw).hexdigest()
+
+    # Base-WPN lookups resolve the same way as other sub-resources.
+    r = client.get(
+        f"{MOTORS}/WS-MTR-P000001/revisions/A/source", headers=auth_headers,
+    )
+    assert r.status_code == 200
+
+    # Unknown revision → 404.
+    assert client.get(
+        f"{MOTORS}/WS-MTR-P000001-A/revisions/Z/source", headers=auth_headers,
+    ).status_code == 404
+
+
+@respx.mock
+def test_source_csv_404_for_design_origin(client, auth_headers):
+    """Design-origin revisions have no source CSV — /source is 404."""
+    _mock_system_code()
+    _mock_issue(3)
+    _mock_record_use("WS-MTR-P000003-A")
+    r = client.post(
+        f"{MOTORS}:design",
+        json={"name": "Mk1 8-grain", "inputs": _DESIGN_INPUTS},
+        headers=auth_headers,
+    )
+    assert r.status_code == 201, r.text
+
+    r = client.get(
+        f"{MOTORS}/WS-MTR-P000003-A/revisions/A/source", headers=auth_headers,
+    )
+    assert r.status_code == 404
+    assert "no stored source CSV" in r.json()["detail"]
 
 
 @respx.mock

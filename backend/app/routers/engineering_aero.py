@@ -32,8 +32,10 @@ they are engineering data products, not procurable parts.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import logging
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -49,7 +51,7 @@ from fastapi import (
     UploadFile,
     status,
 )
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -441,16 +443,93 @@ async def get_aero_deck_artifact(
     )
 
 
+@router.get("/aero/{wpn}/revisions/{rev}/source")
+async def get_aero_deck_revision_source(
+    wpn: str,
+    rev: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Download the raw uploaded source file(s) a revision was built
+    from, verbatim as stored at ingest. One source file → the file
+    itself (text/csv, original filename); several → a zip
+    (``{wpn}.sources.zip``) with one entry per file."""
+    deck = _get_deck_or_404(db, wpn)
+    revision = _get_revision_or_404(db, deck, rev)
+    if not revision.source_text:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Revision {revision.wpn} has no stored source files",
+        )
+    try:
+        texts = json.loads(revision.source_text)
+        if not isinstance(texts, list):
+            raise ValueError("source_text is not a JSON list")
+    except ValueError:
+        # Defensive: a legacy/odd row storing the bare text directly.
+        texts = [revision.source_text]
+    filenames = list(revision.source_filenames or [])
+
+    def _name(i: int) -> str:
+        if i < len(filenames) and filenames[i]:
+            return filenames[i]
+        return f"{revision.wpn}-source{i + 1}.csv"
+
+    if len(texts) == 1:
+        return Response(
+            content=texts[0],
+            media_type="text/csv",
+            headers={
+                "Content-Disposition":
+                    f'attachment; filename="{_name(0)}"',
+            },
+        )
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        seen: Dict[str, int] = {}
+        for i, text in enumerate(texts):
+            name = _name(i)
+            # zip entries must be unique; disambiguate duplicates.
+            if name in seen:
+                seen[name] += 1
+                stem = Path(name).stem
+                suffix = Path(name).suffix
+                name = f"{stem}({seen[name]}){suffix}"
+            else:
+                seen[name] = 0
+            zf.writestr(name, text)
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition":
+                f'attachment; filename="{revision.wpn}.sources.zip"',
+        },
+    )
+
+
 @router.get("/aero/{wpn}/preview", response_model=AeroPreviewResponse)
 async def preview_aero_deck(
     wpn: str,
     mach: float = Query(...),
     alpha: float = Query(..., description="alpha in degrees"),
+    beta: Optional[float] = Query(
+        None, description="beta in degrees; omitted → the beta "
+        "breakpoint nearest 0 (slice lookup)",
+    ),
+    delta: Optional[float] = Query(
+        None, description="control deflection in degrees; omitted → "
+        "the delta breakpoint nearest 0 (slice lookup)",
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Interpolated coefficient values at (mach, alpha) on the
-    beta≈0 / delta≈0 slice of the current revision — UI preview."""
+    """Interpolated coefficient values at (mach, alpha, beta, delta)
+    on the current revision — UI preview. Multilinear via
+    ``aero_deck.interpolate``; omitted beta/delta default to the
+    breakpoint nearest 0 (the historical slice behavior). Outside the
+    validity envelope → 422."""
     deck = _get_deck_or_404(db, wpn)
     revision = _current_revision(deck)
     if revision is None:
@@ -458,18 +537,25 @@ async def preview_aero_deck(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Aero deck {deck.wpn} has no revisions",
         )
+    bp = revision.deck["breakpoints"]
+    beta_eff = beta if beta is not None else min(bp["beta_deg"], key=abs)
+    delta_eff = (
+        delta if delta is not None else min(bp["delta_deg"], key=abs)
+    )
     try:
-        values = deck_svc.interpolate_point(revision.deck, mach, alpha)
+        values = deck_svc.interpolate(
+            revision.deck, mach, alpha,
+            beta_deg=beta_eff, delta_deg=delta_eff,
+        )
     except AeroDeckError as exc:
         raise _422(exc)
-    bp = revision.deck["breakpoints"]
     return AeroPreviewResponse(
         wpn=deck.wpn,
         rev_letter=revision.rev_letter,
         mach=mach,
         alpha_deg=alpha,
-        beta_deg=min(bp["beta_deg"], key=abs),
-        delta_deg=min(bp["delta_deg"], key=abs),
+        beta_deg=beta_eff,
+        delta_deg=delta_eff,
         values=values,
     )
 

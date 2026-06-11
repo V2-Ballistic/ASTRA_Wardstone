@@ -65,6 +65,26 @@ export interface AeroIngestOptions {
   notes?: string;
 }
 
+/** Object-URL save of an authed blob response (same pattern as
+ *  cadportAPI.downloadDocument / downloadConfigBundle). */
+function saveBlob(data: BlobPart, filename: string): void {
+  const url = window.URL.createObjectURL(new Blob([data]));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
+}
+
+/** Pull the server-suggested filename out of Content-Disposition. */
+function dispositionFilename(headers: Record<string, unknown>): string | null {
+  const cd = String(headers?.['content-disposition'] ?? '');
+  const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd);
+  return m ? decodeURIComponent(m[1]) : null;
+}
+
 function aeroForm(files: File[], opts?: AeroIngestOptions): FormData {
   const fd = new FormData();
   files.forEach((f) => fd.append('files', f));
@@ -108,6 +128,19 @@ export const engineeringAPI = {
     api.get<MotorArtifact>(
       `${BASE}/motors/${enc(wpn)}/revisions/${enc(rev)}/artifact`,
     ),
+
+  /** Stored source CSV of a csv-origin revision — authed blob fetch +
+   *  object-URL save. 404s on design-origin revisions. */
+  downloadMotorRevisionSource: async (wpn: string, rev: string) => {
+    const res = await api.get(
+      `${BASE}/motors/${enc(wpn)}/revisions/${enc(rev)}/source`,
+      { responseType: 'blob' },
+    );
+    const filename = dispositionFilename(
+      res.headers as Record<string, unknown>,
+    ) ?? `${wpn}-${rev}-source.csv`;
+    saveBlob(res.data as BlobPart, filename);
+  },
 
   // ══════════════════════════════════════
   //  §5.2 Motors — CSV ingest (HAROLD names it)
@@ -184,6 +217,21 @@ export const engineeringAPI = {
     api.get<AeroDeckArtifact>(
       `${BASE}/aero/${enc(wpn)}/revisions/${enc(rev)}/artifact`,
     ),
+
+  /** Stored source file(s) of a deck revision — a single CSV, or a
+   *  zip when the revision merged several sources. */
+  downloadAeroRevisionSource: async (wpn: string, rev: string) => {
+    const res = await api.get(
+      `${BASE}/aero/${enc(wpn)}/revisions/${enc(rev)}/source`,
+      { responseType: 'blob' },
+    );
+    const headers = res.headers as Record<string, unknown>;
+    const ct = String(headers?.['content-type'] ?? '');
+    const ext = ct.includes('zip') ? 'zip' : 'csv';
+    const filename = dispositionFilename(headers)
+      ?? `${wpn}-${rev}-source.${ext}`;
+    saveBlob(res.data as BlobPart, filename);
+  },
 
   /** Interpolated coefficients at (mach, alpha) on the current rev. */
   previewAeroDeck: (wpn: string, mach: number, alpha: number) =>

@@ -11,15 +11,22 @@
  *   - Coefficient previews via CurvePlot: CN vs α and Cm vs α at a
  *     selectable Mach breakpoint, CA vs Mach at α≈0 — sliced from the
  *     deck artifact on the β≈0 / δ≈0 plane
- *   - Revision history + add-revision upload (from-source) +
+ *   - Validity-envelope heatmap (Mach × α coverage from the REAL deck
+ *     breakpoints) — EnvelopeHeatmap
+ *   - Revision history + two-revision diff (envelope / Sref / Lref /
+ *     breakpoint-count deltas, table-presence changes) + per-revision
+ *     source download + add-revision upload (from-source) +
  *     active-revision switcher (role-gated)
+ *   - "Use in config" → configuration builder with this deck prebound
+ *     (?aero=<wpn>&rev=<rev>)
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import {
-  AlertTriangle, ChevronLeft, Loader2, Wind,
+  AlertTriangle, ArrowLeftRight, Boxes, ChevronLeft, Download, Loader2,
+  Wind,
 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -27,13 +34,17 @@ import { engineeringAPI } from '@/lib/engineering-api';
 import {
   type AeroDeckArtifact,
   type AeroDeckDetail,
+  type AeroDeckRevisionDetail,
   type AeroIngestResponse,
   fmtDateTime,
+  fmtNum,
   fmtRange,
+  fmtVec3,
 } from '@/lib/engineering-types';
 import { formatApiError } from '@/lib/errors';
 import { useHasRole } from '@/lib/auth';
 import CurvePlot, { type CurveSeries } from '@/components/engineering/CurvePlot';
+import EnvelopeHeatmap from '@/components/engineering/EnvelopeHeatmap';
 import UploadDropzone from '@/components/engineering/UploadDropzone';
 
 function EnvelopeCard({ label, value }: { label: string; value: string }) {
@@ -51,6 +62,51 @@ function closestIndex(values: number[], target: number): number {
     if (Math.abs(values[i] - target) < Math.abs(values[best] - target)) best = i;
   }
   return best;
+}
+
+// ── two-revision diff rows ───────────────────────────────────
+
+interface AeroDiffRow {
+  label: string;
+  a?: number | null;
+  b?: number | null;
+  digits?: number;
+}
+
+/** Scalar rows of the revision diff: envelope, Sref/Lref, breakpoint
+ *  counts. Table-presence changes render separately. */
+function buildAeroDiffRows(
+  a: AeroDeckRevisionDetail,
+  b: AeroDeckRevisionDetail,
+): AeroDiffRow[] {
+  const bpa = a.deck?.breakpoints;
+  const bpb = b.deck?.breakpoints;
+  return [
+    { label: 'Mach min', a: a.mach_min, b: b.mach_min, digits: 2 },
+    { label: 'Mach max', a: a.mach_max, b: b.mach_max, digits: 2 },
+    { label: 'α min (deg)', a: a.alpha_min_deg, b: b.alpha_min_deg, digits: 1 },
+    { label: 'α max (deg)', a: a.alpha_max_deg, b: b.alpha_max_deg, digits: 1 },
+    { label: 'Sref (m²)', a: a.sref_m2 ?? a.deck?.Sref_m2, b: b.sref_m2 ?? b.deck?.Sref_m2, digits: 4 },
+    { label: 'Lref (m)', a: a.lref_m ?? a.deck?.Lref_m, b: b.lref_m ?? b.deck?.Lref_m, digits: 4 },
+    { label: 'Mach breakpoints', a: bpa?.mach?.length, b: bpb?.mach?.length, digits: 0 },
+    { label: 'α breakpoints', a: bpa?.alpha_deg?.length, b: bpb?.alpha_deg?.length, digits: 0 },
+    { label: 'β breakpoints', a: bpa?.beta_deg?.length, b: bpb?.beta_deg?.length, digits: 0 },
+    { label: 'δ breakpoints', a: bpa?.delta_deg?.length, b: bpb?.delta_deg?.length, digits: 0 },
+  ];
+}
+
+/** Coefficient tables present in only one of the two revisions. */
+function diffTablePresence(
+  a: AeroDeckRevisionDetail,
+  b: AeroDeckRevisionDetail,
+): { added: string[]; removed: string[]; kept: string[] } {
+  const ka = new Set(Object.keys(a.deck?.tables ?? {}));
+  const kb = new Set(Object.keys(b.deck?.tables ?? {}));
+  return {
+    added: [...kb].filter((k) => !ka.has(k)).sort(),
+    removed: [...ka].filter((k) => !kb.has(k)).sort(),
+    kept: [...ka].filter((k) => kb.has(k)).sort(),
+  };
 }
 
 export default function AeroDeckDetailPage() {
@@ -72,6 +128,14 @@ export default function AeroDeckDetailPage() {
   const [actionError, setActionError] = useState('');
   const [uploading, setUploading] = useState(false);
   const [ingested, setIngested] = useState<AeroIngestResponse | null>(null);
+  const [downloadingSource, setDownloadingSource] = useState<string | null>(null);
+
+  // ── revision diff ──
+  const [diffA, setDiffA] = useState('');
+  const [diffB, setDiffB] = useState('');
+  const [diff, setDiff] = useState<{ a: AeroDeckRevisionDetail; b: AeroDeckRevisionDetail } | null>(null);
+  const [diffLoading, setDiffLoading] = useState(false);
+  const [diffError, setDiffError] = useState('');
 
   const refresh = useCallback(() => {
     if (!wpn) return;
@@ -145,6 +209,50 @@ export default function AeroDeckDetailPage() {
     };
   }, [artifact, machIdx]);
 
+  // Default the diff selectors to the two most recent revisions.
+  useEffect(() => {
+    if (!deck || deck.revisions.length < 2 || diffA || diffB) return;
+    const revs = deck.revisions;
+    setDiffA(revs[revs.length - 2].rev_letter);
+    setDiffB(revs[revs.length - 1].rev_letter);
+  }, [deck, diffA, diffB]);
+
+  // Fetch both revision details (incl. deck artifacts) for the diff.
+  useEffect(() => {
+    if (!wpn || !diffA || !diffB || diffA === diffB) {
+      setDiff(null);
+      return;
+    }
+    let cancelled = false;
+    setDiffLoading(true);
+    setDiffError('');
+    Promise.all([
+      engineeringAPI.getAeroDeckRevision(wpn, diffA),
+      engineeringAPI.getAeroDeckRevision(wpn, diffB),
+    ])
+      .then(([aRes, bRes]) => {
+        if (!cancelled) setDiff({ a: aRes.data, b: bRes.data });
+      })
+      .catch((e) => {
+        if (!cancelled) setDiffError(formatApiError(e, 'Failed to load revisions for diff'));
+      })
+      .finally(() => { if (!cancelled) setDiffLoading(false); });
+    return () => { cancelled = true; };
+  }, [wpn, diffA, diffB]);
+
+  // ── stored source download (CSV or zip) ──
+  const handleDownloadSource = useCallback(async (rev: string) => {
+    setActionError('');
+    setDownloadingSource(rev);
+    try {
+      await engineeringAPI.downloadAeroRevisionSource(wpn, rev);
+    } catch (e) {
+      setActionError(formatApiError(e, `Failed to download the source files of revision ${rev}`));
+    } finally {
+      setDownloadingSource(null);
+    }
+  }, [wpn]);
+
   const handleSetActive = useCallback(async (rev: string) => {
     setActionError('');
     setSettingActive(rev);
@@ -208,19 +316,31 @@ export default function AeroDeckDetailPage() {
       </Link>
 
       {/* ── Header ── */}
-      <div className="mb-6">
-        <h1 className="flex flex-wrap items-center gap-2.5 text-2xl font-bold tracking-tight text-slate-100">
-          <Wind className="h-6 w-6 text-cyan-400" aria-hidden="true" />
-          <span className="font-mono tracking-wider">{deck.wpn}</span>
-        </h1>
-        <p className="mt-1 text-sm text-slate-400">
-          {deck.name}
-          <span className="ml-2 text-xs text-slate-500">
-            current rev <span className="font-mono text-slate-300">{deck.current_rev || '—'}</span>
-            {deck.oml_wpn && <> · OML <span className="font-mono text-slate-300">{deck.oml_wpn}</span></>}
-            {' '}· {deck.revision_count} revision{deck.revision_count === 1 ? '' : 's'}
-          </span>
-        </p>
+      <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1 className="flex flex-wrap items-center gap-2.5 text-2xl font-bold tracking-tight text-slate-100">
+            <Wind className="h-6 w-6 text-cyan-400" aria-hidden="true" />
+            <span className="font-mono tracking-wider">{deck.wpn}</span>
+          </h1>
+          <p className="mt-1 text-sm text-slate-400">
+            {deck.name}
+            <span className="ml-2 text-xs text-slate-500">
+              current rev <span className="font-mono text-slate-300">{deck.current_rev || '—'}</span>
+              {deck.oml_wpn && <> · OML <span className="font-mono text-slate-300">{deck.oml_wpn}</span></>}
+              {' '}· {deck.revision_count} revision{deck.revision_count === 1 ? '' : 's'}
+            </span>
+          </p>
+        </div>
+        <Link
+          href={`/engineering/configurations/new?aero=${encodeURIComponent(deck.wpn)}${
+            (viewRev || deck.current_rev)
+              ? `&rev=${encodeURIComponent(viewRev || deck.current_rev || '')}`
+              : ''
+          }`}
+          className="flex items-center gap-1.5 rounded-lg border border-astra-border px-3 py-2 text-xs font-semibold text-slate-300 hover:border-blue-500/30 hover:text-slate-100"
+        >
+          <Boxes className="h-3.5 w-3.5" aria-hidden="true" /> Use in config
+        </Link>
       </div>
 
       {(error || actionError) && (
@@ -242,9 +362,13 @@ export default function AeroDeckDetailPage() {
       )}
 
       {/* ── Envelope cards ── */}
-      <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+      <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <EnvelopeCard label="Sref" value={artifact ? `${artifact.Sref_m2} m²` : '—'} />
         <EnvelopeCard label="Lref" value={artifact ? `${artifact.Lref_m} m` : '—'} />
+        <EnvelopeCard
+          label="Ref point (m, B)"
+          value={artifact ? fmtVec3(artifact.refPoint_m_B, 3) : '—'}
+        />
         <EnvelopeCard
           label="Mach range"
           value={env ? fmtRange(env.machRange[0], env.machRange[1]) : fmtRange(deck.mach_min, deck.mach_max)}
@@ -343,6 +467,13 @@ export default function AeroDeckDetailPage() {
         ) : null}
       </div>
 
+      {/* ── Validity-envelope heatmap ── */}
+      {artifact && (
+        <div className="mb-6">
+          <EnvelopeHeatmap artifact={artifact} />
+        </div>
+      )}
+
       {/* ── Revision history ── */}
       <div className="mb-6">
         <h2 className="mb-2 text-sm font-semibold text-slate-200">Revision history</h2>
@@ -410,6 +541,17 @@ export default function AeroDeckDetailPage() {
                           >
                             {isViewed ? 'Previewed' : 'Preview'}
                           </button>
+                          <button
+                            type="button"
+                            disabled={downloadingSource !== null}
+                            onClick={() => handleDownloadSource(r.rev_letter)}
+                            title="Download the stored source files of this revision (CSV or zip)"
+                            className="flex items-center gap-1 rounded-lg border border-astra-border px-2 py-1 text-[10px] font-semibold text-slate-400 hover:border-blue-500/40 hover:text-blue-300 disabled:opacity-50"
+                          >
+                            {downloadingSource === r.rev_letter
+                              ? <Loader2 className="h-3 w-3 animate-spin" aria-label="Downloading source" />
+                              : <><Download className="h-3 w-3" aria-hidden="true" /> Source</>}
+                          </button>
                           {canWrite && !isActive && (
                             <button
                               type="button"
@@ -447,6 +589,124 @@ export default function AeroDeckDetailPage() {
           </div>
         )}
       </div>
+
+      {/* ── Revision diff ── */}
+      {deck.revisions.length >= 2 && (
+        <div className="mb-6">
+          <h2 className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-slate-200">
+            <ArrowLeftRight className="h-4 w-4 text-slate-400" aria-hidden="true" />
+            Compare revisions
+          </h2>
+          <div className="rounded-xl border border-astra-border bg-astra-surface p-4">
+            <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-slate-400">
+              <label htmlFor="aero-diff-a" className="font-semibold">A:</label>
+              <select
+                id="aero-diff-a" value={diffA} onChange={(e) => setDiffA(e.target.value)}
+                className="rounded-lg border border-astra-border bg-astra-bg px-2.5 py-1.5 font-mono text-xs text-slate-200 outline-none focus:border-blue-500/50"
+              >
+                {deck.revisions.map((r) => (
+                  <option key={r.id} value={r.rev_letter}>{r.rev_letter}</option>
+                ))}
+              </select>
+              <label htmlFor="aero-diff-b" className="font-semibold">B:</label>
+              <select
+                id="aero-diff-b" value={diffB} onChange={(e) => setDiffB(e.target.value)}
+                className="rounded-lg border border-astra-border bg-astra-bg px-2.5 py-1.5 font-mono text-xs text-slate-200 outline-none focus:border-blue-500/50"
+              >
+                {deck.revisions.map((r) => (
+                  <option key={r.id} value={r.rev_letter}>{r.rev_letter}</option>
+                ))}
+              </select>
+              {diffLoading && <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-500" aria-label="Loading diff" />}
+            </div>
+
+            {diffError && (
+              <div role="alert" className="mb-3 rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-400 flex items-center gap-2">
+                <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" aria-hidden="true" /> {diffError}
+              </div>
+            )}
+
+            {diffA === diffB ? (
+              <div className="text-xs text-slate-500">Pick two different revisions to compare.</div>
+            ) : diff ? (
+              <>
+                <table className="w-full text-xs" aria-label={`Diff of revisions ${diffA} and ${diffB}`}>
+                  <thead className="text-slate-400">
+                    <tr className="border-b border-astra-border">
+                      <th scope="col" className="px-2 py-1.5 text-left font-semibold">Property</th>
+                      <th scope="col" className="px-2 py-1.5 text-right font-semibold font-mono">{diffA}</th>
+                      <th scope="col" className="px-2 py-1.5 text-right font-semibold font-mono">{diffB}</th>
+                      <th scope="col" className="px-2 py-1.5 text-right font-semibold">Δ (B − A)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {buildAeroDiffRows(diff.a, diff.b).map(({ label, a, b, digits = 2 }) => {
+                      const delta = a != null && b != null ? b - a : null;
+                      const show = (v?: number | null) =>
+                        (v == null ? '—' : digits === 0 ? String(v) : fmtNum(v, digits));
+                      return (
+                        <tr key={label} className="border-b border-astra-border/50">
+                          <td className="px-2 py-1.5 text-slate-400">{label}</td>
+                          <td className="px-2 py-1.5 text-right font-mono tabular-nums text-slate-300">{show(a)}</td>
+                          <td className="px-2 py-1.5 text-right font-mono tabular-nums text-slate-300">{show(b)}</td>
+                          <td className={clsx(
+                            'px-2 py-1.5 text-right font-mono tabular-nums',
+                            delta == null || delta === 0 ? 'text-slate-500'
+                              : delta > 0 ? 'text-emerald-400' : 'text-red-400',
+                          )}>
+                            {delta == null ? '—'
+                              : delta === 0 ? '—'
+                              : `${delta > 0 ? '+' : ''}${digits === 0 ? delta : fmtNum(delta, digits)}`}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+
+                {(() => {
+                  const presence = diffTablePresence(diff.a, diff.b);
+                  return (
+                    <div className="mt-4">
+                      <h3 className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                        Coefficient table presence
+                      </h3>
+                      {presence.added.length === 0 && presence.removed.length === 0 ? (
+                        <div className="text-xs text-slate-500">
+                          Same table set in both revisions
+                          {presence.kept.length > 0 && (
+                            <span className="ml-1 font-mono text-slate-400">
+                              ({presence.kept.join(', ')})
+                            </span>
+                          )}.
+                        </div>
+                      ) : (
+                        <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                          {presence.added.map((t) => (
+                            <span key={`add-${t}`} className="rounded-full bg-emerald-500/15 px-2 py-0.5 font-mono text-[10px] font-semibold text-emerald-400">
+                              + {t}
+                            </span>
+                          ))}
+                          {presence.removed.map((t) => (
+                            <span key={`rm-${t}`} className="rounded-full bg-red-500/15 px-2 py-0.5 font-mono text-[10px] font-semibold text-red-400">
+                              − {t}
+                            </span>
+                          ))}
+                          {presence.kept.length > 0 && (
+                            <span className="text-[10px] text-slate-500">
+                              unchanged: <span className="font-mono">{presence.kept.join(', ')}</span>
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+              </>
+            ) : null}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

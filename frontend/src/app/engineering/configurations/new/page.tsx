@@ -11,6 +11,11 @@
  *   - New revision       → ?from={wpn}&rev={rev} prefills the builder
  *     from that revision and submits to POST /configs/{wpn}/revisions
  *
+ * Preselection deep-links ("Use in config" on detail pages):
+ *   - ?motor={wpn}&rev={rev} → pre-adds a stage-1 row with that motor
+ *     (rev defaults to the latest when omitted)
+ *   - ?aero={wpn}&rev={rev}  → prebinds that aero deck revision
+ *
  * Sections: name/description · components assembler (catalog picker —
  * only parts WITH a WPN are addable; role taxonomy dropdown; optional
  * 4×4 placement) · aero binding (deck + revision) · stage map (motor +
@@ -163,6 +168,10 @@ export default function ConfigurationBuilderPage() {
   const fromWpn = searchParams?.get('from') || null;
   const fromRev = searchParams?.get('rev') || null;
   const revisionMode = Boolean(fromWpn && fromRev);
+  // "Use in config" deep-links from the Motors / Aero detail pages.
+  const preMotor = !revisionMode ? searchParams?.get('motor') || null : null;
+  const preAero = !revisionMode ? searchParams?.get('aero') || null : null;
+  const preRev = !revisionMode ? searchParams?.get('rev') || null : null;
   const canWrite = useHasRole('admin', 'project_manager', 'requirements_engineer');
 
   // ── identity / metadata ──
@@ -255,6 +264,37 @@ export default function ConfigurationBuilderPage() {
       })
       .catch(() => { delete motorRevsRef.current[wpn]; });
   }, []);
+
+  // ── preselection deep-links (?motor= / ?aero= from "Use in config") ──
+  const preselectedRef = useRef(false);
+  const [preselectNote, setPreselectNote] = useState('');
+  useEffect(() => {
+    if (revisionMode || preselectedRef.current || (!preMotor && !preAero)) return;
+    preselectedRef.current = true;
+    const notes: string[] = [];
+    if (preAero) {
+      setAeroWpn(preAero);
+      // Only an aero deep-link owns the rev param; a combined motor
+      // link gives the rev to the stage and lets the deck default.
+      if (preRev && !preMotor) setAeroRev(preRev);
+      notes.push(`aero deck ${preAero}${preRev && !preMotor ? ` rev ${preRev}` : ''} prebound`);
+    }
+    if (preMotor) {
+      setStages((prev) => (
+        prev.some((s) => s.motorWpn === preMotor) ? prev : [...prev, {
+          key: nextKey(),
+          stageNum: String(prev.length + 1),
+          motorWpn: preMotor,
+          motorRevLetter: preRev || '',
+          ignitionTime_s: '0',
+          thrustAxis: ['1', '0', '0'],
+        }]
+      ));
+      ensureMotorRevs(preMotor);
+      notes.push(`motor ${preMotor}${preRev ? ` rev ${preRev}` : ''} pre-added as stage 1`);
+    }
+    setPreselectNote(`Preselected from the Engineering tab: ${notes.join('; ')}.`);
+  }, [ensureMotorRevs, preAero, preMotor, preRev, revisionMode]);
 
   // ── prefill from an existing revision (new-revision mode) ──
   useEffect(() => {
@@ -540,6 +580,12 @@ export default function ConfigurationBuilderPage() {
           {prefillError && (
             <div role="alert" className="mb-4 flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-400">
               <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" aria-hidden="true" /> {prefillError}
+            </div>
+          )}
+
+          {preselectNote && (
+            <div role="status" className="mb-4 rounded-lg border border-blue-500/20 bg-blue-500/10 px-3 py-2 text-xs text-blue-300">
+              {preselectNote}
             </div>
           )}
 

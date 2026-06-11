@@ -13,16 +13,22 @@ import json
 import pytest
 
 from app.services.engineering.aero_deck import (
+    SOURCE_PARSERS,
     AeroDeckError,
     AeroEnvelopeError,
     AeroFormatError,
     AeroGridError,
     AeroMergeConflictError,
+    ParsedSource,
     canonical_json,
     deck_sha256,
+    detect_source_format,
+    interpolate,
     interpolate_point,
     merge_decks,
+    parse_csv_source,
     parse_source,
+    register_source_parser,
 )
 
 MACHS = (0.3, 0.8, 1.2)
@@ -131,6 +137,64 @@ def test_unrecognized_column_warns_and_is_ignored():
 
 def test_datcom_out_rejected_as_future_format():
     with pytest.raises(AeroFormatError, match="format not yet supported: datcom"):
+        parse_source("missile.out", "DATCOM output ...")
+
+
+# ── Source-format dispatch seam (the DATCOM extension point) ────────
+
+
+def test_detect_source_format_extension_and_content_sniff():
+    assert detect_source_format("missile.out", "anything") == "datcom"
+    assert detect_source_format("MISSILE.OUT", "") == "datcom"
+    assert detect_source_format("deck.csv", "mach,alpha,CN\n") == "csv"
+    # DATCOM namelist cards are sniffed even without the .out extension
+    assert detect_source_format(
+        "for005.dat", "CASEID demo case\n $FLTCON NMACH=1.$\n",
+    ) == "datcom"
+    assert detect_source_format(
+        "run2.dat", " $FLTCON NMACH=2.0$\n",
+    ) == "datcom"
+
+
+def test_source_parser_registry_declares_datcom_future():
+    """The registry is the documented extension point: csv is the one
+    concrete parser, datcom is registered-but-NotImplemented."""
+    assert set(SOURCE_PARSERS) >= {"csv", "datcom"}
+    assert SOURCE_PARSERS["csv"] is parse_csv_source
+    with pytest.raises(AeroFormatError,
+                       match="format not yet supported: datcom"):
+        SOURCE_PARSERS["datcom"]("missile.out", "...")
+
+
+def test_datcom_content_sniffed_without_out_extension_is_rejected():
+    with pytest.raises(AeroFormatError, match="datcom"):
+        parse_source("for005.dat", "CASEID demo\n$FLTCON NMACH=1.$\n")
+
+
+def test_registered_datcom_parser_takes_over_dispatch():
+    """Plugging a parser into the registry reroutes parse_source with
+    no other change — the seam the aero team will use."""
+    calls = {}
+
+    def fake_datcom(filename: str, text: str) -> ParsedSource:
+        calls["args"] = (filename, text)
+        src = ParsedSource(filename=filename)
+        src.rows = [{"mach": 0.5, "alpha_deg": 0.0, "beta_deg": 0.0,
+                     "delta_deg": 0.0, "coeffs": {"CN": 0.0}}]
+        src.columns = ["CN"]
+        return src
+
+    original = SOURCE_PARSERS["datcom"]
+    register_source_parser("datcom", fake_datcom)
+    try:
+        src = parse_source("missile.out", "DATCOM output ...")
+        assert calls["args"] == ("missile.out", "DATCOM output ...")
+        assert src.filename == "missile.out"
+        assert src.columns == ["CN"]
+    finally:
+        register_source_parser("datcom", original)
+    # restored: the declared-future rejection is back
+    with pytest.raises(AeroFormatError, match="datcom"):
         parse_source("missile.out", "DATCOM output ...")
 
 
@@ -317,6 +381,50 @@ def test_static_margin_proxy_skipped_when_not_computable():
     assert "Cmalpha_per_deg" not in derived
 
 
+def _beta_csv():
+    """Full mach × alpha × beta grid with beta-linear Cn / Cl:
+    Cn = 0.01·β (Cnbeta = 0.01/deg), Cl = -0.004·β (Clbeta =
+    -0.004/deg); CN/Cm stay alpha-linear for the longitudinal checks."""
+    lines = ["# Sref_m2: 1", "# Lref_m: 1",
+             "mach,alpha,beta_deg,CN,Cm,Cn_yaw,Cl"]
+    for m in (0.5, 1.0):
+        for a in (-4.0, 0.0, 4.0):
+            for b in (-4.0, 0.0, 4.0):
+                lines.append(
+                    f"{m},{a},{b},{0.05 * a},{-0.02 * a},"
+                    f"{0.01 * b},{-0.004 * b}"
+                )
+    return "\n".join(lines) + "\n"
+
+
+def test_cnbeta_clbeta_central_difference_hand_check():
+    derived = _build(_beta_csv()).deck["derived"]
+    # central difference about beta=0 with neighbours ±4:
+    # Cnbeta = (Cn(4) - Cn(-4)) / 8 = (0.04 + 0.04) / 8 = 0.01 /deg
+    assert derived["Cnbeta_per_deg"] == pytest.approx([0.01, 0.01])
+    # Clbeta = (Cl(4) - Cl(-4)) / 8 = (-0.016 - 0.016) / 8 = -0.004
+    assert derived["Clbeta_per_deg"] == pytest.approx([-0.004, -0.004])
+    assert derived["beta_ref_deg"] == 0.0
+    # longitudinal derivatives still computed on the beta≈0 slice
+    assert derived["CNalpha_per_deg"] == pytest.approx([0.05, 0.05])
+    assert derived["Cmalpha_per_deg"] == pytest.approx([-0.02, -0.02])
+
+
+def test_beta_derivatives_skipped_on_degenerate_beta_grid():
+    """Documented skip: Cn/Cl tables exist, but the beta grid is the
+    degenerate default [0.0] — nothing to difference, keys absent."""
+    text = (
+        "# Sref_m2: 1\n# Lref_m: 1\n"
+        "mach,alpha,Cn_yaw,Cl\n0.5,0,0.01,0.002\n0.5,4,0.02,0.003\n"
+    )
+    deck = _build(text).deck
+    assert deck["breakpoints"]["beta_deg"] == [0.0]
+    derived = deck["derived"]
+    assert "Cnbeta_per_deg" not in derived
+    assert "Clbeta_per_deg" not in derived
+    assert "beta_ref_deg" not in derived
+
+
 # ── Envelope ────────────────────────────────────────────────────────
 
 
@@ -366,3 +474,64 @@ def test_interpolate_point_outside_envelope_raises():
         interpolate_point(deck, mach=3.0, alpha_deg=0.0)
     with pytest.raises(AeroEnvelopeError, match="alpha"):
         interpolate_point(deck, mach=0.5, alpha_deg=30.0)
+
+
+# ── Multilinear runtime lookup (interpolate) ────────────────────────
+
+
+def _beta_delta_csv():
+    """Full mach × alpha × beta × delta grid with multilinear
+    coefficients: CN = 0.05·α + 0.03·δ, CY = 0.02·β."""
+    lines = ["# Sref_m2: 1", "# Lref_m: 1",
+             "mach,alpha,beta_deg,delta_deg,CN,CY"]
+    for m in (0.5, 1.0):
+        for a in (0.0, 4.0):
+            for b in (-4.0, 0.0, 4.0):
+                for d in (0.0, 10.0):
+                    lines.append(
+                        f"{m},{a},{b},{d},{0.05 * a + 0.03 * d},"
+                        f"{0.02 * b}"
+                    )
+    return "\n".join(lines) + "\n"
+
+
+def test_interpolate_multilinear_4d_hand_check():
+    deck = _build(_beta_delta_csv()).deck
+    vals = interpolate(deck, mach=0.75, alpha_deg=2.0,
+                       beta_deg=1.0, delta_deg=5.0)
+    # multilinear fixtures → interpolation is exact off-breakpoint
+    assert vals["CN"] == pytest.approx(0.05 * 2.0 + 0.03 * 5.0)
+    assert vals["CY"] == pytest.approx(0.02 * 1.0)
+
+
+def test_interpolate_defaults_to_beta_delta_zero():
+    deck = _build(_beta_delta_csv()).deck
+    vals = interpolate(deck, mach=0.5, alpha_deg=4.0)
+    assert vals["CN"] == pytest.approx(0.2)   # delta = 0
+    assert vals["CY"] == pytest.approx(0.0)   # beta = 0
+
+
+def test_interpolate_degenerate_axes_collapse():
+    # deck without beta/delta columns: grids are [0.0]; querying the
+    # only slice works, anything else is outside the envelope
+    deck = _build(_csv()).deck
+    vals = interpolate(deck, mach=0.8, alpha_deg=4.0)
+    assert vals["CN"] == pytest.approx(0.2)
+    with pytest.raises(AeroEnvelopeError, match="beta"):
+        interpolate(deck, 0.8, 4.0, beta_deg=2.0)
+
+
+def test_interpolate_beta_delta_outside_envelope_raise():
+    deck = _build(_beta_delta_csv()).deck
+    with pytest.raises(AeroEnvelopeError, match="beta"):
+        interpolate(deck, 0.5, 0.0, beta_deg=10.0)
+    with pytest.raises(AeroEnvelopeError, match="delta"):
+        interpolate(deck, 0.5, 0.0, delta_deg=-5.0)
+
+
+def test_interpolate_point_is_nearest_zero_slice_of_interpolate():
+    deck = _build(_beta_delta_csv()).deck
+    vals = interpolate_point(deck, mach=0.5, alpha_deg=4.0)
+    assert vals == pytest.approx(
+        interpolate(deck, 0.5, 4.0, beta_deg=0.0, delta_deg=0.0)
+    )

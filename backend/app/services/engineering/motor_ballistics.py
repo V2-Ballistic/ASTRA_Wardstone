@@ -79,6 +79,10 @@ T_NOMINAL_K = 294.15
 #: Relative tolerance for the ∫ṁdt ↔ propellant-mass self-check.
 MASS_BURN_TOLERANCE = 0.01
 
+#: Relative tolerance for the TotalImpulse ↔ ∫F dt self-check
+#: (native march grid vs the 1 kHz artifact resample).
+IMPULSE_TOLERANCE = 0.01
+
 
 class MotorDesignError(ValueError):
     """Raised for design inputs the solver cannot honour (the router
@@ -323,6 +327,32 @@ def _march_at_temp(
     return curve
 
 
+def _impulse_consistency_warning(curve: TempCurve) -> str | None:
+    """§5.3 self-check: TotalImpulse ≈ ∫F dt within tolerance.
+
+    The reported scalar IS the trapezoid integral of the native march,
+    so the meaningful consistency check is that the impulse survives
+    the §5.4 uniform 1 kHz artifact resample — i.e. the march step is
+    fine enough that no thrust feature falls between grid samples.
+    Returns a warning string on failure, else None.
+    """
+    if not curve.time_s or curve.total_impulse_ns <= 0.0:
+        return None
+    grid = uniform_grid(curve.burn_time_s)
+    resampled = trapz(
+        resample_uniform(curve.time_s, curve.thrust_n, grid), grid
+    )
+    rel = abs(resampled - curve.total_impulse_ns) / curve.total_impulse_ns
+    if rel > IMPULSE_TOLERANCE:
+        return (
+            f"impulse self-check failed: ∫F dt on the native march grid "
+            f"= {curve.total_impulse_ns:.6g} N·s vs 1 kHz artifact "
+            f"resample {resampled:.6g} N·s "
+            f"({rel * 100:.2f}% > {IMPULSE_TOLERANCE * 100:.0f}%)"
+        )
+    return None
+
+
 def solve_design(inputs: MotorDesignInputs) -> BallisticsResult:
     """Run the equilibrium march at the 3-temperature grid; nominal
     row = 294.15 K. Raises ``MotorDesignError`` for unsupported grain
@@ -355,6 +385,10 @@ def solve_design(inputs: MotorDesignInputs) -> BallisticsResult:
             f"propellant mass {prop_mass_init:.6g} kg "
             f"({rel_err * 100:.2f}% > {MASS_BURN_TOLERANCE * 100:.0f}%)"
         )
+
+    impulse_warning = _impulse_consistency_warning(nominal)
+    if impulse_warning is not None:
+        warnings.append(impulse_warning)
 
     total_impulse = nominal.total_impulse_ns
     isp = total_impulse / (prop_mass_init * G0) if prop_mass_init > 0 else 0.0

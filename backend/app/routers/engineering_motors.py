@@ -32,7 +32,7 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
@@ -546,6 +546,40 @@ async def get_motor_revision_artifact(
 ) -> Dict[str, Any]:
     motor = _get_motor_or_404(db, wpn)
     return _get_revision_or_404(db, motor, rev).artifact
+
+
+@router.get("/{wpn}/revisions/{rev}/source")
+async def get_motor_revision_source(
+    wpn: str,
+    rev: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Response:
+    """Download the stored source CSV for a csv-origin revision,
+    verbatim as uploaded (spec §5.2: source stored with hash AND
+    retrievable). Design-origin revisions have no source CSV ⇒ 404.
+    The stored sha256 is surfaced in the ``X-Source-Sha256`` header so
+    callers can verify integrity without re-hashing."""
+    motor = _get_motor_or_404(db, wpn)
+    rev_row = _get_revision_or_404(db, motor, rev)
+    if rev_row.source_csv_text is None:
+        raise HTTPException(
+            404,
+            f"Motor revision {rev_row.wpn} has no stored source CSV "
+            f"(origin {rev_row.origin!r})",
+        )
+    filename = rev_row.source_csv_filename or f"{rev_row.wpn}.csv"
+    # RFC 6266: quote the filename; strip embedded quotes/CRLF so a
+    # hostile stored filename cannot break the header.
+    safe_filename = re.sub(r'["\r\n\\]', "_", filename)
+    return Response(
+        content=rev_row.source_csv_text,
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_filename}"',
+            "X-Source-Sha256": rev_row.source_csv_sha256 or "",
+        },
+    )
 
 
 # ══════════════════════════════════════════════════════════════

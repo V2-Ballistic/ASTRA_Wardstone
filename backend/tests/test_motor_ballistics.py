@@ -22,6 +22,8 @@ from app.services.engineering.motor_artifact import (
 )
 from app.services.engineering.motor_ballistics import (
     MotorDesignError,
+    TempCurve,
+    _impulse_consistency_warning,
     resolve_cstar,
     result_to_artifact_series,
     solve_design,
@@ -126,6 +128,28 @@ def test_mass_burn_consistency_within_1_percent():
     assert result.nominal.prop_mass_rem_kg[0] == pytest.approx(
         result.prop_mass_init_kg, rel=1e-9
     )
+
+
+def test_impulse_self_check_passes_for_normal_march():
+    """The §5.3 TotalImpulse ↔ ∫F dt self-check passes for a healthy
+    march (no warning emitted)."""
+    result = solve_design(_inputs())
+    assert _impulse_consistency_warning(result.nominal) is None
+    assert not any("impulse self-check" in w for w in result.warnings)
+
+
+def test_impulse_self_check_flags_subgrid_thrust_features():
+    """A thrust spike living entirely between 1 kHz grid samples is
+    lost by the artifact resample ⇒ the self-check must warn."""
+    spike = TempCurve(temp_K=294.15)
+    spike.time_s = [0.0, 0.0004, 0.0005, 0.0006, 1.0]
+    spike.thrust_n = [0.0, 0.0, 1.0e6, 0.0, 0.0]
+    spike.burn_time_s = 1.0
+    spike.total_impulse_ns = trapz(spike.thrust_n, spike.time_s)
+    assert spike.total_impulse_ns > 0
+    warning = _impulse_consistency_warning(spike)
+    assert warning is not None
+    assert "impulse self-check failed" in warning
 
 
 def test_isp_definition():

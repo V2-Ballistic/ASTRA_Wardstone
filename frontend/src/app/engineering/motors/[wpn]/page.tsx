@@ -11,18 +11,22 @@
  *   - d3 plots from the viewed revision's artifact: thrust / chamber
  *     pressure / propellant mass vs time, optional 3-temperature
  *     thrust overlay (GrainTempGrid_K)
- *   - Revision history (every revision row) + two-revision diff view
+ *   - Revision history (every revision row, sortable columns) +
+ *     two-revision diff view + per-revision source-CSV download
  *   - Add revision (CSV → :from-csv), new revision from design link,
  *     active-revision switcher — all role-gated
- *   - "Use in config" → /engineering?tab=configurations (placeholder)
+ *   - "Download spec sheet" — formatted .txt of every derived scalar,
+ *     built client-side from the summary + revision artifact
+ *   - "Use in config" → configuration builder with this motor
+ *     preselected as a stage (?motor=<wpn>&rev=<rev>)
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import {
-  AlertTriangle, ArrowLeftRight, Boxes, ChevronLeft, Flame, Loader2,
-  PencilRuler, Thermometer,
+  AlertTriangle, ArrowLeftRight, ArrowUpDown, Boxes, ChevronLeft,
+  Download, FileText, Flame, Loader2, PencilRuler, Thermometer,
 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -32,6 +36,7 @@ import {
   type MotorIngestResponse,
   type MotorResponse,
   type MotorRevisionDetail,
+  type MotorRevisionSummary,
   type MotorSummarySheet,
   fmtDateTime,
   fmtImpulse,
@@ -92,6 +97,155 @@ const metricRows: {
   { label: 'Isp', key: 'isp_s', fmt: (v) => (v == null ? '—' : `${v.toFixed(1)} s`) },
 ];
 
+// ── revision-history sorting ─────────────────────────────────
+
+type RevSortKey = 'rev' | 'origin' | 'quality' | 'impulse' | 'peak' | 'created';
+
+const TIER_RANK: Record<string, number> = { excellent: 3, good: 2, workable: 1 };
+
+/** HAROLD letters sort length-first so 'AA' follows 'Z'. */
+function cmpRevLetter(a: string, b: string): number {
+  return a.length !== b.length ? a.length - b.length : a.localeCompare(b);
+}
+
+function cmpNullableNum(a?: number | null, b?: number | null): number {
+  if (a == null && b == null) return 0;
+  if (a == null) return -1;
+  if (b == null) return 1;
+  return a - b;
+}
+
+function compareRevisions(
+  a: MotorRevisionSummary,
+  b: MotorRevisionSummary,
+  key: RevSortKey,
+): number {
+  switch (key) {
+    case 'rev': return cmpRevLetter(a.rev_letter, b.rev_letter);
+    case 'origin': return String(a.origin).localeCompare(String(b.origin));
+    case 'quality':
+      return (TIER_RANK[a.quality_tier] ?? 0) - (TIER_RANK[b.quality_tier] ?? 0);
+    case 'impulse': return cmpNullableNum(a.total_impulse_ns, b.total_impulse_ns);
+    case 'peak': return cmpNullableNum(a.peak_thrust_n, b.peak_thrust_n);
+    case 'created':
+      return String(a.created_utc ?? '').localeCompare(String(b.created_utc ?? ''));
+    default: return 0;
+  }
+}
+
+function SortTh({
+  label, sortKey, active, asc, align = 'left', onSort,
+}: {
+  label: string;
+  sortKey: RevSortKey;
+  active: boolean;
+  asc: boolean;
+  align?: 'left' | 'center' | 'right';
+  onSort: (k: RevSortKey) => void;
+}) {
+  return (
+    <th
+      scope="col"
+      aria-sort={active ? (asc ? 'ascending' : 'descending') : 'none'}
+      className={clsx(
+        'px-3 py-2 font-semibold',
+        align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : 'text-left',
+      )}
+    >
+      <button
+        type="button"
+        onClick={() => onSort(sortKey)}
+        className={clsx(
+          'inline-flex items-center gap-1 hover:text-slate-200',
+          active && 'text-blue-300',
+        )}
+      >
+        {label}
+        {active
+          ? <span aria-hidden="true" className="text-[9px]">{asc ? '▲' : '▼'}</span>
+          : <ArrowUpDown className="h-3 w-3 opacity-50" aria-hidden="true" />}
+      </button>
+    </th>
+  );
+}
+
+// ── spec-sheet text builder ──────────────────────────────────
+
+function specLine(label: string, value: string): string {
+  return `${(label + ':').padEnd(26)}${value}`;
+}
+
+/** Formatted .txt spec sheet with every derived scalar — built
+ *  client-side from the summary + the viewed revision's artifact. */
+function buildSpecSheet(
+  motor: MotorResponse,
+  summary: MotorSummarySheet | null,
+  artifact: MotorArtifact | null,
+  revLetter: string | null,
+): string {
+  const L: string[] = [];
+  L.push('ASTRA MOTOR SPEC SHEET');
+  L.push('======================');
+  L.push(specLine('WPN', motor.wpn));
+  L.push(specLine('Name', motor.name));
+  L.push(specLine('Class', motor.motor_class || summary?.motor_class || '—'));
+  L.push(specLine('Revision', revLetter || summary?.rev_letter || '—'));
+  L.push(specLine('Origin', String(artifact?.provenance?.origin ?? summary?.origin ?? '—')));
+  L.push(specLine('Quality tier', String(artifact?.qualityTier ?? summary?.quality_tier ?? '—')));
+  L.push(specLine('Revision count', String(summary?.revision_count ?? motor.revisions.length)));
+  L.push(specLine('Generated', new Date().toISOString()));
+  L.push('');
+  L.push('DERIVED SCALARS');
+  L.push('---------------');
+  if (artifact) {
+    const maxPc = artifact.Pchamber_Pa.length
+      ? Math.max(...artifact.Pchamber_Pa) : null;
+    L.push(specLine('Total impulse', `${artifact.TotalImpulse_Ns} N·s`));
+    L.push(specLine('Peak thrust', `${artifact.PeakThrust_N} N`));
+    L.push(specLine('Isp', `${artifact.Isp_s} s`));
+    L.push(specLine('Burn time', `${artifact.BurnTime_s} s`));
+    L.push(specLine('Sample interval Ts', `${artifact.Ts_s} s`));
+    L.push(specLine('Propellant mass (init)', `${artifact.PropMassInit_kg} kg`));
+    L.push(specLine('Grain stack length', `${artifact.GrainStackLength_m} m`));
+    L.push(specLine('Throat area', `${artifact.AreaThroat_m2} m²`));
+    L.push(specLine('Exit area', `${artifact.AreaExit_m2} m²`));
+    if (maxPc != null) L.push(specLine('Max chamber pressure', `${maxPc} Pa`));
+    L.push(specLine('Grain temp grid', `[${artifact.GrainTempGrid_K.join(', ')}] K`));
+  } else if (summary) {
+    L.push(specLine('Total impulse', `${summary.total_impulse_ns ?? '—'} N·s`));
+    L.push(specLine('Peak thrust', `${summary.peak_thrust_n ?? '—'} N`));
+    L.push(specLine('Isp', `${summary.isp_s ?? '—'} s`));
+    L.push(specLine('Burn time', `${summary.burn_time_s ?? '—'} s`));
+    L.push(specLine('Propellant mass (init)', `${summary.prop_mass_init_kg ?? '—'} kg`));
+  }
+  if (artifact?.defaultedFields?.length) {
+    L.push('');
+    L.push('DEFAULTED FIELDS');
+    L.push('----------------');
+    artifact.defaultedFields.forEach((f) => L.push(`  - ${f}`));
+  }
+  if (artifact?.provenance) {
+    L.push('');
+    L.push('PROVENANCE');
+    L.push('----------');
+    const p = artifact.provenance;
+    if (p.author) L.push(specLine('Author', p.author));
+    if (p.createdUtc) L.push(specLine('Created (UTC)', p.createdUtc));
+    if (p.csvSha256) L.push(specLine('Source CSV sha256', p.csvSha256));
+    if (p.designInputs) {
+      L.push('');
+      L.push('DESIGN INPUTS');
+      L.push('-------------');
+      const flat = flattenInputs(p.designInputs);
+      Object.entries(flat).forEach(([k, v]) => {
+        if (v !== null && v !== undefined && v !== '') L.push(specLine(k, String(v)));
+      });
+    }
+  }
+  L.push('');
+  return L.join('\n');
+}
+
 // ══════════════════════════════════════
 //  Page
 // ══════════════════════════════════════
@@ -120,11 +274,16 @@ export default function MotorDetailPage() {
   const [diffLoading, setDiffLoading] = useState(false);
   const [diffError, setDiffError] = useState('');
 
+  // ── revision-history sorting ──
+  const [sortKey, setSortKey] = useState<RevSortKey>('rev');
+  const [sortAsc, setSortAsc] = useState(true);
+
   // ── mutations ──
   const [settingActive, setSettingActive] = useState<string | null>(null);
   const [actionError, setActionError] = useState('');
   const [uploading, setUploading] = useState(false);
   const [ingested, setIngested] = useState<MotorIngestResponse | null>(null);
+  const [downloadingSource, setDownloadingSource] = useState<string | null>(null);
 
   const activeRevLetter = useMemo(() => {
     if (!motor) return null;
@@ -248,6 +407,53 @@ export default function MotorDetailPage() {
     }];
   }, [artifact]);
 
+  // ── sorted revision history ──
+  const sortedRevisions = useMemo(() => {
+    if (!motor) return [];
+    const rows = [...motor.revisions]
+      .sort((a, b) => compareRevisions(a, b, sortKey));
+    return sortAsc ? rows : rows.reverse();
+  }, [motor, sortAsc, sortKey]);
+
+  const handleSort = useCallback((k: RevSortKey) => {
+    setSortKey((prev) => {
+      if (prev === k) {
+        setSortAsc((asc) => !asc);
+        return prev;
+      }
+      setSortAsc(true);
+      return k;
+    });
+  }, []);
+
+  // ── spec sheet download (client-side .txt) ──
+  const handleDownloadSpecSheet = useCallback(() => {
+    if (!motor) return;
+    const rev = viewRev || activeRevLetter;
+    const text = buildSpecSheet(motor, summary, artifact, rev);
+    const url = window.URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${motor.wpn}${rev ? `-${rev}` : ''}.spec.txt`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
+  }, [activeRevLetter, artifact, motor, summary, viewRev]);
+
+  // ── stored source CSV of a csv-origin revision ──
+  const handleDownloadSource = useCallback(async (rev: string) => {
+    setActionError('');
+    setDownloadingSource(rev);
+    try {
+      await engineeringAPI.downloadMotorRevisionSource(wpn, rev);
+    } catch (e) {
+      setActionError(formatApiError(e, `Failed to download the source CSV of revision ${rev}`));
+    } finally {
+      setDownloadingSource(null);
+    }
+  }, [wpn]);
+
   // ── mutations ──
   const handleSetActive = useCallback(async (rev: string) => {
     setActionError('');
@@ -353,8 +559,20 @@ export default function MotorDetailPage() {
               <PencilRuler className="h-3.5 w-3.5" aria-hidden="true" /> New revision from design
             </Link>
           )}
+          <button
+            type="button"
+            onClick={handleDownloadSpecSheet}
+            disabled={!summary && !artifact}
+            className="flex items-center gap-1.5 rounded-lg border border-astra-border px-3 py-2 text-xs font-semibold text-slate-300 hover:border-blue-500/30 hover:text-slate-100 disabled:opacity-50"
+          >
+            <FileText className="h-3.5 w-3.5" aria-hidden="true" /> Download spec sheet
+          </button>
           <Link
-            href="/engineering?tab=configurations"
+            href={`/engineering/configurations/new?motor=${encodeURIComponent(motor.wpn)}${
+              (viewRev || activeRevLetter)
+                ? `&rev=${encodeURIComponent(viewRev || activeRevLetter || '')}`
+                : ''
+            }`}
             className="flex items-center gap-1.5 rounded-lg border border-astra-border px-3 py-2 text-xs font-semibold text-slate-300 hover:border-blue-500/30 hover:text-slate-100"
           >
             <Boxes className="h-3.5 w-3.5" aria-hidden="true" /> Use in config
@@ -469,17 +687,17 @@ export default function MotorDetailPage() {
             <table className="w-full text-xs" aria-label="Motor revisions">
               <thead className="bg-astra-surface-alt text-slate-400">
                 <tr>
-                  <th scope="col" className="px-3 py-2 text-left font-semibold">Rev</th>
-                  <th scope="col" className="px-3 py-2 text-left font-semibold">Origin</th>
-                  <th scope="col" className="px-3 py-2 text-center font-semibold">Quality</th>
-                  <th scope="col" className="px-3 py-2 text-right font-semibold">Total Impulse</th>
-                  <th scope="col" className="px-3 py-2 text-right font-semibold">Peak</th>
-                  <th scope="col" className="px-3 py-2 text-left font-semibold">Created</th>
+                  <SortTh label="Rev" sortKey="rev" active={sortKey === 'rev'} asc={sortAsc} onSort={handleSort} />
+                  <SortTh label="Origin" sortKey="origin" active={sortKey === 'origin'} asc={sortAsc} onSort={handleSort} />
+                  <SortTh label="Quality" sortKey="quality" active={sortKey === 'quality'} asc={sortAsc} align="center" onSort={handleSort} />
+                  <SortTh label="Total Impulse" sortKey="impulse" active={sortKey === 'impulse'} asc={sortAsc} align="right" onSort={handleSort} />
+                  <SortTh label="Peak" sortKey="peak" active={sortKey === 'peak'} asc={sortAsc} align="right" onSort={handleSort} />
+                  <SortTh label="Created" sortKey="created" active={sortKey === 'created'} asc={sortAsc} onSort={handleSort} />
                   <th scope="col" className="px-3 py-2 text-right font-semibold">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {motor.revisions.map((r) => {
+                {sortedRevisions.map((r) => {
                   const isActive = r.rev_letter === activeRevLetter;
                   const isViewed = r.rev_letter === viewRev;
                   return (
@@ -516,6 +734,19 @@ export default function MotorDetailPage() {
                           >
                             {isViewed ? 'Plotted' : 'Plot'}
                           </button>
+                          {r.origin === 'csv' && (
+                            <button
+                              type="button"
+                              disabled={downloadingSource !== null}
+                              onClick={() => handleDownloadSource(r.rev_letter)}
+                              title="Download the stored source CSV of this revision"
+                              className="flex items-center gap-1 rounded-lg border border-astra-border px-2 py-1 text-[10px] font-semibold text-slate-400 hover:border-blue-500/40 hover:text-blue-300 disabled:opacity-50"
+                            >
+                              {downloadingSource === r.rev_letter
+                                ? <Loader2 className="h-3 w-3 animate-spin" aria-label="Downloading source CSV" />
+                                : <><Download className="h-3 w-3" aria-hidden="true" /> Source CSV</>}
+                            </button>
+                          )}
                           {canWrite && !isActive && (
                             <button
                               type="button"

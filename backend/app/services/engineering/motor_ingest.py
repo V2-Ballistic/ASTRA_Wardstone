@@ -67,6 +67,12 @@ from app.services.engineering.motor_artifact import (
 
 LBF_TO_N = 4.4482216152605
 PSI_TO_PA = 6894.757293168
+MPA_TO_PA = 1.0e6
+BAR_TO_PA = 1.0e5
+KN_TO_N = 1000.0
+LBM_TO_KG = 0.45359237
+G_TO_KG = 1.0e-3
+MS_TO_S = 1.0e-3
 
 #: Cross-check tolerances.
 MASS_BURN_TOLERANCE = 0.02      # ∫|ṁ|dt vs propellant mass
@@ -89,17 +95,32 @@ def _norm(cell: str) -> str:
 
 
 _TIME_ALIASES = {"time", "times", "t", "motortimes", "timesec", "timeseconds"}
+_TIME_MS_ALIASES = {
+    "timems", "tms", "timemsec", "timemillis", "timemilliseconds",
+    "motortimems",
+}
 _THRUST_N_ALIASES = {"thrust", "thrustn", "forcen", "fn", "force"}
 _THRUST_LBF_ALIASES = {"thrustlbf", "forcelbf", "flbf", "thrustlb", "forcelb"}
+_THRUST_KN_ALIASES = {"thrustkn", "forcekn", "fkn"}
 _MASS_KG_ALIASES = {
     "masskg", "propmasskg", "propmassremkg", "propellantmass",
     "propmassrem", "propellantmasskg", "propmassremaining",
+}
+_MASS_LBM_ALIASES = {
+    "masslb", "masslbm", "propmasslb", "propmasslbm",
+    "propmassremlb", "propmassremlbm",
+    "propellantmasslb", "propellantmasslbm",
+}
+_MASS_G_ALIASES = {
+    "massg", "propmassg", "propmassremg", "propellantmassg",
 }
 _PC_PA_ALIASES = {
     "pc", "pchamberpa", "chamberpressurepa", "pcpa", "chamberpressure",
     "pchamber",
 }
 _PC_PSI_ALIASES = {"pcpsi", "chamberpressurepsi", "pchamberpsi"}
+_PC_MPA_ALIASES = {"pcmpa", "chamberpressurempa", "pchambermpa"}
+_PC_BAR_ALIASES = {"pcbar", "chamberpressurebar", "pchamberbar"}
 _MDOT_ALIASES = {"mdot", "mdotkgps", "nozzlemdotkgps", "nozzlemdot"}
 #: Metadata keys carrying TOTAL propellant mass.
 _PROP_MASS_META_ALIASES = {
@@ -113,11 +134,17 @@ _GRAIN_MASS_RE = re.compile(r"^grain(?:mass)?(\d+)(?:mass)?(?:kg)?$")
 _COLUMN_KINDS: List[Tuple[str, set, float]] = [
     # (kind, alias set, conversion factor to SI)
     ("time", _TIME_ALIASES, 1.0),
+    ("time", _TIME_MS_ALIASES, MS_TO_S),
     ("thrust", _THRUST_N_ALIASES, 1.0),
     ("thrust", _THRUST_LBF_ALIASES, LBF_TO_N),
+    ("thrust", _THRUST_KN_ALIASES, KN_TO_N),
     ("mass", _MASS_KG_ALIASES, 1.0),
+    ("mass", _MASS_LBM_ALIASES, LBM_TO_KG),
+    ("mass", _MASS_G_ALIASES, G_TO_KG),
     ("pc", _PC_PA_ALIASES, 1.0),
     ("pc", _PC_PSI_ALIASES, PSI_TO_PA),
+    ("pc", _PC_MPA_ALIASES, MPA_TO_PA),
+    ("pc", _PC_BAR_ALIASES, BAR_TO_PA),
     ("mdot", _MDOT_ALIASES, 1.0),
 ]
 

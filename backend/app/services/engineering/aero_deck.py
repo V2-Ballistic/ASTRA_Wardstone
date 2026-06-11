@@ -9,9 +9,24 @@ Concrete source format (spec §12 sanctions picking ONE)
 The upstream aero source format is undecided. This module implements
 exactly one concrete format — a **long-form coefficient CSV** — and
 keeps the deck schema aero-team-extensible through the ``extensions``
-pass-through block. DATCOM ``.out`` files are declared-future: they are
-rejected with "format not yet supported: datcom" (the router maps that
-to 422).
+pass-through block.
+
+Source-format dispatch (the DATCOM extension point)
+---------------------------------------------------
+``parse_source`` is a thin dispatcher: :func:`detect_source_format`
+sniffs a format key (``"csv"`` / ``"datcom"``) and ``SOURCE_PARSERS``
+maps that key to a parser callable ``(filename, text) ->
+ParsedSource``. The registry is THE seam where the aero team plugs a
+real DATCOM parser::
+
+    from app.services.engineering import aero_deck
+    aero_deck.register_source_parser("datcom", parse_datcom_out)
+
+Everything downstream (merge / grid / derived) consumes
+:class:`ParsedSource` rows and is format-agnostic. Until a DATCOM
+parser is registered, the ``"datcom"`` entry is declared-future per
+§12: it raises ``AeroFormatError("format not yet supported: datcom")``
+(the router maps that to 422).
 
 CSV format (long form)
 ----------------------
@@ -62,6 +77,28 @@ Breakpoints are the sorted unique values per axis (beta/delta default
 to ``[0.0]`` when the column is absent). Tables are nested lists with
 ``axes: ["mach", "alpha_deg", "beta_deg", "delta_deg"]``.
 
+Absent coefficients (DOCUMENTED handling): only coefficients that at
+least one source actually provides get a table — a deck built from a
+CA/CN/Cm CSV carries exactly those three tables and nothing else.
+Consumers MUST treat every entry of ``tables`` (and every key of
+``derived``) as optional; nothing is zero-filled or fabricated.
+
+Frame convention (Frame ICD, spec §3)
+-------------------------------------
+``refPoint_m_B`` is the moment reference point expressed in the Frame
+ICD coordinates — the managed ``CITADEL Vehicle Body Frame``: datum =
+OML nose tip, axes x forward / y right / z down, SI units. The deck
+stamps the frame key (``frame: "citadel-vehicle-body-frame"``) so
+every consumer can verify the datum convention instead of assuming it.
+
+Runtime lookup
+--------------
+The gridded ``tables`` on the documented ``breakpoints`` lattice ARE
+the runtime interpolation tables; :func:`interpolate` is the
+documented consumer-facing multilinear lookup over them (no
+extrapolation — out-of-envelope queries raise
+:class:`AeroEnvelopeError`).
+
   * full cartesian input            → exact
   * ragged input                    → 1-D linear interpolation onto the
                                       full grid where bracketing
@@ -78,12 +115,18 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import itertools
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import (
+    Any, Callable, Dict, List, Optional, Sequence, Tuple,
+)
 
 DECK_SCHEMA = "astra-aero-deck/1.0"
+#: Frame ICD key (spec §3) stamped on every deck: refPoint_m_B is
+#: expressed in the CITADEL Vehicle Body Frame — datum = OML nose tip,
+#: axes x forward / y right / z down, SI units.
 DECK_FRAME = "citadel-vehicle-body-frame"
 DECK_AXES = ["mach", "alpha_deg", "beta_deg", "delta_deg"]
 DECK_UNITS = "SI/deg"
@@ -227,15 +270,71 @@ def _coerce_scalar(value: str) -> Any:
         return value
 
 
-def parse_source(filename: str, text: str) -> ParsedSource:
-    """Parse one aero source file into a :class:`ParsedSource`.
+# ── Source-format dispatch — THE DATCOM EXTENSION POINT ────────────
+#
+# ``parse_source`` is a dispatcher: ``detect_source_format`` sniffs a
+# format key and ``SOURCE_PARSERS`` maps it to a parser callable
+# ``(filename, text) -> ParsedSource``. To make DATCOM ingest real,
+# the aero team implements a parser with that signature and registers
+# it (``register_source_parser("datcom", parse_datcom_out)``) — the
+# merge/grid/derived layers are format-agnostic, so nothing else
+# changes. Until then "datcom" is declared-future per §12 and raises
+# AeroFormatError (router → 422).
 
-    Raises :class:`AeroFormatError` for DATCOM ``.out`` files (the
-    declared-future format) and any malformed CSV; raises
-    :class:`AeroGridError` for duplicate conflicting rows.
+#: parser signature for SOURCE_PARSERS entries
+SourceParser = Callable[[str, str], "ParsedSource"]
+
+
+def detect_source_format(filename: str, text: str) -> str:
+    """Sniff the source-format key used to index ``SOURCE_PARSERS``.
+
+    * a ``*.out`` filename, OR a body opening with DATCOM namelist
+      cards (a ``$FLTCON`` card or a leading ``CASEID``) → ``"datcom"``
+    * everything else → ``"csv"`` (the one concrete format, §12)
     """
     if filename.lower().endswith(".out"):
-        raise AeroFormatError("format not yet supported: datcom")
+        return "datcom"
+    head = (text or "").lstrip()[:4096].upper()
+    if head.startswith("CASEID") or "$FLTCON" in head:
+        return "datcom"
+    return "csv"
+
+
+def _parse_datcom_not_implemented(
+    filename: str, text: str,
+) -> "ParsedSource":
+    """Declared-future placeholder (spec §12). Replaced wholesale when
+    the aero team registers a real DATCOM parser — keep the exact
+    message: the router and the GUIs match on it (422)."""
+    raise AeroFormatError("format not yet supported: datcom")
+
+
+def parse_source(filename: str, text: str) -> ParsedSource:
+    """Parse one aero source file into a :class:`ParsedSource`,
+    dispatching on the detected format via ``SOURCE_PARSERS``.
+
+    Raises :class:`AeroFormatError` for formats with no registered
+    parser (DATCOM ``.out`` — declared-future) and any malformed
+    source; raises :class:`AeroGridError` for duplicate conflicting
+    rows.
+    """
+    fmt = detect_source_format(filename, text)
+    parser = SOURCE_PARSERS.get(fmt)
+    if parser is None:  # pragma: no cover - registry misconfiguration
+        raise AeroFormatError(f"format not yet supported: {fmt}")
+    return parser(filename, text)
+
+
+def register_source_parser(fmt: str, parser: SourceParser) -> None:
+    """Register/replace the parser for a source-format key. This is
+    the aero-team extension seam (see module docstring)."""
+    SOURCE_PARSERS[fmt] = parser
+
+
+def parse_csv_source(filename: str, text: str) -> ParsedSource:
+    """Parse one long-form coefficient CSV (the concrete format) into
+    a :class:`ParsedSource`. See the module docstring for the column
+    alias sets and the Cl/CN/Cn disambiguation rule."""
     if not text or not text.strip():
         raise AeroFormatError(f"{filename}: empty source file")
 
@@ -381,6 +480,15 @@ def parse_source(filename: str, text: str) -> ParsedSource:
     return src
 
 
+#: format key → parser. THE aero-team dispatch registry (see the
+#: module docstring): plug a DATCOM parser in via
+#: ``register_source_parser("datcom", ...)``.
+SOURCE_PARSERS: Dict[str, SourceParser] = {
+    "csv": parse_csv_source,
+    "datcom": _parse_datcom_not_implemented,
+}
+
+
 # ── Merge ───────────────────────────────────────────────────────────
 
 
@@ -440,7 +548,6 @@ def _interp_pass(
     def put(idx, v):
         table[idx[0]][idx[1]][idx[2]][idx[3]] = v
 
-    import itertools
     for idx in itertools.product(*(range(c) for c in n)):
         if get(idx) is not None:
             continue
@@ -545,7 +652,6 @@ def _count_missing(table: list) -> int:
 def _missing_points(
     table: list, bp_lists: List[List[float]],
 ) -> List[Tuple[float, float, float, float]]:
-    import itertools
     out = []
     for i, j, k, l in itertools.product(
         *(range(len(b)) for b in bp_lists)
@@ -563,6 +669,23 @@ def _closest_index(values: List[float], target: float) -> int:
     return min(range(len(values)), key=lambda i: abs(values[i] - target))
 
 
+def _central_slope(
+    xs: List[float], col: List[float], i0: int,
+) -> Optional[float]:
+    """Finite-difference slope of ``col`` over ``xs`` at index ``i0``:
+    central difference at interior points, one-sided at the ends,
+    ``None`` on a degenerate (single-point) axis."""
+    if len(xs) < 2:
+        return None
+    if 0 < i0 < len(xs) - 1:
+        num, den = col[i0 + 1] - col[i0 - 1], xs[i0 + 1] - xs[i0 - 1]
+    elif i0 == 0:
+        num, den = col[1] - col[0], xs[1] - xs[0]
+    else:
+        num, den = col[i0] - col[i0 - 1], xs[i0] - xs[i0 - 1]
+    return num / den
+
+
 def _alpha_slope_per_mach(
     table: list, machs: List[float], alphas: List[float],
     ib: int, idl: int,
@@ -571,31 +694,61 @@ def _alpha_slope_per_mach(
     nearest 0 deg, on the beta/delta slice nearest 0. Central
     difference at interior points, one-sided at the ends."""
     ia = _closest_index(alphas, 0.0)
-    slopes: List[Optional[float]] = []
-    for im in range(len(machs)):
-        col = [table[im][j][ib][idl] for j in range(len(alphas))]
-        if len(alphas) < 2:
-            slopes.append(None)
-            continue
-        if 0 < ia < len(alphas) - 1:
-            num = col[ia + 1] - col[ia - 1]
-            den = alphas[ia + 1] - alphas[ia - 1]
-        elif ia == 0:
-            num = col[1] - col[0]
-            den = alphas[1] - alphas[0]
-        else:
-            num = col[ia] - col[ia - 1]
-            den = alphas[ia] - alphas[ia - 1]
-        slopes.append(num / den)
+    slopes = [
+        _central_slope(
+            alphas,
+            [table[im][j][ib][idl] for j in range(len(alphas))],
+            ia,
+        )
+        for im in range(len(machs))
+    ]
     return slopes, alphas[ia]
 
 
+def _beta_slope_per_mach(
+    table: list, machs: List[float], betas: List[float],
+    ia: int, idl: int,
+) -> Tuple[List[Optional[float]], float]:
+    """d(coeff)/d(beta) per Mach, evaluated at the beta breakpoint
+    nearest 0 deg, on the alpha slice nearest 0 deg and the delta
+    slice nearest 0. Central difference at interior points, one-sided
+    at the ends. Only meaningful on a non-degenerate beta grid
+    (>= 2 breakpoints) — :func:`_derived` skips the degenerate
+    ``[0.0]`` grid entirely."""
+    ib = _closest_index(betas, 0.0)
+    slopes = [
+        _central_slope(
+            betas,
+            [table[im][ia][k][idl] for k in range(len(betas))],
+            ib,
+        )
+        for im in range(len(machs))
+    ]
+    return slopes, betas[ib]
+
+
 def _derived(breakpoints: dict, tables: dict) -> dict:
-    """Stability derivatives CNalpha / Cmalpha per Mach (central
-    differences over alpha) + a static-margin proxy where computable.
-    Anything not computable is simply skipped."""
+    """Derived stability derivatives, per Mach breakpoint:
+
+      * ``CNalpha_per_deg`` / ``Cmalpha_per_deg`` — finite differences
+        over alpha at the alpha breakpoint nearest 0 deg, on the
+        beta/delta slices nearest 0;
+      * ``Cnbeta_per_deg`` / ``Clbeta_per_deg`` — finite differences
+        over beta at the beta breakpoint nearest 0 deg, on the
+        alpha/delta slices nearest 0. ONLY emitted when the beta grid
+        is non-degenerate (>= 2 beta breakpoints): on the default
+        degenerate ``[0.0]`` beta grid there is nothing to difference,
+        so the keys are deliberately ABSENT (documented skip, not a
+        zero);
+      * ``staticMargin_proxy`` = -Cmalpha/CNalpha (in Lref units)
+        where both derivatives exist.
+
+    Anything not computable is simply skipped — consumers must treat
+    every ``derived`` key as optional."""
     machs, alphas = breakpoints["mach"], breakpoints["alpha_deg"]
-    ib = _closest_index(breakpoints["beta_deg"], 0.0)
+    betas = breakpoints["beta_deg"]
+    ia = _closest_index(alphas, 0.0)
+    ib = _closest_index(betas, 0.0)
     idl = _closest_index(breakpoints["delta_deg"], 0.0)
     derived: dict = {}
     cn_slopes = cm_slopes = None
@@ -609,6 +762,19 @@ def _derived(breakpoints: dict, tables: dict) -> dict:
             tables["Cm"], machs, alphas, ib, idl)
         derived["Cmalpha_per_deg"] = cm_slopes
         derived["alpha_ref_deg"] = alpha_ref
+    # Lateral-directional derivatives need a real beta grid; on the
+    # degenerate [0.0] grid the keys are deliberately absent.
+    if len(betas) >= 2:
+        if "Cn" in tables:
+            cnb_slopes, beta_ref = _beta_slope_per_mach(
+                tables["Cn"], machs, betas, ia, idl)
+            derived["Cnbeta_per_deg"] = cnb_slopes
+            derived["beta_ref_deg"] = beta_ref
+        if "Cl" in tables:
+            clb_slopes, beta_ref = _beta_slope_per_mach(
+                tables["Cl"], machs, betas, ia, idl)
+            derived["Clbeta_per_deg"] = clb_slopes
+            derived["beta_ref_deg"] = beta_ref
     # staticMargin_proxy = -Cmalpha/CNalpha (in Lref units), per Mach.
     # Skipped entirely when either derivative is unavailable; None for
     # Machs where CNalpha is ~0 (not computable there).
@@ -749,49 +915,92 @@ def deck_sha256(deck: dict) -> str:
     return hashlib.sha256(canonical_json(deck).encode("utf-8")).hexdigest()
 
 
-# ── Preview interpolation ───────────────────────────────────────────
+# ── Runtime lookup interpolation ────────────────────────────────────
 
 
-def interpolate_point(deck: dict, mach: float, alpha_deg: float) -> dict:
-    """Bilinear interpolation of every table at (mach, alpha) on the
-    beta/delta slice nearest 0. Outside the validity envelope →
-    :class:`AeroEnvelopeError`."""
+def _bracket(values: List[float], x: float) -> Tuple[int, int, float]:
+    """Bracketing breakpoint indices + fractional position of ``x``
+    in a sorted breakpoint list. Degenerate single-point axes →
+    ``(0, 0, 0.0)``."""
+    if len(values) == 1:
+        return 0, 0, 0.0
+    for i in range(len(values) - 1):
+        if values[i] <= x <= values[i + 1]:
+            t = ((x - values[i]) / (values[i + 1] - values[i])
+                 if values[i + 1] != values[i] else 0.0)
+            return i, i + 1, t
+    # clamped by the envelope check in interpolate(); numeric edges:
+    if x > values[-1]:
+        return len(values) - 2, len(values) - 1, 1.0
+    return 0, 1, 0.0
+
+
+def interpolate(
+    deck: dict,
+    mach: float,
+    alpha_deg: float,
+    beta_deg: float = 0.0,
+    delta_deg: float = 0.0,
+) -> Dict[str, float]:
+    """Runtime lookup: multilinear interpolation of EVERY table in the
+    deck at (mach, alpha, beta, delta).
+
+    This is the documented consumer-facing interpolation helper — the
+    deck's gridded ``tables`` on the ``breakpoints`` lattice ARE the
+    interpolation tables, and this function performs the multilinear
+    blend over the 2^4 bracketing corners (degenerate single-breakpoint
+    axes — e.g. the default ``beta_deg = [0.0]`` — collapse to weight
+    1 on their only slice). Control-derivative tables (``CN_delta``…)
+    are interpolated exactly like base coefficients.
+
+    No extrapolation, ever: a query outside any axis' breakpoint range
+    (mach / alpha / beta per the deck's ``validityEnvelope``, delta per
+    its breakpoint span) raises :class:`AeroEnvelopeError`.
+    """
     bp = deck["breakpoints"]
-    machs, alphas = bp["mach"], bp["alpha_deg"]
-    if not (machs[0] - 1e-12 <= mach <= machs[-1] + 1e-12):
-        raise AeroEnvelopeError(
-            f"mach {mach} outside validity envelope "
-            f"[{machs[0]}, {machs[-1]}]"
-        )
-    if not (alphas[0] - 1e-12 <= alpha_deg <= alphas[-1] + 1e-12):
-        raise AeroEnvelopeError(
-            f"alpha {alpha_deg} deg outside validity envelope "
-            f"[{alphas[0]}, {alphas[-1]}]"
-        )
-    ib = _closest_index(bp["beta_deg"], 0.0)
-    idl = _closest_index(bp["delta_deg"], 0.0)
-
-    def _bracket(values: List[float], x: float) -> Tuple[int, int, float]:
-        if len(values) == 1:
-            return 0, 0, 0.0
-        for i in range(len(values) - 1):
-            if values[i] <= x <= values[i + 1]:
-                t = ((x - values[i]) / (values[i + 1] - values[i])
-                     if values[i + 1] != values[i] else 0.0)
-                return i, i + 1, t
-        # clamped by the envelope check above; numeric edge:
-        return (len(values) - 2, len(values) - 1, 1.0)
-
-    im0, im1, tm = _bracket(machs, mach)
-    ia0, ia1, ta = _bracket(alphas, alpha_deg)
+    query = {
+        "mach": mach,
+        "alpha_deg": alpha_deg,
+        "beta_deg": beta_deg,
+        "delta_deg": delta_deg,
+    }
+    for axis in DECK_AXES:
+        vals, x = bp[axis], query[axis]
+        if not (vals[0] - 1e-12 <= x <= vals[-1] + 1e-12):
+            raise AeroEnvelopeError(
+                f"{axis} {x} outside validity envelope "
+                f"[{vals[0]}, {vals[-1]}]"
+            )
+    brackets = [_bracket(bp[axis], query[axis]) for axis in DECK_AXES]
+    corners = list(itertools.product((0, 1), repeat=len(DECK_AXES)))
 
     out: Dict[str, float] = {}
     for cname, table in deck["tables"].items():
-        v00 = table[im0][ia0][ib][idl]
-        v01 = table[im0][ia1][ib][idl]
-        v10 = table[im1][ia0][ib][idl]
-        v11 = table[im1][ia1][ib][idl]
-        v0 = v00 + (v01 - v00) * ta
-        v1 = v10 + (v11 - v10) * ta
-        out[cname] = v0 + (v1 - v0) * tm
+        acc = 0.0
+        for corner in corners:
+            weight = 1.0
+            idx = []
+            for (i_lo, i_hi, t), hi in zip(brackets, corner):
+                weight *= t if hi else (1.0 - t)
+                idx.append(i_hi if hi else i_lo)
+            if weight == 0.0:
+                continue
+            acc += weight * table[idx[0]][idx[1]][idx[2]][idx[3]]
+        out[cname] = acc
     return out
+
+
+def interpolate_point(deck: dict, mach: float, alpha_deg: float) -> dict:
+    """Back-compat preview lookup: bilinear interpolation of every
+    table at (mach, alpha) on the beta/delta slice nearest 0 (the
+    historical preview behavior, preserved even when the grid carries
+    no beta/delta = 0 breakpoint). New consumers should call
+    :func:`interpolate` with explicit beta/delta. Outside the validity
+    envelope → :class:`AeroEnvelopeError`."""
+    bp = deck["breakpoints"]
+    beta_near0 = min(bp["beta_deg"], key=abs)
+    delta_near0 = min(bp["delta_deg"], key=abs)
+    return interpolate(
+        deck, mach, alpha_deg,
+        beta_deg=beta_near0, delta_deg=delta_near0,
+    )

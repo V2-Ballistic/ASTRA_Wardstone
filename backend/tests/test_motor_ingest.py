@@ -11,7 +11,12 @@ import pytest
 
 from app.services.engineering.motor_artifact import G0, trapz
 from app.services.engineering.motor_ingest import (
+    BAR_TO_PA,
+    G_TO_KG,
+    KN_TO_N,
     LBF_TO_N,
+    LBM_TO_KG,
+    MPA_TO_PA,
     PSI_TO_PA,
     MotorCsvError,
     ingest_motor_csv,
@@ -152,6 +157,70 @@ def test_lbf_and_psi_unit_conversion():
     assert res.thrust_n[0] == pytest.approx(100.0 * LBF_TO_N, rel=1e-9)
     assert res.pchamber_pa[0] == pytest.approx(500.0 * PSI_TO_PA, rel=1e-9)
     assert res.peak_thrust_n == pytest.approx(100.0 * LBF_TO_N, rel=1e-9)
+
+
+def test_kn_thrust_and_mpa_pressure_conversion():
+    csv_text = _ws01_csv(
+        header="MotorTime_s,Thrust_kN,PropMassRem_kg,Pc_MPa",
+        thrust=1.2,             # kN
+        pc=5.0,                 # MPa
+    )
+    res = ingest_motor_csv(csv_text)
+    assert res.thrust_n[0] == pytest.approx(1.2 * KN_TO_N, rel=1e-9)
+    assert res.peak_thrust_n == pytest.approx(1.2 * KN_TO_N, rel=1e-9)
+    assert res.pchamber_pa[0] == pytest.approx(5.0 * MPA_TO_PA, rel=1e-9)
+
+
+def test_bar_pressure_conversion():
+    csv_text = _ws01_csv(
+        header="MotorTime_s,Thrust_N,PropMassRem_kg,Pc_bar",
+        pc=50.0,                # bar = 5 MPa
+    )
+    res = ingest_motor_csv(csv_text)
+    assert res.pchamber_pa[0] == pytest.approx(50.0 * BAR_TO_PA, rel=1e-9)
+    assert res.pchamber_pa[0] == pytest.approx(5.0e6, rel=1e-9)
+
+
+def test_ms_time_conversion():
+    # Time column in milliseconds: 0..2000 ms, burning until 1800 ms.
+    lines = ["# GrainMass_1, 1.0", "time_ms,thrust_n,mass_kg"]
+    for i in range(201):
+        t_ms = i * 10.0
+        burning = t_ms < 1800.0
+        f = 1000.0 if burning else 0.0
+        m = (1.0 - t_ms / 1800.0) if burning else 0.0
+        lines.append(f"{t_ms},{f},{m:.9f}")
+    res = ingest_motor_csv("\n".join(lines))
+    # Burn time and impulse come out in seconds / N·s.
+    assert res.burn_time_s == pytest.approx(1.79, abs=1e-9)
+    assert res.total_impulse_ns == pytest.approx(1790.0, rel=0.01)
+    # 1 kHz grid in SECONDS, not milliseconds.
+    assert res.time_s[1] - res.time_s[0] == pytest.approx(0.001, abs=1e-12)
+
+
+def test_lbm_mass_conversion():
+    csv_text = _ws01_csv(
+        header="MotorTime_s,Thrust_N,PropMassRem_lbm,Pchamber_Pa",
+        include_grains=False,
+        mass0_override=7.0,     # lbm
+    )
+    res = ingest_motor_csv(csv_text)
+    assert res.prop_mass_init_kg == pytest.approx(7.0 * LBM_TO_KG, rel=1e-9)
+    assert res.prop_mass_rem_kg[0] == pytest.approx(7.0 * LBM_TO_KG, rel=1e-6)
+    # ∫|ṁ|dt must close against the CONVERTED mass.
+    burned = trapz([abs(v) for v in res.mdot_kgps], res.time_s)
+    assert burned == pytest.approx(7.0 * LBM_TO_KG, rel=0.02)
+
+
+def test_grams_mass_conversion():
+    csv_text = _ws01_csv(
+        header="MotorTime_s,Thrust_N,prop_mass_g,Pchamber_Pa",
+        include_grains=False,
+        mass0_override=3200.0,  # g
+    )
+    res = ingest_motor_csv(csv_text)
+    assert res.prop_mass_init_kg == pytest.approx(3200.0 * G_TO_KG, rel=1e-9)
+    assert res.prop_mass_init_kg == pytest.approx(3.2, rel=1e-9)
 
 
 def test_header_aliases_case_space_punctuation_insensitive():

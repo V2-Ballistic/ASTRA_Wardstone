@@ -18,8 +18,10 @@ the FastAPI TestClient. Spec properties under test:
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import re
+import zipfile
 
 import httpx
 import pytest
@@ -528,3 +530,117 @@ def test_preview_outside_envelope_is_422(client, auth_headers):
     )
     assert r.status_code == 422
     assert "envelope" in json.dumps(r.json())
+
+
+def _make_beta_delta_csv():
+    """Full mach × alpha × beta × delta grid; CN = 0.05·α + 0.03·δ,
+    CY = 0.02·β (multilinear → interpolation is exact)."""
+    lines = ["# Sref_m2: 0.018", "# Lref_m: 0.152",
+             "mach,alpha,beta_deg,delta_deg,CN,CY"]
+    for m in (0.5, 1.0):
+        for a in (0.0, 4.0):
+            for b in (-4.0, 0.0, 4.0):
+                for d in (0.0, 10.0):
+                    lines.append(
+                        f"{m},{a},{b},{d},{0.05 * a + 0.03 * d},"
+                        f"{0.02 * b}"
+                    )
+    return "\n".join(lines) + "\n"
+
+
+@respx.mock
+def test_preview_with_explicit_beta_delta_params(client, auth_headers):
+    _mock_syscode()
+    _mock_precheck()
+    _mock_issue(index=9)
+    _mock_record_use()
+    resp = _ingest(
+        client, auth_headers,
+        [_upload("bd_deck.csv", _make_beta_delta_csv())],
+    )
+    assert resp.status_code == 201, resp.text
+
+    # explicit beta/delta → full multilinear lookup
+    r = client.get(
+        f"{API}/WS-AER-P000009/preview",
+        params={"mach": 0.75, "alpha": 2.0, "beta": 1.0, "delta": 5.0},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["beta_deg"] == pytest.approx(1.0)
+    assert body["delta_deg"] == pytest.approx(5.0)
+    assert body["values"]["CN"] == pytest.approx(0.05 * 2.0 + 0.03 * 5.0)
+    assert body["values"]["CY"] == pytest.approx(0.02 * 1.0)
+
+    # omitted beta/delta → nearest-0 slice (historical behavior kept)
+    r2 = client.get(
+        f"{API}/WS-AER-P000009/preview",
+        params={"mach": 0.5, "alpha": 4.0},
+        headers=auth_headers,
+    )
+    assert r2.status_code == 200, r2.text
+    body2 = r2.json()
+    assert body2["beta_deg"] == pytest.approx(0.0)
+    assert body2["delta_deg"] == pytest.approx(0.0)
+    assert body2["values"]["CN"] == pytest.approx(0.2)
+    assert body2["values"]["CY"] == pytest.approx(0.0)
+
+    # beta outside the validity envelope → 422
+    r3 = client.get(
+        f"{API}/WS-AER-P000009/preview",
+        params={"mach": 0.5, "alpha": 0.0, "beta": 30.0},
+        headers=auth_headers,
+    )
+    assert r3.status_code == 422
+    assert "beta" in json.dumps(r3.json())
+
+
+# ══════════════════════════════════════════════════════════════
+#  Source file download
+# ══════════════════════════════════════════════════════════════
+
+
+@respx.mock
+def test_source_download_single_file_is_verbatim_csv(
+    client, auth_headers,
+):
+    resp, _, _ = _standard_ingest(client, auth_headers, index=42)
+    assert resp.status_code == 201
+    r = client.get(
+        f"{API}/WS-AER-P000042/revisions/A/source", headers=auth_headers,
+    )
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"].startswith("text/csv")
+    assert 'filename="fin_can_aero.csv"' in r.headers["content-disposition"]
+    assert r.text == CSV_MAIN  # byte-for-byte as uploaded
+
+
+@respx.mock
+def test_source_download_zip_for_multiple_files(client, auth_headers):
+    _mock_syscode()
+    _mock_precheck()
+    _mock_issue(index=7)
+    _mock_record_use()
+    resp = _ingest(
+        client, auth_headers,
+        [_upload("deck_lo.csv", CSV_MAIN), _upload("deck_hi.csv", CSV_EXT)],
+    )
+    assert resp.status_code == 201, resp.text
+
+    r = client.get(
+        f"{API}/WS-AER-P000007/revisions/A/source", headers=auth_headers,
+    )
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"] == "application/zip"
+    assert 'filename="WS-AER-P000007-A.sources.zip"' \
+        in r.headers["content-disposition"]
+    with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
+        assert sorted(zf.namelist()) == ["deck_hi.csv", "deck_lo.csv"]
+        assert zf.read("deck_lo.csv").decode() == CSV_MAIN
+        assert zf.read("deck_hi.csv").decode() == CSV_EXT
+
+    # unknown revision → 404
+    assert client.get(
+        f"{API}/WS-AER-P000007/revisions/Z/source", headers=auth_headers,
+    ).status_code == 404
