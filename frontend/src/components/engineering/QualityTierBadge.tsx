@@ -9,7 +9,7 @@
  * workable=amber. Unknown tiers render slate.
  */
 
-import { TIER_COLORS } from '@/lib/engineering-types';
+import { ROLE_COLORS, TIER_COLORS } from '@/lib/engineering-types';
 
 export function QualityTierBadge({ tier }: { tier?: string | null }) {
   if (!tier) return <span className="text-slate-600">—</span>;
@@ -40,6 +40,21 @@ export function MotorClassBadge({ letter }: { letter?: string | null }) {
       title={`Motor class ${letter}`}
     >
       {letter}
+    </span>
+  );
+}
+
+/** Config BOM role pill (§8 closed taxonomy). Unknown roles render
+ *  with the 'other' palette so nothing crashes on future values. */
+export function ConfigRoleBadge({ role }: { role?: string | null }) {
+  if (!role) return <span className="text-slate-600">—</span>;
+  const c = ROLE_COLORS[role] ?? ROLE_COLORS.other;
+  return (
+    <span
+      className="rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
+      style={{ background: c.bg, color: c.text }}
+    >
+      {role}
     </span>
   );
 }

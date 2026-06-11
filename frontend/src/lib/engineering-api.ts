@@ -1,9 +1,9 @@
 // ══════════════════════════════════════════════════════════════
-//  ASTRA — Engineering API Client (Motors + Aero)
+//  ASTRA — Engineering API Client (Motors + Aero + Configs)
 //  Typed Axios calls for /api/v1/engineering/* endpoints.
 //
 //  File: frontend/src/lib/engineering-api.ts
-//  ASTRA_CONFIG_ECOSYSTEM_BUILD_SPEC §4/§5/§6.
+//  ASTRA_CONFIG_ECOSYSTEM_BUILD_SPEC §4/§5/§6/§8/§9.
 //
 //  Notes:
 //    - Bearer auth is automatic (lib/api interceptor).
@@ -28,6 +28,15 @@ import type {
   AeroDeckSummary,
   AeroIngestResponse,
   AeroPreviewResponse,
+  BundleExportResponse,
+  BundleExportSummary,
+  ConfigCreateBody,
+  ConfigCreateResponse,
+  ConfigDetail,
+  ConfigDiff,
+  ConfigRevisionCreateBody,
+  ConfigRevisionDetail,
+  ConfigSummary,
   DesignPreviewResponse,
   MotorArtifact,
   MotorDesignInputs,
@@ -209,4 +218,103 @@ export const engineeringAPI = {
     api.put<AeroDeckDetail>(
       `${BASE}/aero/${enc(wpn)}/active-revision`, { rev_letter },
     ),
+
+  // ══════════════════════════════════════
+  //  §8 Configurations — reads
+  // ══════════════════════════════════════
+
+  listConfigs: (params?: { q?: string; skip?: number; limit?: number }) =>
+    api.get<ConfigSummary[]>(`${BASE}/configs`, { params }),
+
+  getConfig: (wpn: string) =>
+    api.get<ConfigDetail>(`${BASE}/configs/${enc(wpn)}`),
+
+  /** Full resolved revision incl. the stored roll-up — the on-screen
+   *  flight card. `rev` may be a letter ('B') or a full WPN. */
+  getConfigRevision: (wpn: string, rev: string) =>
+    api.get<ConfigRevisionDetail>(
+      `${BASE}/configs/${enc(wpn)}/revisions/${enc(rev)}`,
+    ),
+
+  /** Structured diff between two revisions (components added /
+   *  removed / changed, aero / stage-map changes, roll-up delta). */
+  diffConfigRevisions: (wpn: string, from: string, to: string) =>
+    api.get<ConfigDiff>(`${BASE}/configs/${enc(wpn)}/diff`, {
+      params: { from, to },
+    }),
+
+  // ══════════════════════════════════════
+  //  §8 Configurations — writes (HAROLD names them)
+  // ══════════════════════════════════════
+
+  /** Validate → roll up → HAROLD allocates the CFG WPN → revision A.
+   *  Save-time validation failures arrive as 422 with a structured
+   *  {message, errors:[{code,...}]} detail — render each error. */
+  createConfig: (body: ConfigCreateBody) =>
+    api.post<ConfigCreateResponse>(`${BASE}/configs`, body),
+
+  /** New IMMUTABLE revision (same body minus the name). */
+  createConfigRevision: (wpn: string, body: ConfigRevisionCreateBody) =>
+    api.post<ConfigCreateResponse>(
+      `${BASE}/configs/${enc(wpn)}/revisions`, body,
+    ),
+
+  /** Clone the latest revision's content into a NEW config identity
+   *  (fresh CFG WPN). */
+  cloneConfig: (wpn: string, name: string) =>
+    api.post<ConfigCreateResponse>(
+      `${BASE}/configs/${enc(wpn)}:clone`, { name },
+    ),
+
+  /** Select the active revision (ASTRA-side pointer; no HAROLD). */
+  setConfigActiveRevision: (wpn: string, rev_letter: string) =>
+    api.put<ConfigDetail>(
+      `${BASE}/configs/${enc(wpn)}/active-revision`, { rev_letter },
+    ),
+
+  // ══════════════════════════════════════
+  //  §9 Configurations — CITADEL bundle export
+  // ══════════════════════════════════════
+
+  /** Export the revision as a citadel-config-bundle directory + zip.
+   *  Deterministic — a re-export idempotently reuses the recorded
+   *  export row (`reused: true`). */
+  exportConfigBundle: (wpn: string, rev: string) =>
+    api.post<BundleExportResponse>(
+      `${BASE}/configs/${enc(wpn)}/${enc(rev)}:exportBundle`,
+    ),
+
+  /** Export history for a revision — retrievable WITHOUT re-export. */
+  listConfigBundles: (wpn: string, rev: string) =>
+    api.get<BundleExportSummary[]>(
+      `${BASE}/configs/${enc(wpn)}/${enc(rev)}/bundles`,
+    ),
+
+  /** The stored manifest JSON of a historical export. */
+  getConfigBundleManifest: (wpn: string, rev: string, bundleHash: string) =>
+    api.get<Record<string, unknown>>(
+      `${BASE}/configs/${enc(wpn)}/${enc(rev)}/bundles/${enc(bundleHash)}/manifest`,
+    ),
+
+  /** Bundle zip download — authed axios blob fetch + object-URL save
+   *  (same pattern as cadportAPI.downloadDocument). */
+  downloadConfigBundle: async (
+    wpn: string,
+    rev: string,
+    bundleHash: string,
+    dirname: string,
+  ) => {
+    const res = await api.get(
+      `${BASE}/configs/${enc(wpn)}/${enc(rev)}/bundles/${enc(bundleHash)}/download`,
+      { responseType: 'blob' },
+    );
+    const url = window.URL.createObjectURL(new Blob([res.data as BlobPart]));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${dirname}.zip`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
+  },
 };
