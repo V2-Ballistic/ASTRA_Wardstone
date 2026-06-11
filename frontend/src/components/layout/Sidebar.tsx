@@ -19,7 +19,7 @@ import {
   ChevronDown, ChevronRight, LogOut, Shield, FolderOpen,
   Sparkles, Search, Zap, CheckSquare, FileBarChart, Upload,
   Users, Home, ChevronLeft, Loader2, Cable, Package, RefreshCw,
-  ShieldCheck, Boxes, Wrench, CircuitBoard, CalendarClock,
+  ShieldCheck, Boxes, Wrench, CircuitBoard, CalendarClock, Rocket,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useAuth } from '@/lib/auth';
@@ -61,6 +61,9 @@ const GLOBAL_NAV: NavItem[] = [
   { href: '/', label: 'Projects', icon: Home },
   // Phase 3 — INTF-002: global supplier catalog landing.
   { href: '/catalog', label: 'Catalog', icon: Package },
+  // ASTRA_CONFIG_ECOSYSTEM_BUILD_SPEC §4: Engineering hub (Motors /
+  // Aero / Configurations) — global, HAROLD-named data products.
+  { href: '/engineering', label: 'Engineering', icon: Rocket },
   // CLEANUP-002 Phase 3: Parts Library entry removed from sidebar.
   // The /parts-library/* routes 308-redirect to /catalog/* equivalents
   // (next.config.js) so existing bookmarks survive. Underlying route
