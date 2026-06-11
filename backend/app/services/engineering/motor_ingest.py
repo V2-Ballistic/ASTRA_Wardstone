@@ -9,6 +9,13 @@ docs/ASTRA_CONFIG_ECOSYSTEM_AS_FOUND.md); this module is implemented
 faithfully from the spec §5.2 behavioral contract. Where the contract
 left room, the choices below are documented as ASSUMPTIONS:
 
+TODO(citadel-validation): DEFERRED per the merge runbook
+(docs/citadel-ecosystem-merge.md, locked decision 3) — validate this
+port against canonical CITADEL ``ingestMotorCSV`` outputs once the
+CITADEL source is available (§12 flag 1 in
+docs/ASTRA_CONFIG_ECOSYSTEM_AS_FOUND.md). Until then this module is
+spec-faithful, not output-verified against the original.
+
 ASSUMPTIONS (documented per §12 spirit)
 ---------------------------------------
 1. **Header detection:** the header row is the first CSV row whose
