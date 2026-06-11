@@ -448,6 +448,11 @@ class CatalogPartSummary(BaseModel):
     # ── TDD-CAT-002 (only the chip-render fields belong on summary) ──
     part_subtype: Optional[str] = None
     material_class: Optional[str] = None
+    # ── Config-ecosystem deltas (spec §7.2) ──
+    # Vehicle role taxonomy (app/models/catalog.py::
+    # CATALOG_PART_ROLE_TAXONOMY); 'oml' flags the airframe. On the
+    # summary so the list view can badge airframe/role chips.
+    role: Optional[str] = None
 
     class Config:
         from_attributes = True

@@ -46,12 +46,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import Project, User
 from app.models.catalog import (
+    CATALOG_PART_ROLE_TAXONOMY,
     CadportAssembly,
     CadportAssemblyComponent,
     CatalogPart,
@@ -174,6 +175,29 @@ class CadportPartImport(BaseModel):
             "with supplier_id."
         ),
     )
+    # Config-ecosystem deltas (spec §7.2): vehicle role taxonomy,
+    # carried verbatim from cadport_parts.role. Validated against
+    # CATALOG_PART_ROLE_TAXONOMY (422 on a bad value); None when the
+    # CADPORT operator never set one.
+    role: Optional[str] = Field(
+        None,
+        description=(
+            "Vehicle role: oml | structure | avionics | payload | "
+            "propulsion | recovery | ballast | other. 'oml' flags the "
+            "airframe. None when unset."
+        ),
+    )
+
+    @field_validator("role")
+    @classmethod
+    def _validate_role(cls, v: Optional[str]) -> Optional[str]:
+        value = (v or "").strip() or None
+        if value is not None and value not in CATALOG_PART_ROLE_TAXONOMY:
+            raise ValueError(
+                f"Invalid role {value!r}. Valid roles: "
+                f"{', '.join(CATALOG_PART_ROLE_TAXONOMY)}."
+            )
+        return value
 
 
 class CheckDuplicateRequest(BaseModel):
@@ -204,6 +228,9 @@ class CatalogPartImportResult(BaseModel):
     # supplier row (used by the UI to render "New supplier: VectorNav"
     # in the result panel).
     supplier_created: bool = False
+    # Config-ecosystem deltas (spec §7.2): role as persisted on the
+    # catalog_parts row (None when unset).
+    role: Optional[str] = None
 
 
 class CadportPendingImportResult(BaseModel):
@@ -716,6 +743,7 @@ def create_part_from_cadport(
                 f"({existing.part_number}); linked to existing, not duplicated."
             ),
             supplier_created=False,
+            role=existing.role,
         )
 
     # Resolve the upload's supplier choice. 400 if neither/both, 404 if id missing.
@@ -803,6 +831,9 @@ def create_part_from_cadport(
         step_material_key=body.step_material_key,
         mass_source=body.mass_source,
         inertia_revised_via_uniform_scaling=body.inertia_revised_via_uniform_scaling,
+        # Config-ecosystem deltas (spec §7.2): role taxonomy (validated
+        # by the CadportPartImport field validator).
+        role=body.role,
         created_by_id=current_user.id,
     )
     db.add(part)
@@ -852,6 +883,7 @@ def create_part_from_cadport(
         source_document_id=doc.id,
         deduped=False,
         supplier_created=supplier_created,
+        role=part.role,
     )
 
 

@@ -127,6 +127,26 @@ async def list_system_codes() -> dict[str, Any]:
     return await _request("GET", "/api/tools/wardstone-harold/system-codes")
 
 
+async def register_system_code(
+    code: str,
+    name: str,
+    category: str = "engineering",
+    description: Optional[str] = None,
+) -> dict[str, Any]:
+    """``POST /api/tools/wardstone-harold/system-codes``. Idempotent
+    registration: HAROLD answers 201 ``{..., created: true}`` for a
+    brand-new code and 200 ``{..., created: false}`` when the code
+    already exists — both land here as the parsed body. 422 (codes
+    must be 2–3 uppercase letters) maps to ``HaroldValidationError``.
+    """
+    body: dict[str, Any] = {"code": code, "name": name, "category": category}
+    if description is not None:
+        body["description"] = description
+    return await _request(
+        "POST", "/api/tools/wardstone-harold/system-codes", json=body,
+    )
+
+
 # ── Suggest ─────────────────────────────────────────────────────────
 
 
@@ -208,6 +228,78 @@ async def issue_specific(
     return await _request("POST", "/api/tools/wardstone-harold/wpn/issue-specific", json=body)
 
 
+# ── Revise ──────────────────────────────────────────────────────────
+
+
+async def revise(
+    wpn: str,
+    *,
+    origin_system: Optional[str] = None,
+    origin_record_id: Optional[str] = None,
+    display_name: Optional[str] = None,
+    description: Optional[str] = None,
+    metadata: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """``POST /api/tools/wardstone-harold/wpn/{wpn}/revise``. Issues a
+    new ledger entry for the SAME index with the next revision letter
+    (A→B→C…). 404 (unknown base WPN) maps to
+    ``HaroldInvalidResponseError``; 409 (revision letters exhausted)
+    maps to ``HaroldDuplicateError``."""
+    body: dict[str, Any] = {}
+    if origin_system is not None:    body["origin_system"]    = origin_system
+    if origin_record_id is not None: body["origin_record_id"] = origin_record_id
+    if display_name is not None:     body["display_name"]     = display_name
+    if description is not None:      body["description"]      = description
+    if metadata is not None:         body["metadata"]         = metadata
+    return await _request(
+        "POST", f"/api/tools/wardstone-harold/wpn/{wpn}/revise", json=body,
+    )
+
+
+# ── Patch (annotate ledger entry) ───────────────────────────────────
+
+
+async def patch_wpn(
+    wpn: str,
+    *,
+    display_name: Optional[str] = None,
+    description: Optional[str] = None,
+    metadata: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """``PATCH /api/tools/wardstone-harold/wpn/{wpn}``. Partial update
+    of a ledger entry; HAROLD merges ``metadata`` into the existing
+    entry's metadata server-side. Returns the updated entry."""
+    body: dict[str, Any] = {}
+    if display_name is not None: body["display_name"] = display_name
+    if description is not None:  body["description"]  = description
+    if metadata is not None:     body["metadata"]     = metadata
+    return await _request(
+        "PATCH", f"/api/tools/wardstone-harold/wpn/{wpn}", json=body,
+    )
+
+
+# ── Delete (release a WPN) ──────────────────────────────────────────
+
+
+async def delete_wpn(
+    wpn: str,
+    *,
+    actor: Optional[str] = None,
+    reason: Optional[str] = None,
+) -> dict[str, Any]:
+    """``DELETE /api/tools/wardstone-harold/wpn/{wpn}``. The release
+    path for failed persistence — HAROLD reclaims the index so the
+    sequence stays gapless. Returns
+    ``{deleted_wpn, reclaimed, new_next_index}``."""
+    params: dict[str, Any] = {}
+    if actor is not None:  params["actor"]  = actor
+    if reason is not None: params["reason"] = reason
+    return await _request(
+        "DELETE", f"/api/tools/wardstone-harold/wpn/{wpn}",
+        params=params or None,
+    )
+
+
 # ── Ledger lookup ───────────────────────────────────────────────────
 
 
@@ -216,3 +308,39 @@ async def get_ledger_entry(wpn: str) -> dict[str, Any]:
     ``HaroldInvalidResponseError`` — callers map to "not found" in
     their own domain language."""
     return await _request("GET", f"/api/tools/wardstone-harold/ledger/{wpn}")
+
+
+async def list_ledger(
+    system_code: Optional[str] = None,
+    status: Optional[str] = None,
+    q: Optional[str] = None,
+    skip: int = 0,
+    limit: int = 200,
+) -> dict[str, Any]:
+    """``GET /api/tools/wardstone-harold/ledger``. Filtered, paginated
+    ledger listing. Returns ``{items, total, skip, limit}``."""
+    params: dict[str, Any] = {"skip": skip, "limit": limit}
+    if system_code is not None: params["system_code"] = system_code
+    if status is not None:      params["status"]      = status
+    if q is not None:           params["q"]           = q
+    return await _request(
+        "GET", "/api/tools/wardstone-harold/ledger", params=params,
+    )
+
+
+# ── Filename precheck ───────────────────────────────────────────────
+
+
+async def filename_precheck(
+    filename: str,
+    intended_part_class: Optional[str] = None,
+) -> dict[str, Any]:
+    """``POST /api/tools/wardstone-harold/filename-precheck``. HAROLD
+    decides the canonical name for a candidate filename. Returns the
+    precheck verdict body verbatim."""
+    body: dict[str, Any] = {"filename": filename}
+    if intended_part_class is not None:
+        body["intended_part_class"] = intended_part_class
+    return await _request(
+        "POST", "/api/tools/wardstone-harold/filename-precheck", json=body,
+    )

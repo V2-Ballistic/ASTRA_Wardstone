@@ -296,6 +296,11 @@ export interface CatalogPart {
   // ── TDD-CAT-002 (chip-render only — full CAD on detail) ──
   part_subtype?: string | null;
   material_class?: string | null;
+  // ── Config-ecosystem deltas (spec §7.2) ──
+  /** Vehicle role taxonomy (oml|structure|avionics|payload|propulsion|
+   *  recovery|ballast|other); 'oml' flags the airframe. Prefills the
+   *  role dropdown in the config builder. */
+  role?: string | null;
   // ── TDD-HAROLD-INT-002 — Wardstone Part Number ──
   /** Issued (or fallback-allocated) WPN. Primary identifier when present. */
   internal_part_number?: string | null;

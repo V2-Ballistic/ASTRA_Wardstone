@@ -303,6 +303,24 @@ class SupplierDocument(Base):
 #  4.3 CatalogPart
 # ══════════════════════════════════════════════════════════════
 
+# Config-ecosystem deltas (spec §7.2): vehicle role taxonomy for
+# catalog parts. MUST stay identical to CADPORT's
+# ``cadport/services/roles.py::ROLE_TAXONOMY`` — the two systems
+# exchange the value verbatim on from-cadport imports. 'oml' (outer
+# mold line) flags the airframe part.
+CATALOG_PART_ROLE_TAXONOMY: tuple = (
+    "oml",
+    "structure",
+    "avionics",
+    "payload",
+    "propulsion",
+    "recovery",
+    "ballast",
+    "other",
+)
+AIRFRAME_ROLE = "oml"
+
+
 class CatalogPart(Base):
     __tablename__ = "catalog_parts"
     __table_args__ = (
@@ -492,6 +510,14 @@ class CatalogPart(Base):
     # the bidirectional flow. Migration 0043.
     last_sync_origin    = Column(String, nullable=True)
     last_sync_at        = Column(DateTime(timezone=True), nullable=True)
+
+    # Config-ecosystem deltas (spec §7.2): vehicle role — one of
+    # CATALOG_PART_ROLE_TAXONOMY above (mirror of CADPORT's
+    # services/roles.py::ROLE_TAXONOMY) or NULL when unset. 'oml'
+    # flags the airframe. Validated at the API boundary; no DB
+    # constraint (matches the source_format/mass_source pattern).
+    # Migration 0049.
+    role                = Column(String, nullable=True)
 
     deleted_at          = Column(DateTime(timezone=True), nullable=True, index=True)
 

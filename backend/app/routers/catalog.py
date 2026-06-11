@@ -74,6 +74,7 @@ from app.database import get_db
 from app.dependencies.project_access import project_member_required
 from app.models import Project, User, UserRole
 from app.models.catalog import (
+    CATALOG_PART_ROLE_TAXONOMY,
     CatalogConnector,
     CatalogPart,
     CatalogPin,
@@ -1390,6 +1391,69 @@ def patch_catalog_part_mass(
 
 
 # ══════════════════════════════════════════════════════════════
+#  Config-ecosystem deltas (spec §7.2) — PATCH role
+# ══════════════════════════════════════════════════════════════
+
+class CatalogPartRoleUpdate(BaseModel):
+    """Body for PATCH /api/v1/catalog/parts/{id}/role.
+
+    ``role = null`` clears the role; otherwise the value must be a
+    member of CATALOG_PART_ROLE_TAXONOMY (422 otherwise). 'oml' flags
+    the airframe part.
+    """
+    role: Optional[str] = Field(
+        None,
+        description=(
+            "One of: " + ", ".join(CATALOG_PART_ROLE_TAXONOMY) +
+            ". null clears. 'oml' = airframe."
+        ),
+    )
+
+
+@router.patch("/parts/{part_id}/role")
+def patch_catalog_part_role(
+    part_id: int,
+    data: CatalogPartRoleUpdate,
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Set / clear the vehicle role on a catalog part.
+
+    Follows the PATCH /mass pattern (req_eng+ auth, audit event) minus
+    the recompute cascade — role is pure metadata. NO cross-system
+    propagation in v1: role does not sync back to CADPORT (unlike
+    mass / material / supplier / name). Future work, noted in the
+    spec §7 deltas.
+    """
+    _require_req_eng_plus(current_user)
+    p = _get_catalog_part_or_404(db, part_id)
+
+    value = (data.role or "").strip() or None
+    if value is not None and value not in CATALOG_PART_ROLE_TAXONOMY:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Invalid role {value!r}. Valid roles: "
+                f"{', '.join(CATALOG_PART_ROLE_TAXONOMY)}."
+            ),
+        )
+
+    old_role = p.role
+    p.role = value
+    db.commit()
+    db.refresh(p)
+
+    _audit(
+        db, "catalog_part.role_updated", "catalog_part", p.id, current_user.id,
+        {"old_role": old_role, "new_role": value},
+        request=request,
+    )
+
+    return {"part_id": p.id, "role": p.role, "is_airframe": p.role == "oml"}
+
+
+# ══════════════════════════════════════════════════════════════
 #  CADPORT-TDD-ASTRA-BRIDGE-001 Phase 3 §3.4
 #  Internal sync endpoint — CADPORT calls this after a local edit.
 #  Loop-breaker: this handler updates the row but does NOT call back
@@ -2379,6 +2443,7 @@ def _approve_cadport_pending_import(
     """
     from app.services.supplier_service import resolve_supplier_choice
     from app.models.catalog import (
+        CATALOG_PART_ROLE_TAXONOMY as _ROLES,
         CatalogPart as _CP, LRUClass as _LRU, PartClass as _PC,
     )
 
@@ -2487,6 +2552,11 @@ def _approve_cadport_pending_import(
         source_format=data.get("source_format") or "step",
         step_material_key=data.get("step_material_key"),
         mass_source=data.get("mass_source") or "cad",
+        # Config-ecosystem deltas (spec §7.2): role rode in via the
+        # pending payload (validated at pending-import creation by
+        # CadportPartImport). Re-checked here defensively because the
+        # reviewer can edit extracted_data before approving.
+        role=(data.get("role") if data.get("role") in _ROLES else None),
         inertia_revised_via_uniform_scaling=bool(
             data.get("inertia_revised_via_uniform_scaling", False)
         ),
